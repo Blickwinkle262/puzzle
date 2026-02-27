@@ -73,14 +73,17 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!sharedCover || sharedCover.phase !== "run") {
+    if (!sharedCover) {
       return;
     }
 
+    // Fallback cleanup: even if transition fails to enter "run", clear overlay to avoid floating cover.
+    const timeoutMs = sharedCover.phase === "run" ? SHARED_COVER_ANIMATION_MS : SHARED_COVER_ANIMATION_MS + 180;
     const timer = window.setTimeout(() => {
       setSharedCover(null);
       setHideDetailCover(false);
-    }, SHARED_COVER_ANIMATION_MS);
+      setOpeningStoryId(null);
+    }, timeoutMs);
 
     return () => {
       window.clearTimeout(timer);
@@ -270,6 +273,10 @@ export function App(): JSX.Element {
 
     const target = storyDetailCoverRef.current;
     if (!target) {
+      // If target cover is not ready, gracefully drop transition overlay.
+      setSharedCover(null);
+      setHideDetailCover(false);
+      setOpeningStoryId(null);
       return;
     }
 
@@ -304,7 +311,7 @@ export function App(): JSX.Element {
   }, [sharedCover, screen, activeStory]);
 
   const sharedCoverStyle = sharedCover ? buildSharedCoverStyle(sharedCover) : undefined;
-  const sharedCoverOverlay = sharedCover ? (
+  const sharedCoverOverlay = sharedCover && sharedCover.phase === "run" ? (
     <div className="shared-cover-overlay" style={sharedCoverStyle}>
       <img src={sharedCover.coverSrc} alt="" />
     </div>
