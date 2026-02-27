@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "stories": [
     {
       "id": "xiangyu",
@@ -16,6 +16,14 @@
       "cover": "/content/stories/shibian/cover.png",
       "manifest": "/content/stories/shibian/story.json",
       "order": 2
+    },
+    {
+      "id": "huapi",
+      "title": "聊斋·画皮：幽冥绮梦",
+      "description": "17 幕高难拼图：从晨雾偶遇到生心复活，再到白头偕老。",
+      "cover": "/content/stories/huapi/cover.png",
+      "manifest": "/content/stories/huapi/story.json",
+      "order": 3
     }
   ]
 }
