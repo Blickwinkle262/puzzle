@@ -17,16 +17,21 @@ const STORY_INDEX_FILE = path.join(STORIES_ROOT_DIR, "index.json");
 const DB_PATH = path.join(ROOT_DIR, "backend", "data", "puzzle.sqlite");
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "puzzle_session";
 const CSRF_COOKIE_NAME = process.env.CSRF_COOKIE_NAME || "puzzle_csrf";
-const CSRF_HEADER_NAME = String(process.env.CSRF_HEADER_NAME || "x-csrf-token").toLowerCase();
+const CSRF_HEADER_NAME = "x-csrf-token";
 const SESSION_TTL_MS = resolveSessionTtlMs();
 const COOKIE_SECURE = resolveCookieSecure();
 const COOKIE_SAME_SITE = resolveCookieSameSite(COOKIE_SECURE);
 const VALID_PROGRESS_STATUS = new Set(["not_started", "in_progress", "completed"]);
+const AUTH_RATE_LIMIT_WINDOW_MS = 1000 * 60 * 10;
+const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 20;
+
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
 initializeSchema(db);
+
+const authRateBuckets = new Map();
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -38,6 +43,10 @@ app.get("/api/health", (_req, res) => {
 app.post("/api/auth/register", (req, res) => {
   const username = normalizeUsername(req.body?.username);
   const password = normalizePassword(req.body?.password);
+
+  if (!passAuthRateLimit(req, username, res)) {
+    return;
+  }
 
   if (!username || !password) {
     res.status(400).json({ message: "用户名和密码不能为空" });
@@ -60,6 +69,7 @@ app.post("/api/auth/register", (req, res) => {
     .run(username, passwordHash, now, now);
 
   const userId = Number(result.lastInsertRowid);
+  clearAuthRateLimit(req, username);
   const session = createSession(userId);
   runProgressMaintenanceForUser(userId);
   setAuthCookies(res, session);
@@ -75,6 +85,10 @@ app.post("/api/auth/register", (req, res) => {
 app.post("/api/auth/login", (req, res) => {
   const username = normalizeUsername(req.body?.username);
   const password = normalizePassword(req.body?.password);
+
+  if (!passAuthRateLimit(req, username, res)) {
+    return;
+  }
 
   if (!username || !password) {
     res.status(400).json({ message: "用户名和密码不能为空" });
@@ -93,6 +107,7 @@ app.post("/api/auth/login", (req, res) => {
   const now = nowIso();
   db.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(now, user.id);
 
+  clearAuthRateLimit(req, user.username);
   const session = createSession(user.id);
   runProgressMaintenanceForUser(user.id);
   setAuthCookies(res, session);
@@ -427,6 +442,35 @@ function enforceSingleSessionConstraint(database) {
   }
 
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_single_user ON sessions(user_id)");
+}
+
+function authRateLimitKey(req, username) {
+  const forwarded = typeof req.headers["x-forwarded-for"] === "string" ? req.headers["x-forwarded-for"] : "";
+  const ip = (forwarded.split(",")[0] || req.ip || req.socket?.remoteAddress || "unknown").trim();
+  const name = (username || "").toLowerCase();
+  return `${ip}|${name}`;
+}
+
+function passAuthRateLimit(req, username, res) {
+  const key = authRateLimitKey(req, username);
+  const now = Date.now();
+
+  const bucket = authRateBuckets.get(key) || [];
+  const recent = bucket.filter((ts) => now - ts <= AUTH_RATE_LIMIT_WINDOW_MS);
+
+  if (recent.length >= AUTH_RATE_LIMIT_MAX_ATTEMPTS) {
+    res.status(429).json({ message: "尝试过于频繁，请稍后再试" });
+    authRateBuckets.set(key, recent);
+    return false;
+  }
+
+  recent.push(now);
+  authRateBuckets.set(key, recent);
+  return true;
+}
+
+function clearAuthRateLimit(req, username) {
+  authRateBuckets.delete(authRateLimitKey(req, username));
 }
 
 function requireAuth(req, res, next) {
