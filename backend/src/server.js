@@ -61,6 +61,7 @@ app.post("/api/auth/register", (req, res) => {
 
   const userId = Number(result.lastInsertRowid);
   const session = createSession(userId);
+  runProgressMaintenanceForUser(userId);
   setAuthCookies(res, session);
 
   res.status(201).json({
@@ -93,6 +94,7 @@ app.post("/api/auth/login", (req, res) => {
   db.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(now, user.id);
 
   const session = createSession(user.id);
+  runProgressMaintenanceForUser(user.id);
   setAuthCookies(res, session);
 
   res.json({
@@ -177,7 +179,6 @@ app.get("/api/stories/:storyId", requireAuth, (req, res) => {
       return;
     }
 
-    migrateLegacyProgressForStory(req.authUser.id, story);
     const levelProgress = getLevelProgressMap(req.authUser.id, story);
     res.json({
       story: {
@@ -204,7 +205,6 @@ app.get("/api/stories/:storyId/levels/:levelId", requireAuth, (req, res) => {
       return;
     }
 
-    migrateLegacyProgressForStory(req.authUser.id, story);
     const levelProgress = getLevelProgressMap(req.authUser.id, story);
 
     res.json({
@@ -389,13 +389,14 @@ function initializeSchema(database) {
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
-    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_progress_user_story ON user_level_progress(user_id, story_id);
   `);
 
   ensureSessionColumns(database);
+  enforceSingleSessionConstraint(database);
 }
+
 
 function ensureSessionColumns(database) {
   const columns = database.prepare("PRAGMA table_info(sessions)").all();
@@ -406,6 +407,26 @@ function ensureSessionColumns(database) {
   }
 
   database.prepare("DELETE FROM sessions WHERE csrf_token IS NULL OR length(csrf_token) = 0").run();
+}
+
+function enforceSingleSessionConstraint(database) {
+  const duplicatedUsers = database
+    .prepare("SELECT user_id FROM sessions GROUP BY user_id HAVING COUNT(*) > 1")
+    .all();
+
+  for (const row of duplicatedUsers) {
+    const sessions = database
+      .prepare("SELECT token FROM sessions WHERE user_id = ? ORDER BY expires_at DESC, created_at DESC")
+      .all(row.user_id);
+
+    const redundantTokens = sessions.slice(1).map((session) => session.token);
+    if (redundantTokens.length > 0) {
+      const placeholders = redundantTokens.map(() => "?").join(", ");
+      database.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...redundantTokens);
+    }
+  }
+
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_single_user ON sessions(user_id)");
 }
 
 function requireAuth(req, res, next) {
@@ -497,7 +518,11 @@ function readCookie(req, name) {
       continue;
     }
 
-    return decodeURIComponent(rawValue.join("=") || "");
+    try {
+      return decodeURIComponent(rawValue.join("=") || "");
+    } catch {
+      return null;
+    }
   }
 
   return null;
@@ -526,6 +551,7 @@ function clearAuthCookies(res) {
   );
 }
 
+
 function createSession(userId) {
   pruneExpiredSessions();
 
@@ -534,13 +560,17 @@ function createSession(userId) {
   const createdAt = nowIso();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
 
-  db.prepare("INSERT INTO sessions (token, user_id, created_at, expires_at, csrf_token) VALUES (?, ?, ?, ?, ?)").run(
-    token,
-    userId,
-    createdAt,
-    expiresAt,
-    csrfToken,
-  );
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    db.prepare("INSERT INTO sessions (token, user_id, created_at, expires_at, csrf_token) VALUES (?, ?, ?, ?, ?)").run(
+      token,
+      userId,
+      createdAt,
+      expiresAt,
+      csrfToken,
+    );
+  });
+  tx();
 
   return {
     token,
@@ -588,17 +618,16 @@ function pruneExpiredSessions() {
 }
 
 
+
 function listStoriesForUser(userId) {
   const catalog = loadStoryCatalog();
   const stories = [];
 
   for (const entry of catalog.stories) {
-    const story = loadStoryById(entry.id);
+    const story = loadStoryById(entry.id, catalog);
     if (!story) {
       continue;
     }
-
-    migrateLegacyProgressForStory(userId, story);
 
     const rows = db
       .prepare(
@@ -650,7 +679,7 @@ function getLevelProgressMap(userId, storyOrStoryId) {
 
   const rows = db
     .prepare(
-      "SELECT story_id, level_id, status, best_time_ms, best_moves, attempts, last_played_at, completed_at, save_state_json, content_version FROM user_level_progress WHERE user_id = ? AND story_id = ?",
+      "SELECT story_id, level_id, status, best_time_ms, best_moves, attempts, last_played_at, completed_at, content_version FROM user_level_progress WHERE user_id = ? AND story_id = ?",
     )
     .all(userId, story.id);
 
@@ -662,14 +691,11 @@ function getLevelProgressMap(userId, storyOrStoryId) {
     if (!row) {
       continue;
     }
-
-    const compatibleRow = ensureProgressCompatibility(userId, story.id, level, row);
-    map[level.id] = serializeProgressRow(compatibleRow);
+    map[level.id] = serializeProgressRow(row);
   }
 
   return map;
 }
-
 
 function serializeProgressRow(row) {
   return {
@@ -686,61 +712,74 @@ function serializeProgressRow(row) {
 }
 
 
+
 function loadStoryCatalog() {
-  const discovered = discoverStoryEntriesFromFolders();
-  const indexEntries = loadStoryIndexEntries();
+  if (!fs.existsSync(STORY_INDEX_FILE)) {
+    throw new Error(`未找到故事索引文件: ${STORY_INDEX_FILE}`);
+  }
 
-  const entriesById = new Map(discovered.map((entry) => [entry.id, entry]));
+  let payload;
+  try {
+    payload = readJson(STORY_INDEX_FILE);
+  } catch {
+    throw new Error("故事索引 JSON 解析失败");
+  }
 
-  for (const indexEntry of indexEntries) {
-    if (!indexEntry.enabled) {
-      entriesById.delete(indexEntry.id);
+  if (!payload || !Array.isArray(payload.stories)) {
+    throw new Error("故事索引格式不合法");
+  }
+
+  const idSet = new Set();
+  const stories = [];
+
+  for (const item of payload.stories) {
+    if (!item || typeof item !== "object") {
       continue;
     }
 
-    const existing = entriesById.get(indexEntry.id);
-    if (existing) {
-      entriesById.set(indexEntry.id, {
-        ...existing,
-        title: indexEntry.title || existing.title,
-        description: indexEntry.description || existing.description,
-        cover: indexEntry.cover || existing.cover,
-        manifest: indexEntry.manifest || existing.manifest,
-        order: indexEntry.order,
-      });
+    if (item.enabled === false) {
       continue;
     }
 
-    if (!indexEntry.manifest) {
-      continue;
+    const id = String(item.id || "").trim();
+    const manifest = typeof item.manifest === "string" ? item.manifest.trim() : "";
+
+    if (!id || !manifest) {
+      throw new Error("故事索引中的 id/manifest 不能为空");
     }
 
-    entriesById.set(indexEntry.id, {
-      id: indexEntry.id,
-      title: indexEntry.title,
-      description: indexEntry.description,
-      cover: indexEntry.cover,
-      manifest: indexEntry.manifest,
-      order: indexEntry.order,
+    if (idSet.has(id)) {
+      throw new Error(`故事索引中存在重复 id: ${id}`);
+    }
+    idSet.add(id);
+
+    // 强约束索引模式：索引中声明的 manifest 必须存在。
+    resolveManifestFsPath(manifest);
+
+    stories.push({
+      id,
+      title: typeof item.title === "string" ? item.title : "",
+      description: typeof item.description === "string" ? item.description : "",
+      cover: typeof item.cover === "string" ? item.cover : "",
+      manifest,
+      order: Number.isFinite(item.order) ? Number(item.order) : Number.MAX_SAFE_INTEGER,
     });
   }
 
-  const stories = [...entriesById.values()].sort((a, b) => {
-    if (a.order !== b.order) {
-      return a.order - b.order;
-    }
-    return a.id.localeCompare(b.id);
-  });
-
   return {
-    stories,
+    stories: stories.sort((a, b) => {
+      if (a.order !== b.order) {
+        return a.order - b.order;
+      }
+      return a.id.localeCompare(b.id);
+    }),
   };
 }
 
 
-function loadStoryById(storyId) {
-  const catalog = loadStoryCatalog();
-  const entry = catalog.stories.find((item) => item.id === storyId);
+function loadStoryById(storyId, catalog) {
+  const activeCatalog = catalog || loadStoryCatalog();
+  const entry = activeCatalog.stories.find((item) => item.id === storyId);
   if (!entry) {
     return null;
   }
@@ -774,7 +813,6 @@ function loadStoryById(storyId) {
     levels,
   };
 }
-
 
 function normalizeLevel(manifestUrl, level, index) {
   const levelId = String(level?.id ?? `level_${String(index + 1).padStart(3, "0")}`);
@@ -874,70 +912,44 @@ function readJson(filePath) {
   return JSON.parse(content);
 }
 
-function loadStoryIndexEntries() {
-  if (!fs.existsSync(STORY_INDEX_FILE)) {
-    return [];
+function runProgressMaintenanceForUser(userId) {
+  try {
+    const catalog = loadStoryCatalog();
+    for (const entry of catalog.stories) {
+      const story = loadStoryById(entry.id, catalog);
+      if (!story) {
+        continue;
+      }
+      migrateLegacyProgressForStory(userId, story);
+      reconcileProgressContentVersionForStory(userId, story);
+    }
+  } catch (error) {
+    console.warn("progress maintenance failed:", asMessage(error, "unknown"));
   }
-
-  const payload = readJson(STORY_INDEX_FILE);
-  if (!payload || !Array.isArray(payload.stories)) {
-    return [];
-  }
-
-  return payload.stories
-    .filter((item) => item && typeof item === "object")
-    .map((item) => ({
-      id: String(item.id || "").trim(),
-      title: typeof item.title === "string" ? item.title : "",
-      description: typeof item.description === "string" ? item.description : "",
-      cover: typeof item.cover === "string" ? item.cover : "",
-      manifest: typeof item.manifest === "string" ? item.manifest : "",
-      order: Number.isFinite(item.order) ? Number(item.order) : Number.MAX_SAFE_INTEGER,
-      enabled: item.enabled !== false,
-    }))
-    .filter((item) => item.id);
 }
 
-function discoverStoryEntriesFromFolders() {
-  if (!fs.existsSync(STORIES_ROOT_DIR)) {
-    return [];
+function reconcileProgressContentVersionForStory(userId, story) {
+  const rows = db
+    .prepare("SELECT level_id, content_version FROM user_level_progress WHERE user_id = ? AND story_id = ?")
+    .all(userId, story.id);
+
+  const versionByLevel = new Map(story.levels.map((level) => [level.id, normalizeContentVersion(level.content_version)]));
+
+  for (const row of rows) {
+    const targetVersion = versionByLevel.get(row.level_id);
+    if (!targetVersion) {
+      continue;
+    }
+
+    const currentVersion = normalizeContentVersion(row.content_version);
+    if (currentVersion === targetVersion) {
+      continue;
+    }
+
+    db.prepare(
+      "UPDATE user_level_progress SET content_version = ?, save_state_json = NULL WHERE user_id = ? AND story_id = ? AND level_id = ?",
+    ).run(targetVersion, userId, story.id, row.level_id);
   }
-
-  const folders = fs
-    .readdirSync(STORIES_ROOT_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name);
-
-  const stories = [];
-  for (const folderName of folders) {
-    const manifestFsPath = path.join(STORIES_ROOT_DIR, folderName, "story.json");
-    if (!fs.existsSync(manifestFsPath)) {
-      continue;
-    }
-
-    let payload;
-    try {
-      payload = readJson(manifestFsPath);
-    } catch {
-      continue;
-    }
-
-    const storyId = String(payload?.id || folderName).trim();
-    if (!storyId) {
-      continue;
-    }
-
-    stories.push({
-      id: storyId,
-      title: typeof payload?.title === "string" ? payload.title : "",
-      description: typeof payload?.description === "string" ? payload.description : "",
-      cover: typeof payload?.cover === "string" ? payload.cover : "",
-      manifest: `/content/stories/${folderName}/story.json`,
-      order: Number.MAX_SAFE_INTEGER,
-    });
-  }
-
-  return stories;
 }
 
 function migrateLegacyProgressForStory(userId, story) {
@@ -1030,25 +1042,6 @@ function migrateLegacyProgressForStory(userId, story) {
       );
     }
   }
-}
-
-function ensureProgressCompatibility(userId, storyId, level, row) {
-  const targetVersion = normalizeContentVersion(level.content_version);
-  const currentVersion = normalizeContentVersion(row.content_version);
-
-  if (targetVersion === currentVersion) {
-    return row;
-  }
-
-  db.prepare(
-    "UPDATE user_level_progress SET content_version = ?, save_state_json = NULL WHERE user_id = ? AND story_id = ? AND level_id = ?",
-  ).run(targetVersion, userId, storyId, level.id);
-
-  return {
-    ...row,
-    content_version: targetVersion,
-    save_state_json: null,
-  };
 }
 
 function normalizeLegacyIds(value) {
@@ -1161,11 +1154,10 @@ function normalizePassword(value) {
   if (typeof value !== "string") {
     return "";
   }
-  const normalized = value.trim();
-  if (normalized.length < 6 || normalized.length > 64) {
+  if (value.length < 6 || value.length > 64) {
     return "";
   }
-  return normalized;
+  return value;
 }
 
 function normalizePositiveInteger(value) {
