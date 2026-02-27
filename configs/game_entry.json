@@ -1,0 +1,4 @@
+{
+  "defaults_path": "configs/game_defaults.json",
+  "active_level": "levels/level_001.json"
+}

@@ -1,0 +1,86 @@
+{
+  "id": "xiangyu_story",
+  "title": "聊斋·香玉",
+  "description": "按故事顺序完成拼图：花妖现身 → 香玉之死 → 良师益友 → 死而复生 → 最后的陪伴",
+  "story_overview_title": "故事梗概：劳山之巅的植物之恋",
+  "story_overview_paragraphs": [
+    "故事发生地在著名的青岛崂山（劳山）太清宫。书生黄生客居于此，院子里有一株高一丈多、繁花似锦的白牡丹，以及一株娇艳的红耐冬（山茶花）。",
+    "花妖现身：一日，黄生见一位白衣美女（香玉）在牡丹丛中出没，两人一见钟情，从此每日深夜相会。不久，又出现了一位身穿红衣、性格爽朗的女子（绛雪），三人的关系既是好友，又像知己。",
+    "香玉之死：不幸很快降临。一位路过的游人看中了那株白牡丹，将其挖掘带走。香玉因此魂飞魄散，在黄生的梦中凄凉告别。黄生悲痛欲绝，每日对着空地流泪，甚至写下了《哭花诗》五十首。",
+    "绛雪的陪伴：在香玉离开后，红衣的绛雪一直陪伴、安慰黄生。黄生曾想亲近绛雪，绛雪却坦诚相告：她与香玉是姐妹，她不愿替代香玉，只愿做黄生的良师益友。",
+    "死而复生：黄生的至诚感动了花神。在绛雪的指点下，黄生每日在牡丹原址浇水守护。一年后，牡丹竟然重新破土而出，香玉也奇迹般地复活。",
+    "最后的陪伴：多年后，黄生临终，他告诉家人：\"我死后，魂魄会回到崂山那株牡丹旁。\" 果然，黄生去世后，牡丹树下长出了一株茁壮的幼芽，从此三花并茂，传为佳话。"
+  ],
+  "levels": [
+    {
+      "id": "xiangyu_01",
+      "title": "花妖现身",
+      "description": "白衣香玉初现花间，故事由此开始。",
+      "story_text": "一日，黄生见白衣香玉于牡丹丛中出没，两人一见钟情；不久红衣绛雪亦现身，三人成知己。",
+      "grid": { "rows": 6, "cols": 4 },
+      "source_image": "/assets/xiangyu/花妖现身.png",
+      "shuffle": { "seed": 101, "mode": "grid_shuffle" },
+      "audio": { "piece_link": "/assets/attach.mp3" },
+      "mobile": {
+        "preferred_orientation": "portrait",
+        "orientation_hint": "本关建议竖屏体验"
+      }
+    },
+    {
+      "id": "xiangyu_02",
+      "title": "香玉之死",
+      "description": "牡丹被掘，香玉诀别，黄生悲泣。",
+      "story_text": "游人掘走白牡丹，香玉魂散梦别。黄生悲痛欲绝，日日哭花，写下《哭花诗》五十首。",
+      "grid": { "rows": 7, "cols": 4 },
+      "source_image": "/assets/xiangyu/香玉之死.png",
+      "shuffle": { "seed": 102, "mode": "grid_shuffle" },
+      "audio": { "piece_link": "/assets/attach.mp3" },
+      "mobile": {
+        "preferred_orientation": "portrait",
+        "orientation_hint": "本关建议竖屏体验"
+      }
+    },
+    {
+      "id": "xiangyu_03",
+      "title": "良师益友",
+      "description": "绛雪坦诚相待，只愿作知己与良友。",
+      "story_text": "香玉离去后，绛雪常伴黄生。她坦言不愿替代香玉，只愿以姐妹之情与黄生相扶。",
+      "grid": { "rows": 8, "cols": 5 },
+      "source_image": "/assets/xiangyu/良师益友.png",
+      "shuffle": { "seed": 103, "mode": "grid_shuffle" },
+      "audio": { "piece_link": "/assets/attach.mp3" },
+      "mobile": {
+        "preferred_orientation": "portrait",
+        "orientation_hint": "本关建议竖屏体验"
+      }
+    },
+    {
+      "id": "xiangyu_04",
+      "title": "死而复生",
+      "description": "至诚感动花神，香玉再生。",
+      "story_text": "黄生守护牡丹旧址，日日浇灌。至诚感动花神，一年后牡丹重生，香玉也奇迹复活。",
+      "grid": { "rows": 9, "cols": 5 },
+      "source_image": "/assets/xiangyu/死而复生.png",
+      "shuffle": { "seed": 104, "mode": "grid_shuffle" },
+      "audio": { "piece_link": "/assets/attach.mp3" },
+      "mobile": {
+        "preferred_orientation": "portrait",
+        "orientation_hint": "本关建议竖屏体验"
+      }
+    },
+    {
+      "id": "xiangyu_05",
+      "title": "最后的陪伴",
+      "description": "三花并茂，传为佳话（高难挑战）。",
+      "story_text": "多年后黄生辞世，言魂归牡丹旁。其后树下新芽并生，三花并茂，终成佳话。",
+      "grid": { "rows": 8, "cols": 12 },
+      "source_image": "/assets/xiangyu/最后的陪伴.png",
+      "shuffle": { "seed": 105, "mode": "grid_shuffle" },
+      "audio": { "piece_link": "/assets/attach.mp3" },
+      "mobile": {
+        "preferred_orientation": "landscape",
+        "orientation_hint": "本关为超宽画卷，强烈建议横屏拼图"
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+.git
+.github
+.alma-snapshots
+.venv
+
+**/__pycache__
+**/*.pyc
+
+backend/node_modules
+web/node_modules
+web/dist
+
+backend/data/*.sqlite
+backend/data/*.sqlite-*
+backend/data/*.log

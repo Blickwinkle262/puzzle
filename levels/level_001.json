@@ -1,0 +1,24 @@
+{
+  "id": "level_001",
+  "title": "6x6 测试拼图",
+  "description": "拖拽交换位置，正确拼合会自动消缝并联动",
+  "grid": {
+    "rows": 6,
+    "cols": 6
+  },
+  "source_image": "materials/source/images/test.jpeg",
+  "background_music": null,
+  "time_limit_sec": 240,
+  "snap_tolerance_px": 20,
+  "shuffle": {
+    "seed": 42,
+    "mode": "grid_shuffle"
+  },
+  "rules": {
+    "snap_strategy": "lenient",
+    "magnet_strength": 0.35
+  },
+  "audio": {
+    "piece_link": "materials/source/music/attach.mp3"
+  }
+}

@@ -1,0 +1,24 @@
+# Local tooling
+.alma-snapshots/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# UV / Python
+.python-version
+
+# Runtime artifacts
+materials/processed/*
+!materials/processed/.gitkeep
+
+# Web frontend artifacts
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+
+# Backend artifacts
+backend/node_modules/
+backend/data/*.sqlite
+backend/data/*.sqlite-shm
+backend/data/*.sqlite-wal

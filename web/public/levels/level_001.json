@@ -1,0 +1,18 @@
+{
+  "id": "level_001_web",
+  "title": "6x6 测试拼图 (Web)",
+  "description": "点选一个图块(组)高亮，再点目标图块(组)交换并播放动画",
+  "grid": {
+    "rows": 6,
+    "cols": 6
+  },
+  "source_image": "/assets/test.jpeg",
+  "time_limit_sec": 240,
+  "shuffle": {
+    "seed": 42,
+    "mode": "grid_shuffle"
+  },
+  "audio": {
+    "piece_link": "/assets/attach.mp3"
+  }
+}

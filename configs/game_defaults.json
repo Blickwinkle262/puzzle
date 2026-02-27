@@ -1,0 +1,28 @@
+{
+  "time_limit_sec": 300,
+  "snap_tolerance_px": 18,
+  "background_image": "materials/source/images/background.jpg",
+  "rules": {
+    "snap_strategy": "strict",
+    "magnet_strength": 0.2
+  },
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "fps": 60
+  },
+  "ui": {
+    "show_timer": true,
+    "show_title": true,
+    "show_description": true,
+    "font_path": "materials/source/font/SourceHanSansSC-Regular.otf"
+  },
+  "audio": {
+    "piece_pick": "materials/source/sfx/default_pick.wav",
+    "piece_drop": "materials/source/sfx/default_drop.wav",
+    "piece_link": "materials/source/sfx/default_link.wav",
+    "piece_unlink": "materials/source/sfx/default_unlink.wav",
+    "win": "materials/source/sfx/default_win.wav",
+    "timeout": "materials/source/sfx/default_timeout.wav"
+  }
+}

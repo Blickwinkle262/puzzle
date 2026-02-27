@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "stories": [
+    {
+      "id": "xiangyu",
+      "title": "聊斋·香玉",
+      "description": "花妖现身、香玉之死、良师益友、死而复生、最后的陪伴",
+      "cover": "/content/stories/xiangyu/cover.png",
+      "manifest": "/content/stories/xiangyu/story.json",
+      "order": 1
+    },
+    {
+      "id": "shibian",
+      "title": "聊斋·尸变",
+      "description": "屏息凝视、致命冰冷、月夜追逐、古树躲猫猫、凝固死局",
+      "cover": "/content/stories/shibian/cover.png",
+      "manifest": "/content/stories/shibian/story.json",
+      "order": 2
+    }
+  ]
+}
