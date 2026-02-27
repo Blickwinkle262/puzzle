@@ -892,6 +892,7 @@ export function App(): JSX.Element {
             const progress = activeStory.level_progress[level.id];
             const completed = progress?.status === "completed";
             const disabled = Boolean(level.asset_missing);
+            const bestTimeText = formatBestTime(progress?.best_time_ms);
 
             return (
               <article className="level-card" key={level.id}>
@@ -906,6 +907,7 @@ export function App(): JSX.Element {
                       {disabled ? "资源缺失" : completed ? "已完成" : progress?.status === "in_progress" ? "进行中" : "未开始"}
                     </span>
                   </p>
+                  {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
                 </div>
                 <button
                   type="button"
@@ -939,6 +941,7 @@ export function App(): JSX.Element {
       levelIndex={playIndex}
       totalLevels={totalLevels}
       currentCompleted={Boolean(completedMap[currentLevel.id])}
+      currentBestTimeMs={activeStory.level_progress[currentLevel.id]?.best_time_ms}
       completedCount={completedCount}
       allCompleted={allCompleted}
       canPrev={playIndex > 0}
@@ -1011,4 +1014,23 @@ function replaceWithFallbackCover(event: SyntheticEvent<HTMLImageElement>): void
   if (event.currentTarget.src !== FALLBACK_COVER) {
     event.currentTarget.src = FALLBACK_COVER;
   }
+}
+
+function formatBestTime(value?: number): string {
+  if (!value || value <= 0) {
+    return "";
+  }
+
+  const totalMs = Math.floor(value);
+  const totalSec = Math.floor(totalMs / 1000);
+  const mm = Math.floor(totalSec / 60)
+    .toString()
+    .padStart(2, "0");
+  const ss = Math.floor(totalSec % 60)
+    .toString()
+    .padStart(2, "0");
+  const cs = Math.floor((totalMs % 1000) / 10)
+    .toString()
+    .padStart(2, "0");
+  return `${mm}:${ss}.${cs}`;
 }

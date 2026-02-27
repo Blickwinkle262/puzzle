@@ -15,6 +15,8 @@ import { useImageSize } from "../hooks/useImageSize";
 import { useWindowSize } from "../hooks/useWindowSize";
 
 const AUTO_NEXT_LEVEL_DELAY_MS = 1200;
+const CONTINUE_SECONDS = 60;
+const MAX_CONTINUE_COUNT = 1;
 
 type Orientation = "portrait" | "landscape";
 
@@ -35,6 +37,7 @@ type PuzzlePlayerProps = {
   onBackToStory: () => void;
   onRestartLevel: () => void;
   onLevelSolved: (levelId: string, elapsedMs: number | null) => void;
+  currentBestTimeMs?: number;
 };
 
 export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
@@ -55,6 +58,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     onBackToStory,
     onRestartLevel,
     onLevelSolved,
+    currentBestTimeMs,
   } = props;
 
   const { rows, cols } = level.grid;
@@ -76,6 +80,8 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   );
   const [remainingSec, setRemainingSec] = useState<number>(timeLimitSec);
   const [timedOut, setTimedOut] = useState(false);
+  const [continueUsedCount, setContinueUsedCount] = useState(0);
+  const [timeExtraSec, setTimeExtraSec] = useState(0);
 
   const windowSize = useWindowSize();
   const imageSize = useImageSize(level.source_image);
@@ -101,6 +107,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   const previewRafRef = useRef<number | null>(null);
   const pendingPreviewRef = useRef<{ dx: number; dy: number } | null>(null);
   const solvedReportedRef = useRef(false);
+  const levelStartAtMsRef = useRef<number>(Date.now());
   const dragRef = useRef<{ active: boolean; pointerId: number | null; startX: number; startY: number; moved: boolean }>({
     active: false,
     pointerId: null,
@@ -124,6 +131,9 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     solvedReportedRef.current = false;
     setRemainingSec(timeLimitSec);
     setTimedOut(false);
+    setContinueUsedCount(0);
+    setTimeExtraSec(0);
+    levelStartAtMsRef.current = Date.now();
 
     pendingPreviewRef.current = null;
     if (previewRafRef.current !== null) {
@@ -178,9 +188,21 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     }
 
     solvedReportedRef.current = true;
-    const elapsedMs = timedMode ? Math.max(0, (timeLimitSec - remainingSec) * 1000) : null;
+    const elapsedMs = timedMode ? Math.max(0, Date.now() - levelStartAtMsRef.current) : null;
     onLevelSolved(level.id, elapsedMs);
-  }, [level.id, onLevelSolved, solved, timedMode, timeLimitSec, remainingSec]);
+  }, [level.id, onLevelSolved, solved, timedMode]);
+
+  const handleContinue60s = (): void => {
+    if (!timedMode || solved || continueUsedCount >= MAX_CONTINUE_COUNT) {
+      return;
+    }
+    setRemainingSec((prev) => prev + CONTINUE_SECONDS);
+    setTimeExtraSec((prev) => prev + CONTINUE_SECONDS);
+    setTimedOut(false);
+    setContinueUsedCount((prev) => prev + 1);
+  };
+
+  const bestTimeText = currentBestTimeMs && currentBestTimeMs > 0 ? formatDurationMs(currentBestTimeMs) : null;
 
   useEffect(() => {
     if (!solved || !hasNextLevel) {
@@ -445,6 +467,8 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
 
         <div className="top-actions">
           {timedMode && <p className="timer">{formatClock(remainingSec)}</p>}
+          {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
+          {timeExtraSec > 0 && <p className="progress-inline">已续时 +{timeExtraSec}s</p>}
           <button type="button" className="jump-btn" onClick={onJumpUnfinished}>
             {allCompleted ? "全部完成，回到第一关" : "跳到未完成"}
           </button>
@@ -520,10 +544,26 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
         <div className="mask">
           <div className="mask-card">
             <div>时间到</div>
-            <div className="end-note">本关超时，试试重新挑战</div>
-            <button className="next-btn" type="button" onClick={onRestartLevel}>
-              重新开始
-            </button>
+            {continueUsedCount < MAX_CONTINUE_COUNT ? (
+              <>
+                <div className="end-note">可续时 {CONTINUE_SECONDS}s 再挑战一次</div>
+                <div className="toolbar-row">
+                  <button className="next-btn" type="button" onClick={handleContinue60s}>
+                    续时 {CONTINUE_SECONDS}s
+                  </button>
+                  <button className="nav-btn" type="button" onClick={onRestartLevel}>
+                    重新开始
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="end-note">本关超时，试试重新挑战</div>
+                <button className="next-btn" type="button" onClick={onRestartLevel}>
+                  重新开始
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -562,6 +602,21 @@ function formatClock(totalSeconds: number): string {
     .toString()
     .padStart(2, "0");
   return `${mm}:${ss}`;
+}
+
+function formatDurationMs(totalMs: number): string {
+  const safeMs = Math.max(0, Math.floor(totalMs));
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const mm = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const ss = Math.floor(totalSeconds % 60)
+    .toString()
+    .padStart(2, "0");
+  const cs = Math.floor((safeMs % 1000) / 10)
+    .toString()
+    .padStart(2, "0");
+  return `${mm}:${ss}.${cs}`;
 }
 
 function tileStyle(opts: {
