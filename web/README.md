@@ -59,6 +59,17 @@ npm run dev
 
 默认端口 `http://localhost:5173`，并通过 Vite 代理把 `/api` 转发到后端。
 
+## 内容索引约束
+
+- `web/public/content/stories/index.json` 是**强约束主索引**，仅索引内的故事会被加载。
+- 每个条目必须有唯一 `id` 和有效 `manifest`。
+- 索引内的 `manifest` 文件缺失或 JSON 非法会导致故事接口报错（故意 fail-fast，避免线上静默错配）。
+
+## 会话并发策略
+
+- 同一账号仅允许一个有效会话（单设备登录）。
+- 新设备登录会自动使旧设备会话失效。
+
 ## API 概览
 
 - `POST /api/auth/register`
@@ -71,7 +82,7 @@ npm run dev
 - `PUT /api/progress/levels/:levelId`
 
 前端通过 `fetch(..., { credentials: "include" })` 自动携带会话 cookie。
-前端在 `POST/PUT` 时会自动从 cookie 读取并携带 `x-csrf-token`。
+前端在 `POST/PUT` 时会自动从 cookie 读取并携带固定 CSRF 头 `x-csrf-token`。
 登录后前端会后台定时刷新会话并轮换 token，不会弹窗打断拼图流程。
 
 ## Docker 部署
