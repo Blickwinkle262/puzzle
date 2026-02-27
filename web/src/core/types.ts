@@ -75,6 +75,7 @@ export type ProgressStatus = "not_started" | "in_progress" | "completed";
 export type UserProfile = {
   id: number;
   username: string;
+  is_guest: boolean;
 };
 
 export type LevelProgress = {

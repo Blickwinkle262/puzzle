@@ -2,6 +2,8 @@
 set -euo pipefail
 
 npm --prefix backend install
+# better-sqlite3 is a native module; rebuild it for the current Node runtime
+npm --prefix backend rebuild better-sqlite3
 npm --prefix web install
 
 npm --prefix backend run dev &

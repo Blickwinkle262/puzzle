@@ -22,6 +22,11 @@ export type AuthRefreshResponse = {
   refreshed_at: string;
 };
 
+export type ForgotPasswordResponse = {
+  message: string;
+  reset_token?: string;
+};
+
 export type StoriesResponse = {
   stories: StoryListItem[];
 };
@@ -138,6 +143,46 @@ export function apiRegister(username: string, password: string): Promise<AuthRes
   return requestJson<AuthResponse>("/auth/register", {
     method: "POST",
     body: { username, password },
+  });
+}
+
+export function apiGuestLogin(): Promise<AuthResponse> {
+  return requestJson<AuthResponse>("/auth/guest-login", {
+    method: "POST",
+  });
+}
+
+export function apiGuestUpgrade(username: string, password: string): Promise<AuthResponse> {
+  return requestJson<AuthResponse>("/auth/guest-upgrade", {
+    method: "POST",
+    body: { username, password },
+  });
+}
+
+export function apiChangePassword(currentPassword: string, newPassword: string): Promise<AuthResponse> {
+  return requestJson<AuthResponse>("/auth/change-password", {
+    method: "POST",
+    body: {
+      current_password: currentPassword,
+      new_password: newPassword,
+    },
+  });
+}
+
+export function apiForgotPassword(username: string): Promise<ForgotPasswordResponse> {
+  return requestJson<ForgotPasswordResponse>("/auth/forgot-password", {
+    method: "POST",
+    body: { username },
+  });
+}
+
+export function apiResetPassword(token: string, newPassword: string): Promise<void> {
+  return requestJson<void>("/auth/reset-password", {
+    method: "POST",
+    body: {
+      token,
+      new_password: newPassword,
+    },
   });
 }
 

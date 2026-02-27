@@ -1,8 +1,13 @@
 import { CSSProperties, FormEvent, SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  apiChangePassword,
+  apiForgotPassword,
   apiGetMe,
+  apiGuestLogin,
+  apiGuestUpgrade,
   apiRefreshSession,
+  apiResetPassword,
   apiGetStoryDetail,
   apiListStories,
   apiLogin,
@@ -11,7 +16,7 @@ import {
   apiUpdateLevelProgress,
   ApiError,
 } from "./core/api";
-import { LevelProgress, StoryDetail, StoryListItem } from "./core/types";
+import { LevelProgress, StoryDetail, StoryListItem, UserProfile } from "./core/types";
 import { PuzzlePlayer } from "./components/PuzzlePlayer";
 
 const OPEN_BOOK_ANIMATION_MS = 380;
@@ -49,10 +54,21 @@ export function App(): JSX.Element {
   const [levelSeed, setLevelSeed] = useState(0);
   const [loadingText, setLoadingText] = useState<string>("正在恢复登录状态...");
   const [error, setError] = useState<string>("");
+  const [info, setInfo] = useState<string>("");
+  const [isGuest, setIsGuest] = useState(false);
 
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
+  const [forgotUsernameInput, setForgotUsernameInput] = useState("");
+  const [resetTokenInput, setResetTokenInput] = useState("");
+  const [resetPasswordInput, setResetPasswordInput] = useState("");
+  const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
+  const [upgradeUsernameInput, setUpgradeUsernameInput] = useState("");
+  const [upgradePasswordInput, setUpgradePasswordInput] = useState("");
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState("");
+  const [nextPasswordInput, setNextPasswordInput] = useState("");
   const [openingStoryId, setOpeningStoryId] = useState<string | null>(null);
   const [sharedCover, setSharedCover] = useState<SharedCoverTransition | null>(null);
   const [hideDetailCover, setHideDetailCover] = useState(false);
@@ -60,17 +76,36 @@ export function App(): JSX.Element {
   const storyCoverRefs = useRef<Record<string, HTMLImageElement | null>>({});
   const storyDetailCoverRef = useRef<HTMLImageElement | null>(null);
 
+  const applyAuthUser = useCallback((user: UserProfile) => {
+    setHasSession(true);
+    setUserName(user.username);
+    setIsGuest(Boolean(user.is_guest));
+  }, []);
+
+  const clearAccountPanels = useCallback(() => {
+    setShowGuestUpgrade(false);
+    setShowChangePassword(false);
+    setUpgradeUsernameInput("");
+    setUpgradePasswordInput("");
+    setCurrentPasswordInput("");
+    setNextPasswordInput("");
+  }, []);
+
   const clearSession = useCallback(() => {
     setHasSession(false);
     setUserName("");
+    setIsGuest(false);
+    setError("");
     setStories([]);
     setActiveStory(null);
     setScreen("auth");
     setLoadingText("");
+    setInfo("");
     setOpeningStoryId(null);
     setSharedCover(null);
     setHideDetailCover(false);
-  }, []);
+    clearAccountPanels();
+  }, [clearAccountPanels]);
 
   useEffect(() => {
     if (!sharedCover) {
@@ -101,7 +136,7 @@ export function App(): JSX.Element {
       try {
         const response = await apiRefreshSession();
         if (!cancelled) {
-          setUserName(response.user.username);
+          applyAuthUser(response.user);
         }
       } catch {
         // 忽略刷新异常，避免打断当前游戏流程。
@@ -139,24 +174,36 @@ export function App(): JSX.Element {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [hasSession]);
+  }, [applyAuthUser, hasSession]);
 
   const refreshStories = useCallback(async () => {
     const response = await apiListStories();
     setStories(response.stories);
   }, []);
 
+  const enterStoriesHub = useCallback(
+    async (user: UserProfile) => {
+      applyAuthUser(user);
+      const storiesResponse = await apiListStories();
+      setStories(storiesResponse.stories);
+      setScreen("stories");
+      clearAccountPanels();
+    },
+    [applyAuthUser, clearAccountPanels],
+  );
+
   const bootstrapSession = useCallback(
     async () => {
       setLoadingText("正在加载故事导航...");
       setError("");
+      setInfo("");
 
       try {
         const [meResponse, storiesResponse] = await Promise.all([apiGetMe(), apiListStories()]);
-        setHasSession(true);
-        setUserName(meResponse.user.username);
+        applyAuthUser(meResponse.user);
         setStories(storiesResponse.stories);
         setScreen("stories");
+        clearAccountPanels();
       } catch (err) {
         clearSession();
         if (err instanceof ApiError && err.status === 401) {
@@ -168,7 +215,7 @@ export function App(): JSX.Element {
         setLoadingText("");
       }
     },
-    [clearSession],
+    [applyAuthUser, clearAccountPanels, clearSession],
   );
 
   useEffect(() => {
@@ -187,6 +234,7 @@ export function App(): JSX.Element {
 
     setLoadingText(authMode === "login" ? "正在登录..." : "正在注册...");
     setError("");
+    setInfo("");
 
     try {
       const response =
@@ -194,15 +242,131 @@ export function App(): JSX.Element {
           ? await apiLogin(username, password)
           : await apiRegister(username, password);
 
-      setUserName(response.user.username);
-      setHasSession(true);
-      const storiesResponse = await apiListStories();
-      setStories(storiesResponse.stories);
-      setScreen("stories");
+      await enterStoriesHub(response.user);
       setPasswordInput("");
-      setLoadingText("");
     } catch (err) {
       setError(errorMessage(err));
+    } finally {
+      setLoadingText("");
+    }
+  };
+
+  const handleGuestLogin = async (): Promise<void> => {
+    setLoadingText("正在进入游客模式...");
+    setError("");
+    setInfo("");
+
+    try {
+      const response = await apiGuestLogin();
+      await enterStoriesHub(response.user);
+      setInfo("已进入游客模式，数据会保存到当前设备。完成后可升级为正式账号。");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoadingText("");
+    }
+  };
+
+  const handleGuestUpgradeSubmit = async (): Promise<void> => {
+    const username = upgradeUsernameInput.trim();
+    const password = upgradePasswordInput.trim();
+    if (!username || !password) {
+      setError("请输入升级账号的用户名和密码");
+      return;
+    }
+
+    setLoadingText("正在升级账号...");
+    setError("");
+    setInfo("");
+
+    try {
+      const response = await apiGuestUpgrade(username, password);
+      applyAuthUser(response.user);
+      setUpgradeUsernameInput("");
+      setUpgradePasswordInput("");
+      setShowGuestUpgrade(false);
+      setInfo("游客账号已升级为正式账号。");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoadingText("");
+    }
+  };
+
+  const handleChangePasswordSubmit = async (): Promise<void> => {
+    const currentPassword = currentPasswordInput.trim();
+    const nextPassword = nextPasswordInput.trim();
+    if (!currentPassword || !nextPassword) {
+      setError("请输入当前密码和新密码");
+      return;
+    }
+
+    setLoadingText("正在更新密码...");
+    setError("");
+    setInfo("");
+
+    try {
+      const response = await apiChangePassword(currentPassword, nextPassword);
+      applyAuthUser(response.user);
+      setCurrentPasswordInput("");
+      setNextPasswordInput("");
+      setShowChangePassword(false);
+      setInfo("密码已更新。为安全起见，会话已自动轮换。");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoadingText("");
+    }
+  };
+
+  const handleForgotPassword = async (): Promise<void> => {
+    const username = forgotUsernameInput.trim();
+    if (!username) {
+      setError("请输入要找回的用户名");
+      return;
+    }
+
+    setLoadingText("正在生成重置码...");
+    setError("");
+    setInfo("");
+
+    try {
+      const response = await apiForgotPassword(username);
+      if (response.reset_token) {
+        setResetTokenInput(response.reset_token);
+        setInfo(`${response.message}（开发环境重置码：${response.reset_token}）`);
+      } else {
+        setInfo(response.message);
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoadingText("");
+    }
+  };
+
+  const handleResetPassword = async (): Promise<void> => {
+    const token = resetTokenInput.trim();
+    const password = resetPasswordInput.trim();
+    if (!token || !password) {
+      setError("请输入重置码和新密码");
+      return;
+    }
+
+    setLoadingText("正在重置密码...");
+    setError("");
+    setInfo("");
+
+    try {
+      await apiResetPassword(token, password);
+      setAuthMode("login");
+      setPasswordInput("");
+      setResetTokenInput("");
+      setResetPasswordInput("");
+      setInfo("密码重置成功，请用新密码登录。");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
       setLoadingText("");
     }
   };
@@ -414,48 +578,104 @@ export function App(): JSX.Element {
   if (screen === "auth") {
     return (
       <div className="auth-shell">
-        <form className="auth-card" onSubmit={handleAuthSubmit}>
-          <h1>拼图故事</h1>
-          <p>登录后可保存关卡进度与故事线完成状态</p>
+        <div className="auth-stack">
+          <form className="auth-card" onSubmit={handleAuthSubmit}>
+            <h1>拼图故事</h1>
+            <p>登录后可保存关卡进度与故事线完成状态</p>
 
-          <label className="form-field">
-            用户名
-            <input
-              value={usernameInput}
-              onChange={(event) => setUsernameInput(event.currentTarget.value)}
-              placeholder="至少 3 个字符"
-              autoComplete="username"
-            />
-          </label>
+            <label className="form-field">
+              用户名
+              <input
+                value={usernameInput}
+                onChange={(event) => setUsernameInput(event.currentTarget.value)}
+                placeholder="至少 3 个字符"
+                autoComplete="username"
+              />
+            </label>
 
-          <label className="form-field">
-            密码
-            <input
-              type="password"
-              value={passwordInput}
-              onChange={(event) => setPasswordInput(event.currentTarget.value)}
-              placeholder="至少 6 位"
-              autoComplete={authMode === "login" ? "current-password" : "new-password"}
-            />
-          </label>
+            <label className="form-field">
+              密码
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(event) => setPasswordInput(event.currentTarget.value)}
+                placeholder="至少 6 位"
+                autoComplete={authMode === "login" ? "current-password" : "new-password"}
+              />
+            </label>
 
-          {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error">{error}</div>}
+            {info && <div className="form-info">{info}</div>}
 
-          <button className="primary-btn" type="submit">
-            {authMode === "login" ? "登录" : "注册并登录"}
-          </button>
+            <button className="primary-btn" type="submit">
+              {authMode === "login" ? "登录" : "注册并登录"}
+            </button>
 
-          <button
-            type="button"
-            className="link-btn"
-            onClick={() => {
-              setAuthMode((mode) => (mode === "login" ? "register" : "login"));
-              setError("");
-            }}
-          >
-            {authMode === "login" ? "没有账号？去注册" : "已有账号？去登录"}
-          </button>
-        </form>
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => {
+                setAuthMode((mode) => (mode === "login" ? "register" : "login"));
+                setError("");
+                setInfo("");
+              }}
+            >
+              {authMode === "login" ? "没有账号？去注册" : "已有账号？去登录"}
+            </button>
+
+            <button type="button" className="nav-btn" onClick={() => void handleGuestLogin()}>
+              游客试玩（可稍后升级账号）
+            </button>
+          </form>
+
+          <section className="auth-card auth-subcard">
+            <h2>忘记密码</h2>
+            <p>输入用户名生成重置码，然后设置新密码。</p>
+
+            <label className="form-field">
+              用户名
+              <input
+                value={forgotUsernameInput}
+                onChange={(event) => setForgotUsernameInput(event.currentTarget.value)}
+                placeholder="要找回的用户名"
+                autoComplete="username"
+              />
+            </label>
+
+            <div className="inline-actions">
+              <button type="button" className="nav-btn" onClick={() => void handleForgotPassword()}>
+                生成重置码
+              </button>
+            </div>
+
+            <label className="form-field">
+              重置码
+              <input
+                value={resetTokenInput}
+                onChange={(event) => setResetTokenInput(event.currentTarget.value)}
+                placeholder="输入重置码"
+                autoComplete="off"
+              />
+            </label>
+
+            <label className="form-field">
+              新密码
+              <input
+                type="password"
+                value={resetPasswordInput}
+                onChange={(event) => setResetPasswordInput(event.currentTarget.value)}
+                placeholder="至少 6 位"
+                autoComplete="new-password"
+              />
+            </label>
+
+            <div className="inline-actions">
+              <button type="button" className="primary-btn" onClick={() => void handleResetPassword()}>
+                提交新密码
+              </button>
+            </div>
+          </section>
+        </div>
       </div>
     );
   }
@@ -466,14 +686,116 @@ export function App(): JSX.Element {
         <header className="hub-header">
           <div>
             <h1>故事导航</h1>
-            <p>欢迎你，{userName || "玩家"}</p>
+            <p>
+              欢迎你，{userName || "玩家"}
+              {isGuest ? "（游客模式）" : ""}
+            </p>
           </div>
-          <button type="button" className="nav-btn" onClick={handleLogout}>
-            退出登录
-          </button>
+          <div className="toolbar-row">
+            {isGuest ? (
+              <button
+                type="button"
+                className="nav-btn"
+                onClick={() => {
+                  setShowGuestUpgrade((value) => !value);
+                  setShowChangePassword(false);
+                  setError("");
+                  setInfo("");
+                }}
+              >
+                升级账号
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="nav-btn"
+                onClick={() => {
+                  setShowChangePassword((value) => !value);
+                  setShowGuestUpgrade(false);
+                  setError("");
+                  setInfo("");
+                }}
+              >
+                修改密码
+              </button>
+            )}
+            <button type="button" className="nav-btn" onClick={handleLogout}>
+              退出登录
+            </button>
+          </div>
         </header>
 
         {error && <div className="banner-error">{error}</div>}
+        {info && <div className="banner-info">{info}</div>}
+
+        {isGuest && showGuestUpgrade && (
+          <section className="account-panel">
+            <h3>游客账号升级</h3>
+            <p>升级后可跨设备登录，并继续当前进度。</p>
+            <label className="form-field">
+              新用户名
+              <input
+                value={upgradeUsernameInput}
+                onChange={(event) => setUpgradeUsernameInput(event.currentTarget.value)}
+                placeholder="至少 3 个字符"
+                autoComplete="username"
+              />
+            </label>
+            <label className="form-field">
+              新密码
+              <input
+                type="password"
+                value={upgradePasswordInput}
+                onChange={(event) => setUpgradePasswordInput(event.currentTarget.value)}
+                placeholder="至少 6 位"
+                autoComplete="new-password"
+              />
+            </label>
+            <div className="inline-actions">
+              <button type="button" className="primary-btn" onClick={() => void handleGuestUpgradeSubmit()}>
+                完成升级
+              </button>
+              <button type="button" className="link-btn" onClick={() => setShowGuestUpgrade(false)}>
+                取消
+              </button>
+            </div>
+          </section>
+        )}
+
+        {!isGuest && showChangePassword && (
+          <section className="account-panel">
+            <h3>修改密码</h3>
+            <p>更新后当前会话会自动轮换，不影响正在玩的关卡。</p>
+            <label className="form-field">
+              当前密码
+              <input
+                type="password"
+                value={currentPasswordInput}
+                onChange={(event) => setCurrentPasswordInput(event.currentTarget.value)}
+                placeholder="输入当前密码"
+                autoComplete="current-password"
+              />
+            </label>
+            <label className="form-field">
+              新密码
+              <input
+                type="password"
+                value={nextPasswordInput}
+                onChange={(event) => setNextPasswordInput(event.currentTarget.value)}
+                placeholder="至少 6 位"
+                autoComplete="new-password"
+              />
+            </label>
+            <div className="inline-actions">
+              <button type="button" className="primary-btn" onClick={() => void handleChangePasswordSubmit()}>
+                更新密码
+              </button>
+              <button type="button" className="link-btn" onClick={() => setShowChangePassword(false)}>
+                取消
+              </button>
+            </div>
+          </section>
+        )}
 
         <main className={`story-grid ${openingStoryId ? "has-opening" : ""}`}>
           {stories.map((story) => (

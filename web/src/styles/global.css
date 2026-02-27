@@ -44,6 +44,11 @@ body,
   place-items: center;
 }
 
+.auth-stack {
+  display: grid;
+  gap: 12px;
+}
+
 .auth-card {
   width: min(440px, 92vw);
   padding: 20px;
@@ -63,6 +68,11 @@ body,
   margin: 0;
   color: #d2dbf4;
   line-height: 1.45;
+}
+
+.auth-subcard h2 {
+  margin: 0;
+  font-size: 20px;
 }
 
 .form-field {
@@ -88,6 +98,43 @@ body,
   border: 1px solid rgba(255, 138, 138, 0.3);
   border-radius: 8px;
   padding: 8px 10px;
+}
+
+.form-info,
+.banner-info {
+  color: #d7f7df;
+  background: rgba(24, 94, 52, 0.36);
+  border: 1px solid rgba(111, 222, 151, 0.3);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-panel {
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(14, 20, 34, 0.82);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.account-panel h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.account-panel p {
+  margin: 0;
+  color: #d2dbf4;
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 .primary-btn,

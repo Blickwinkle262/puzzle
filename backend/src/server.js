@@ -24,6 +24,7 @@ const COOKIE_SAME_SITE = resolveCookieSameSite(COOKIE_SECURE);
 const VALID_PROGRESS_STATUS = new Set(["not_started", "in_progress", "completed"]);
 const AUTH_RATE_LIMIT_WINDOW_MS = 1000 * 60 * 10;
 const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 20;
+const RESET_TOKEN_TTL_MS = 1000 * 60 * 30;
 
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -78,6 +79,7 @@ app.post("/api/auth/register", (req, res) => {
     user: {
       id: userId,
       username,
+      is_guest: false,
     },
   });
 });
@@ -96,7 +98,7 @@ app.post("/api/auth/login", (req, res) => {
   }
 
   const user = db
-    .prepare("SELECT id, username, password_hash FROM users WHERE username = ?")
+    .prepare("SELECT id, username, password_hash, is_guest FROM users WHERE username = ?")
     .get(username);
 
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
@@ -116,6 +118,37 @@ app.post("/api/auth/login", (req, res) => {
     user: {
       id: user.id,
       username: user.username,
+      is_guest: Boolean(user.is_guest),
+    },
+  });
+});
+
+app.post("/api/auth/guest-login", (req, res) => {
+  if (!passAuthRateLimit(req, "guest", res)) {
+    return;
+  }
+
+  const username = createGuestUsername();
+  const passwordHash = bcrypt.hashSync(randomToken(), 10);
+  const now = nowIso();
+
+  const result = db
+    .prepare(
+      "INSERT INTO users (username, password_hash, is_guest, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(username, passwordHash, 1, now, now);
+
+  const userId = Number(result.lastInsertRowid);
+  clearAuthRateLimit(req, "guest");
+  const session = createSession(userId);
+  runProgressMaintenanceForUser(userId);
+  setAuthCookies(res, session);
+
+  res.status(201).json({
+    user: {
+      id: userId,
+      username,
+      is_guest: true,
     },
   });
 });
@@ -163,9 +196,134 @@ app.post("/api/auth/refresh", requireAuth, requireCsrf, (req, res) => {
     user: {
       id: req.authUser.id,
       username: req.authUser.username,
+      is_guest: Boolean(req.authUser.is_guest),
     },
     refreshed_at: nowIso(),
   });
+});
+
+app.post("/api/auth/guest-upgrade", requireAuth, requireCsrf, (req, res) => {
+  if (!req.authUser.is_guest) {
+    res.status(400).json({ message: "当前账号不是游客模式" });
+    return;
+  }
+
+  const username = normalizeUsername(req.body?.username);
+  const password = normalizePassword(req.body?.password);
+
+  if (!username || !password) {
+    res.status(400).json({ message: "用户名和密码不能为空" });
+    return;
+  }
+
+  const exists = db.prepare("SELECT id FROM users WHERE username = ? AND id != ?").get(username, req.authUser.id);
+  if (exists) {
+    res.status(409).json({ message: "用户名已存在" });
+    return;
+  }
+
+  const passwordHash = bcrypt.hashSync(password, 10);
+  const now = nowIso();
+  db.prepare("UPDATE users SET username = ?, password_hash = ?, is_guest = 0, last_login_at = ? WHERE id = ?").run(
+    username,
+    passwordHash,
+    now,
+    req.authUser.id,
+  );
+
+  res.json({
+    user: {
+      id: req.authUser.id,
+      username,
+      is_guest: false,
+    },
+  });
+});
+
+app.post("/api/auth/change-password", requireAuth, requireCsrf, (req, res) => {
+  const currentPassword = typeof req.body?.current_password === "string" ? req.body.current_password : "";
+  const newPassword = normalizePassword(req.body?.new_password);
+
+  if (!currentPassword || !newPassword) {
+    res.status(400).json({ message: "当前密码和新密码不能为空" });
+    return;
+  }
+
+  const row = db.prepare("SELECT password_hash, username, is_guest FROM users WHERE id = ?").get(req.authUser.id);
+  if (!row || !bcrypt.compareSync(currentPassword, row.password_hash)) {
+    res.status(401).json({ message: "当前密码错误" });
+    return;
+  }
+
+  const passwordHash = bcrypt.hashSync(newPassword, 10);
+  const now = nowIso();
+  db.prepare("UPDATE users SET password_hash = ?, last_login_at = ? WHERE id = ?").run(passwordHash, now, req.authUser.id);
+
+  const session = createSession(req.authUser.id);
+  setAuthCookies(res, session);
+
+  res.json({
+    user: {
+      id: req.authUser.id,
+      username: row.username,
+      is_guest: Boolean(row.is_guest),
+    },
+  });
+});
+
+app.post("/api/auth/forgot-password", (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+
+  // Always return success shape to avoid username enumeration.
+  const safeResponse = {
+    message: "如果账号存在，重置方式已生成",
+  };
+
+  if (!username) {
+    res.status(200).json(safeResponse);
+    return;
+  }
+
+  const user = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
+  if (!user) {
+    res.status(200).json(safeResponse);
+    return;
+  }
+
+  const resetToken = issuePasswordResetToken(user.id, req);
+  if (process.env.NODE_ENV !== "production") {
+    res.status(200).json({
+      ...safeResponse,
+      reset_token: resetToken,
+    });
+    return;
+  }
+
+  res.status(200).json(safeResponse);
+});
+
+app.post("/api/auth/reset-password", (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  const newPassword = normalizePassword(req.body?.new_password);
+
+  if (!token || !newPassword) {
+    res.status(400).json({ message: "重置码和新密码不能为空" });
+    return;
+  }
+
+  const resetRow = consumePasswordResetToken(token);
+  if (!resetRow) {
+    res.status(400).json({ message: "重置码无效或已过期" });
+    return;
+  }
+
+  const passwordHash = bcrypt.hashSync(newPassword, 10);
+  const now = nowIso();
+  db.prepare("UPDATE users SET password_hash = ?, last_login_at = ? WHERE id = ?").run(passwordHash, now, resetRow.user_id);
+  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(resetRow.user_id);
+
+  clearAuthCookies(res);
+  res.status(204).end();
 });
 
 app.get("/api/auth/me", requireAuth, (req, res) => {
@@ -173,6 +331,7 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
     user: {
       id: req.authUser.id,
       username: req.authUser.username,
+      is_guest: Boolean(req.authUser.is_guest),
     },
   });
 });
@@ -376,6 +535,7 @@ function initializeSchema(database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      is_guest INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       last_login_at TEXT
     );
@@ -404,11 +564,24 @@ function initializeSchema(database) {
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      requested_ip TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_progress_user_story ON user_level_progress(user_id, story_id);
+    CREATE INDEX IF NOT EXISTS idx_password_reset_user_id ON password_reset_tokens(user_id);
+    CREATE INDEX IF NOT EXISTS idx_password_reset_expires_at ON password_reset_tokens(expires_at);
   `);
 
   ensureSessionColumns(database);
+  ensureUserColumns(database);
   enforceSingleSessionConstraint(database);
 }
 
@@ -422,6 +595,17 @@ function ensureSessionColumns(database) {
   }
 
   database.prepare("DELETE FROM sessions WHERE csrf_token IS NULL OR length(csrf_token) = 0").run();
+}
+
+function ensureUserColumns(database) {
+  const columns = database.prepare("PRAGMA table_info(users)").all();
+  const hasIsGuest = columns.some((column) => column.name === "is_guest");
+
+  if (!hasIsGuest) {
+    database.exec("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0");
+  }
+
+  database.prepare("UPDATE users SET is_guest = 0 WHERE is_guest IS NULL").run();
 }
 
 function enforceSingleSessionConstraint(database) {
@@ -485,7 +669,7 @@ function requireAuth(req, res, next) {
   const row = db
     .prepare(
       `
-      SELECT u.id, u.username, s.token, s.csrf_token
+      SELECT u.id, u.username, u.is_guest, s.token, s.csrf_token
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.token = ? AND s.expires_at > ?
@@ -501,6 +685,7 @@ function requireAuth(req, res, next) {
   req.authUser = {
     id: row.id,
     username: row.username,
+    is_guest: Boolean(row.is_guest),
   };
   req.authToken = row.token;
   req.authCsrfToken = row.csrf_token;
@@ -655,6 +840,63 @@ function rotateSession(oldToken) {
 
 function randomToken() {
   return crypto.randomBytes(24).toString("hex");
+}
+
+function createGuestUsername() {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = `guest_${randomToken().slice(0, 10)}`;
+    const exists = db.prepare("SELECT id FROM users WHERE username = ?").get(candidate);
+    if (!exists) {
+      return candidate;
+    }
+  }
+
+  return `guest_${Date.now()}`;
+}
+
+function issuePasswordResetToken(userId, req) {
+  pruneExpiredPasswordResetTokens();
+
+  const token = randomToken();
+  const tokenHash = hashTokenForStorage(token);
+  const now = nowIso();
+  const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
+  const requestedIp = typeof req.ip === "string" ? req.ip : "";
+
+  db.prepare("DELETE FROM password_reset_tokens WHERE user_id = ?").run(userId);
+  db.prepare(
+    "INSERT INTO password_reset_tokens (token_hash, user_id, created_at, expires_at, used_at, requested_ip) VALUES (?, ?, ?, ?, NULL, ?)",
+  ).run(tokenHash, userId, now, expiresAt, requestedIp);
+
+  return token;
+}
+
+function consumePasswordResetToken(token) {
+  pruneExpiredPasswordResetTokens();
+  const tokenHash = hashTokenForStorage(token);
+  const now = nowIso();
+
+  const row = db
+    .prepare(
+      "SELECT token_hash, user_id FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
+    )
+    .get(tokenHash, now);
+
+  if (!row) {
+    return null;
+  }
+
+  db.prepare("UPDATE password_reset_tokens SET used_at = ? WHERE token_hash = ?").run(now, tokenHash);
+  return row;
+}
+
+function pruneExpiredPasswordResetTokens() {
+  const now = nowIso();
+  db.prepare("DELETE FROM password_reset_tokens WHERE expires_at <= ? OR used_at IS NOT NULL").run(now);
+}
+
+function hashTokenForStorage(value) {
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
 
 function pruneExpiredSessions() {
