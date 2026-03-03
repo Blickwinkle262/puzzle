@@ -1,0 +1,27 @@
+Transform the source text into a Liaozhai-like puzzle campaign.
+Source title hint: {{SOURCE_NAME}}
+Need exactly {{CANDIDATE_SCENES}} scene candidates.
+Tone: mysterious but not graphic, avoid gore/horror details.
+
+Return JSON with keys:
+- story_title
+- story_subtitle
+- description
+- overview_title
+- overview_paragraphs
+- scenes
+
+scenes is an array of objects with keys:
+- title
+- scene_description
+- story_text
+- image_prompt
+- grid
+- time_limit_sec
+
+grid must include integer rows/cols and stay in [4..12].
+overview_paragraphs should have 3-6 short paragraphs.
+All text should be Chinese.
+
+Source text below:
+{{SOURCE_TEXT}}

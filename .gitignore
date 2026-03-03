@@ -1,6 +1,7 @@
 # Local tooling
 .alma-snapshots/
 .venv/
+.tmp/
 __pycache__/
 *.pyc
 .DS_Store
@@ -18,7 +19,37 @@ web/dist/
 web/*.tsbuildinfo
 
 # Backend artifacts
+backend/data/generated/
 backend/node_modules/
 backend/data/*.sqlite
 backend/data/*.sqlite-shm
 backend/data/*.sqlite-wal
+
+# Story generator pipeline runtime logs
+scripts/story_generator_pipeline/output/logs/
+
+# Book ingest runtime artifacts
+scripts/book_ingest/data/*.sqlite
+scripts/book_ingest/data/*.sqlite-shm
+scripts/book_ingest/data/*.sqlite-wal
+
+# Local env / backups
+.env.local
+.env.production
+.backup/
+
+# Story generator runtime outputs
+scripts/story_generator_pipeline/output/
+
+# Book ingest runtime outputs
+scripts/book_ingest/output/
+
+# Local source assets (not tracked)
+materials/source/books/
+materials/source/images/huapi/
+
+# Generated web story folders
+web/public/content/stories/story-*/
+
+# Accidental nested backend folder
+backend/backend/

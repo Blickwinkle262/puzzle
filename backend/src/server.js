@@ -11,7 +11,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "../..");
 const WEB_PUBLIC_DIR = path.join(ROOT_DIR, "web", "public");
-const STORIES_ROOT_DIR = path.join(WEB_PUBLIC_DIR, "content", "stories");
+const STORY_PUBLIC_PREFIX = "/content/stories";
+const DEFAULT_STORIES_ROOT_DIR = path.join(ROOT_DIR, "backend", "data", "generated", "content", "stories");
+const LEGACY_STORIES_ROOT_DIR = path.join(WEB_PUBLIC_DIR, "content", "stories");
+const STORIES_ROOT_DIR = resolveStoriesRootDir();
 const STORY_INDEX_FILE = path.join(STORIES_ROOT_DIR, "index.json");
 
 const DB_PATH = path.join(ROOT_DIR, "backend", "data", "puzzle.sqlite");
@@ -25,17 +28,67 @@ const VALID_PROGRESS_STATUS = new Set(["not_started", "in_progress", "completed"
 const AUTH_RATE_LIMIT_WINDOW_MS = 1000 * 60 * 10;
 const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 20;
 const RESET_TOKEN_TTL_MS = 1000 * 60 * 30;
+const GENERATED_ROOT_DIR = path.join(ROOT_DIR, "backend", "data", "generated");
+const STORY_GENERATOR_OUTPUT_ROOT = resolveProjectPath(
+  process.env.STORY_GENERATOR_OUTPUT_ROOT
+    || process.env.STORY_GENERATION_OUTPUT_ROOT,
+  path.join(GENERATED_ROOT_DIR, "content", "stories"),
+);
+const STORY_GENERATOR_INDEX_FILE = resolveProjectPath(
+  process.env.STORY_GENERATOR_INDEX_FILE
+    || process.env.STORY_GENERATION_INDEX_FILE,
+  path.join(STORY_GENERATOR_OUTPUT_ROOT, "index.json"),
+);
+const STORY_GENERATOR_LOG_DIR = resolveProjectPath(
+  process.env.STORY_GENERATOR_LOG_DIR
+    || process.env.STORY_GENERATION_LOG_DIR,
+  path.join(GENERATED_ROOT_DIR, "logs", "story_generator"),
+);
+const STORY_GENERATOR_SUMMARY_DIR = resolveProjectPath(
+  process.env.STORY_GENERATOR_SUMMARY_DIR
+    || process.env.STORY_GENERATION_SUMMARY_DIR,
+  path.join(GENERATED_ROOT_DIR, "summaries", "story_generator"),
+);
+const ADMIN_USERNAMES = new Set(
+  String(process.env.ADMIN_USERNAMES || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0),
+);
+const parsedMaxGenerationJobs = Number(process.env.MAX_GENERATION_JOBS || 100);
+const MAX_GENERATION_JOBS = Number.isFinite(parsedMaxGenerationJobs) && parsedMaxGenerationJobs > 0
+  ? Math.max(10, Math.floor(parsedMaxGenerationJobs))
+  : 100;
+const STORY_GENERATOR_WORKER_TOKEN = String(
+  process.env.STORY_GENERATOR_WORKER_TOKEN
+    || process.env.STORY_GENERATION_WORKER_TOKEN
+    || "",
+).trim();
+const BOOK_INGEST_DB_PATH = resolveProjectPath(
+  process.env.BOOK_INGEST_DB_PATH,
+  path.join(ROOT_DIR, "scripts", "book_ingest", "data", "books.sqlite"),
+);
+const RESOLVED_BOOK_INGEST_DB_PATH = BOOK_INGEST_DB_PATH;
+let booksDb = null;
 
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+fs.mkdirSync(STORIES_ROOT_DIR, { recursive: true });
+fs.mkdirSync(STORY_GENERATOR_LOG_DIR, { recursive: true });
+fs.mkdirSync(STORY_GENERATOR_SUMMARY_DIR, { recursive: true });
+ensureStoryIndexFile();
 
 const db = new Database(DB_PATH);
+db.pragma("journal_mode = WAL");
+db.pragma("busy_timeout = 5000");
 initializeSchema(db);
 
 const authRateBuckets = new Map();
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+
+app.use(STORY_PUBLIC_PREFIX, express.static(STORIES_ROOT_DIR));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, now: nowIso() });
@@ -336,6 +389,404 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   });
 });
 
+app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const targetDate = normalizeTargetDate(req.body?.target_date);
+  if (!targetDate) {
+    res.status(400).json({ message: "target_date 必须是 YYYY-MM-DD" });
+    return;
+  }
+
+  const runId = normalizeRunId(req.body?.run_id) || defaultGenerationRunId();
+  const chapterId = normalizePositiveInteger(req.body?.chapter_id);
+  if (req.body?.chapter_id !== undefined && !chapterId) {
+    res.status(400).json({ message: "chapter_id 必须是正整数" });
+    return;
+  }
+
+  const inputStoryFile = normalizeStoryFile(req.body?.story_file);
+  if (req.body?.story_file && !inputStoryFile) {
+    res.status(400).json({ message: "story_file 无效或不存在" });
+    return;
+  }
+
+  if (chapterId && inputStoryFile) {
+    res.status(400).json({ message: "chapter_id 与 story_file 只能二选一" });
+    return;
+  }
+
+  let storyFile = inputStoryFile;
+  let chapterSource = null;
+  if (chapterId) {
+    try {
+      chapterSource = materializeChapterTextToFile(chapterId, runId);
+      storyFile = chapterSource.story_file;
+    } catch (error) {
+      const message = asMessage(error, "读取章节失败");
+      const status = message.includes("不存在") ? 404 : 400;
+      res.status(status).json({ message });
+      return;
+    }
+  }
+
+  const requestedSceneCount = normalizePositiveInteger(req.body?.scene_count);
+  if (req.body?.scene_count !== undefined && (!requestedSceneCount || requestedSceneCount <= 5)) {
+    res.status(400).json({ message: "scene_count 必须是大于 5 的正整数" });
+    return;
+  }
+
+  let candidateScenes = normalizePositiveInteger(req.body?.candidate_scenes);
+  let minScenes = normalizePositiveInteger(req.body?.min_scenes);
+  let maxScenes = normalizePositiveInteger(req.body?.max_scenes);
+
+  if (requestedSceneCount) {
+    maxScenes = requestedSceneCount;
+    minScenes = Math.max(6, requestedSceneCount - 2);
+    candidateScenes = requestedSceneCount;
+  }
+
+  if (maxScenes && minScenes && maxScenes < minScenes) {
+    res.status(400).json({ message: "max_scenes 必须 >= min_scenes" });
+    return;
+  }
+
+  if (candidateScenes && maxScenes && candidateScenes < maxScenes) {
+    res.status(400).json({ message: "candidate_scenes 必须 >= max_scenes" });
+    return;
+  }
+
+  const dryRun = Boolean(req.body?.dry_run);
+  const logFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.log`);
+  const eventLogFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.events.jsonl`);
+  const summaryPath = path.join(STORY_GENERATOR_SUMMARY_DIR, `story_${targetDate}.json`);
+
+  const payload = {
+    run_id: runId,
+    target_date: targetDate,
+    story_file: storyFile || "",
+    dry_run: dryRun,
+    output_root: STORY_GENERATOR_OUTPUT_ROOT,
+    index_file: STORY_GENERATOR_INDEX_FILE,
+    summary_output_dir: STORY_GENERATOR_SUMMARY_DIR,
+    log_file: logFile,
+    event_log_file: eventLogFile,
+    story_id: normalizeShortText(req.body?.story_id) || "",
+    image_size: normalizeShortText(req.body?.image_size) || "",
+    scene_count: requestedSceneCount || null,
+    candidate_scenes: candidateScenes,
+    min_scenes: minScenes,
+    max_scenes: maxScenes,
+    concurrency: normalizePositiveInteger(req.body?.concurrency),
+    timeout_sec: normalizePositiveNumber(req.body?.timeout_sec),
+    poll_seconds: normalizePositiveNumber(req.body?.poll_seconds),
+    poll_attempts: normalizePositiveInteger(req.body?.poll_attempts),
+    chapter_id: chapterSource?.chapter_id || chapterId || null,
+    chapter_title: chapterSource?.chapter_title || "",
+    chapter_index: chapterSource?.chapter_index ?? null,
+    chapter_char_count: chapterSource?.char_count ?? null,
+    book_id: chapterSource?.book_id ?? null,
+    book_title: chapterSource?.book_title || "",
+  };
+
+  try {
+    enqueueGenerationJob({
+      runId,
+      requestedBy: req.authUser.username,
+      targetDate,
+      storyFile,
+      dryRun,
+      payload,
+      logFile,
+      eventLogFile,
+      summaryPath,
+    });
+  } catch (error) {
+    const message = asMessage(error, "创建生成任务失败");
+    if (message.includes("UNIQUE") || message.includes("run_id")) {
+      res.status(409).json({ message: `run_id 已存在: ${runId}` });
+      return;
+    }
+    res.status(500).json({ message });
+    return;
+  }
+
+  res.status(202).json({
+    ok: true,
+    run_id: runId,
+    status: "queued",
+    target_date: targetDate,
+    dry_run: dryRun,
+    log_file: logFile,
+    event_log_file: eventLogFile,
+    summary_path: summaryPath,
+    scene_count: maxScenes || null,
+    story_file: storyFile || "",
+    chapter: chapterSource
+      ? {
+          chapter_id: chapterSource.chapter_id,
+          chapter_index: chapterSource.chapter_index,
+          chapter_title: chapterSource.chapter_title,
+          char_count: chapterSource.char_count,
+          book_id: chapterSource.book_id,
+          book_title: chapterSource.book_title,
+        }
+      : null,
+  });
+});
+
+app.post("/api/internal/generation-jobs/claim", requireWorkerAuth, (_req, res) => {
+  try {
+    const job = claimGenerationJob();
+    res.json({ job });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "领取任务失败") });
+  }
+});
+
+app.post("/api/internal/generation-jobs/:runId/complete", requireWorkerAuth, (req, res) => {
+  const runId = String(req.params.runId || "").trim();
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不能为空" });
+    return;
+  }
+
+  const status = normalizeGenerationJobStatus(req.body?.status);
+  if (!status) {
+    res.status(400).json({ message: "status 必须是 succeeded/failed/cancelled" });
+    return;
+  }
+
+  const rawExitCode = req.body?.exit_code;
+  let exitCode = null;
+  if (rawExitCode !== undefined && rawExitCode !== null && String(rawExitCode).trim() !== "") {
+    const parsedExitCode = Number(rawExitCode);
+    if (!Number.isInteger(parsedExitCode)) {
+      res.status(400).json({ message: "exit_code 必须是整数或 null" });
+      return;
+    }
+    exitCode = parsedExitCode;
+  }
+
+  const errorMessage = normalizeErrorMessage(req.body?.error_message);
+
+  try {
+    const job = completeGenerationJobByRunId(runId, {
+      status,
+      exitCode,
+      errorMessage,
+    });
+    if (!job) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+    res.json({ job });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "更新任务状态失败") });
+  }
+});
+
+app.get("/api/admin/book-chapters", requireAuth, requireAdmin, (req, res) => {
+  try {
+    const booksDatabase = getBooksDbOrThrow();
+
+    const limit = Math.min(200, normalizePositiveInteger(req.query?.limit) || 50);
+    const offset = normalizeNonNegativeInteger(req.query?.offset, 0);
+    const minChars = normalizePositiveInteger(req.query?.min_chars);
+    const maxChars = normalizePositiveInteger(req.query?.max_chars);
+    const includeUsed = normalizeBoolean(req.query?.include_used);
+    const includeTocLike = normalizeBoolean(req.query?.include_toc_like);
+    const bookId = normalizePositiveInteger(req.query?.book_id);
+    const keyword = normalizeShortText(req.query?.keyword);
+    const bookTitle = normalizeShortText(req.query?.book_title);
+
+    const where = ["1 = 1"];
+    const params = [];
+
+    if (bookId) {
+      where.push("b.id = ?");
+      params.push(bookId);
+    } else if (bookTitle) {
+      where.push("b.title LIKE ?");
+      params.push(`%${bookTitle}%`);
+    }
+
+    if (minChars) {
+      where.push("c.char_count >= ?");
+      params.push(minChars);
+    }
+
+    if (maxChars) {
+      where.push("c.char_count <= ?");
+      params.push(maxChars);
+    }
+
+    if (keyword) {
+      where.push("c.chapter_title LIKE ?");
+      params.push(`%${keyword}%`);
+    }
+
+    if (!includeTocLike) {
+      where.push("COALESCE(json_extract(c.meta_json, '$.is_toc_like'), 0) = 0");
+    }
+
+    if (!includeUsed) {
+      where.push(
+        `NOT EXISTS (
+          SELECT 1
+          FROM chapter_usage su
+          WHERE su.chapter_id = c.id
+            AND su.usage_type = 'puzzle_story'
+            AND su.status = 'succeeded'
+        )`,
+      );
+    }
+
+    const whereClause = where.join(" AND ");
+
+    const totalRow = booksDatabase
+      .prepare(
+        `
+        SELECT COUNT(1) AS total
+        FROM chapters c
+        JOIN books b ON b.id = c.book_id
+        WHERE ${whereClause}
+      `,
+      )
+      .get(...params);
+
+    const rows = booksDatabase
+      .prepare(
+        `
+        SELECT c.id, c.book_id, b.title AS book_title, b.genre,
+               c.chapter_index, c.chapter_title, c.char_count, c.word_count,
+               c.used_count, c.last_used_at, c.meta_json,
+               SUBSTR(REPLACE(REPLACE(c.chapter_text, char(13), ' '), char(10), ' '), 1, 120) AS preview,
+               CASE WHEN EXISTS (
+                 SELECT 1
+                 FROM chapter_usage su
+                 WHERE su.chapter_id = c.id
+                   AND su.usage_type = 'puzzle_story'
+                   AND su.status = 'succeeded'
+               ) THEN 1 ELSE 0 END AS has_succeeded_story
+        FROM chapters c
+        JOIN books b ON b.id = c.book_id
+        WHERE ${whereClause}
+        ORDER BY c.used_count ASC, c.char_count DESC, c.chapter_index ASC
+        LIMIT ? OFFSET ?
+      `,
+      )
+      .all(...params, limit, offset);
+
+    const generatedByChapterId = getGeneratedChapterMap(rows.map((item) => Number(item.id)));
+
+    const books = booksDatabase
+      .prepare(
+        `
+        SELECT b.id, b.title, b.author, b.genre, b.source_format,
+               COUNT(c.id) AS chapter_count,
+               COALESCE(MIN(c.char_count), 0) AS min_char_count,
+               COALESCE(MAX(c.char_count), 0) AS max_char_count
+        FROM books b
+        LEFT JOIN chapters c ON c.book_id = b.id
+        GROUP BY b.id
+        ORDER BY b.updated_at DESC, b.id DESC
+      `,
+      )
+      .all();
+
+    res.json({
+      db_path: RESOLVED_BOOK_INGEST_DB_PATH,
+      total: Number(totalRow?.total || 0),
+      has_more: Number(totalRow?.total || 0) > offset + rows.length,
+      filters: {
+        limit,
+        offset,
+        min_chars: minChars || null,
+        max_chars: maxChars || null,
+        keyword,
+        include_used: includeUsed,
+        include_toc_like: includeTocLike,
+        book_id: bookId || null,
+        book_title: bookTitle,
+      },
+      books: books.map((item) => ({
+        id: Number(item.id),
+        title: String(item.title || ""),
+        author: String(item.author || ""),
+        genre: String(item.genre || ""),
+        source_format: String(item.source_format || ""),
+        chapter_count: Number(item.chapter_count || 0),
+        min_char_count: Number(item.min_char_count || 0),
+        max_char_count: Number(item.max_char_count || 0),
+      })),
+      chapters: rows.map((row) => {
+        const chapterId = Number(row.id);
+        const generatedMeta = generatedByChapterId.get(chapterId);
+        const hasSucceededStory = Boolean(row.has_succeeded_story) || Boolean(generatedMeta);
+
+        return {
+          id: chapterId,
+          book_id: Number(row.book_id),
+          book_title: String(row.book_title || ""),
+          genre: String(row.genre || ""),
+          chapter_index: Number(row.chapter_index),
+          chapter_title: String(row.chapter_title || ""),
+          char_count: Number(row.char_count || 0),
+          word_count: Number(row.word_count || 0),
+          used_count: Number(row.used_count || 0),
+          last_used_at: row.last_used_at || null,
+          preview: String(row.preview || ""),
+          has_succeeded_story: hasSucceededStory,
+          generated_story_id: generatedMeta?.story_id || null,
+          generated_run_id: generatedMeta?.run_id || null,
+          generated_at: generatedMeta?.generated_at || null,
+          meta_json: safeParseJsonObject(row.meta_json),
+        };
+      }),
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "读取章节列表失败") });
+  }
+});
+
+app.get("/api/admin/generate-story", requireAuth, requireAdmin, (req, res) => {
+  try {
+    const limit = normalizePositiveInteger(req.query?.limit) || 50;
+    const jobs = listGenerationJobs(Math.min(200, limit));
+    res.json({ jobs });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "读取任务列表失败") });
+  }
+});
+
+app.get("/api/admin/generate-story/:runId", requireAuth, requireAdmin, (req, res) => {
+  const runId = String(req.params.runId || "").trim();
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不能为空" });
+    return;
+  }
+
+  try {
+    const job = getGenerationJobByRunId(runId);
+    if (!job) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    const events = readRunEvents(job.event_log_file, runId, 30);
+    const logTail = readTailLines(job.log_file, 80);
+    const summary = readJsonSafe(job.summary_path);
+
+    res.json({
+      ...job,
+      events,
+      log_tail: logTail,
+      summary,
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "读取任务详情失败") });
+  }
+});
+
 app.get("/api/stories", requireAuth, (req, res) => {
   try {
     const stories = listStoriesForUser(req.authUser.id);
@@ -564,6 +1015,26 @@ function initializeSchema(database) {
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS generation_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+      requested_by TEXT NOT NULL,
+      target_date TEXT NOT NULL,
+      story_file TEXT,
+      dry_run INTEGER NOT NULL DEFAULT 0,
+      payload_json TEXT NOT NULL,
+      log_file TEXT NOT NULL,
+      event_log_file TEXT NOT NULL,
+      summary_path TEXT NOT NULL,
+      error_message TEXT,
+      exit_code INTEGER,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      ended_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS password_reset_tokens (
       token_hash TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -576,6 +1047,8 @@ function initializeSchema(database) {
 
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_progress_user_story ON user_level_progress(user_id, story_id);
+    CREATE INDEX IF NOT EXISTS idx_generation_jobs_status_created ON generation_jobs(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_generation_jobs_created ON generation_jobs(created_at);
     CREATE INDEX IF NOT EXISTS idx_password_reset_user_id ON password_reset_tokens(user_id);
     CREATE INDEX IF NOT EXISTS idx_password_reset_expires_at ON password_reset_tokens(expires_at);
   `);
@@ -583,6 +1056,7 @@ function initializeSchema(database) {
   ensureSessionColumns(database);
   ensureUserColumns(database);
   enforceSingleSessionConstraint(database);
+  markStaleGenerationJobsAsFailed(database);
 }
 
 
@@ -1166,7 +1640,7 @@ function normalizeAssetPath(manifestUrl, assetPath) {
 
   const baseDir = path.posix.dirname(manifestUrl);
   const joined = path.posix.normalize(path.posix.join(baseDir, cleanPath));
-  if (!joined.startsWith("/content/stories/")) {
+  if (!joined.startsWith(`${STORY_PUBLIC_PREFIX}/`)) {
     throw new Error(`资源路径越界: ${assetPath}`);
   }
 
@@ -1178,11 +1652,10 @@ function resolveManifestFsPath(manifestUrl) {
     throw new Error("manifest 不能为空");
   }
 
-  const normalizedUrl = manifestUrl.startsWith("/") ? manifestUrl : `/content/stories/${manifestUrl}`;
-  const fsPath = path.resolve(WEB_PUBLIC_DIR, normalizedUrl.slice(1));
-  const normalizedFsPath = path.normalize(fsPath);
+  const normalizedUrl = manifestUrl.startsWith("/") ? manifestUrl : `${STORY_PUBLIC_PREFIX}/${manifestUrl}`;
+  const normalizedFsPath = resolveStoryAssetFsPath(normalizedUrl);
 
-  if (!normalizedFsPath.startsWith(path.normalize(STORIES_ROOT_DIR))) {
+  if (!normalizedFsPath) {
     throw new Error("manifest 路径越界");
   }
 
@@ -1374,9 +1847,79 @@ function resolvePublicAssetFsPath(assetUrl) {
     return "";
   }
 
+  const storyAssetPath = resolveStoryAssetFsPath(value);
+  if (storyAssetPath) {
+    return storyAssetPath;
+  }
+
   const [cleanPath] = value.split(/[?#]/, 1);
   const normalized = path.normalize(path.resolve(WEB_PUBLIC_DIR, cleanPath.slice(1)));
   if (!normalized.startsWith(path.normalize(WEB_PUBLIC_DIR))) {
+    return "";
+  }
+
+  return normalized;
+}
+
+function resolveStoriesRootDir() {
+  const configuredRoot = String(process.env.STORY_CONTENT_ROOT || "").trim();
+  if (configuredRoot) {
+    return resolveProjectPath(configuredRoot);
+  }
+
+  return path.normalize(DEFAULT_STORIES_ROOT_DIR);
+}
+
+function resolveProjectPath(value, fallback = "") {
+  const raw = String(value || fallback || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const resolved = path.isAbsolute(raw) ? raw : path.resolve(ROOT_DIR, raw);
+  return path.normalize(resolved);
+}
+
+function ensureStoryIndexFile() {
+  if (fs.existsSync(STORY_INDEX_FILE)) {
+    return;
+  }
+
+  const normalizedStoriesRoot = path.normalize(STORIES_ROOT_DIR);
+  const normalizedLegacyRoot = path.normalize(LEGACY_STORIES_ROOT_DIR);
+  const legacyIndexPath = path.join(normalizedLegacyRoot, "index.json");
+
+  if (normalizedStoriesRoot !== normalizedLegacyRoot && fs.existsSync(legacyIndexPath)) {
+    fs.cpSync(normalizedLegacyRoot, normalizedStoriesRoot, { recursive: true });
+    if (fs.existsSync(STORY_INDEX_FILE)) {
+      return;
+    }
+  }
+
+  const payload = {
+    version: 1,
+    stories: [],
+  };
+  fs.writeFileSync(STORY_INDEX_FILE, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+}
+
+function resolveStoryAssetFsPath(assetUrl) {
+  if (typeof assetUrl !== "string" || !assetUrl.trim()) {
+    return "";
+  }
+
+  const [cleanPath] = assetUrl.trim().split(/[?#]/, 1);
+  if (!cleanPath.startsWith(`${STORY_PUBLIC_PREFIX}/`)) {
+    return "";
+  }
+
+  const relativePath = cleanPath.slice(`${STORY_PUBLIC_PREFIX}/`.length);
+  if (!relativePath) {
+    return "";
+  }
+
+  const normalized = path.normalize(path.resolve(STORIES_ROOT_DIR, relativePath));
+  if (!normalized.startsWith(path.normalize(STORIES_ROOT_DIR))) {
     return "";
   }
 
@@ -1425,6 +1968,229 @@ function resolveCookieSameSite(cookieSecure) {
 }
 
 
+function requireAdmin(req, res, next) {
+  if (!isAdminUser(req.authUser)) {
+    res.status(403).json({ message: "需要管理员权限" });
+    return;
+  }
+  next();
+}
+
+function requireWorkerAuth(req, res, next) {
+  if (!STORY_GENERATOR_WORKER_TOKEN) {
+    res.status(503).json({ message: "worker token 未配置" });
+    return;
+  }
+
+  const token = extractWorkerToken(req);
+  if (!token || token !== STORY_GENERATOR_WORKER_TOKEN) {
+    res.status(401).json({ message: "worker 鉴权失败" });
+    return;
+  }
+
+  next();
+}
+
+function extractWorkerToken(req) {
+  const headerToken = req.headers["x-worker-token"];
+  if (typeof headerToken === "string" && headerToken.trim()) {
+    return headerToken.trim();
+  }
+
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7).trim();
+    return token || "";
+  }
+
+  return "";
+}
+
+function isAdminUser(user) {
+  if (!user || !user.username) {
+    return false;
+  }
+
+  if (ADMIN_USERNAMES.size === 0) {
+    return process.env.NODE_ENV !== "production";
+  }
+
+  const normalized = String(user.username).trim().toLowerCase();
+  return ADMIN_USERNAMES.has(normalized);
+}
+
+function normalizeTargetDate(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return nowIso().slice(0, 10);
+  }
+
+  const text = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return "";
+  }
+
+  return text;
+}
+
+function normalizeRunId(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const cleaned = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.slice(0, 80);
+}
+
+function defaultGenerationRunId() {
+  const stamp = nowIso().replace(/[^0-9]/g, "").slice(0, 14);
+  return `admin_${stamp}_${randomToken().slice(0, 8)}`;
+}
+
+function normalizeStoryFile(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+
+  const resolved = path.isAbsolute(value) ? path.normalize(value) : path.normalize(path.resolve(ROOT_DIR, value));
+  if (!resolved.startsWith(path.normalize(ROOT_DIR))) {
+    return "";
+  }
+
+  try {
+    if (!fs.statSync(resolved).isFile()) {
+      return "";
+    }
+  } catch {
+    return "";
+  }
+
+  return resolved;
+}
+
+function normalizeShortText(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const cleaned = value.trim();
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.slice(0, 120);
+}
+
+function normalizePositiveNumber(value) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue <= 0) {
+    return undefined;
+  }
+
+  return numberValue;
+}
+
+function normalizeNonNegativeInteger(value, fallback = 0) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const numberValue = Number(value);
+  if (!Number.isInteger(numberValue) || numberValue < 0) {
+    return fallback;
+  }
+
+  return numberValue;
+}
+
+function normalizeBoolean(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function getBooksDbOrThrow() {
+  if (booksDb) {
+    return booksDb;
+  }
+
+  if (!fs.existsSync(RESOLVED_BOOK_INGEST_DB_PATH)) {
+    throw new Error(`未找到书籍数据库: ${RESOLVED_BOOK_INGEST_DB_PATH}`);
+  }
+
+  booksDb = new Database(RESOLVED_BOOK_INGEST_DB_PATH, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  return booksDb;
+}
+
+function materializeChapterTextToFile(chapterId, runId) {
+  const booksDatabase = getBooksDbOrThrow();
+  const row = booksDatabase
+    .prepare(
+      `
+      SELECT c.id, c.book_id, b.title AS book_title, c.chapter_index, c.chapter_title, c.chapter_text, c.char_count
+      FROM chapters c
+      JOIN books b ON b.id = c.book_id
+      WHERE c.id = ?
+    `,
+    )
+    .get(chapterId);
+
+  if (!row || typeof row.chapter_text !== "string" || !row.chapter_text.trim()) {
+    throw new Error(`chapter_id 不存在或正文为空: ${chapterId}`);
+  }
+
+  const chapterDir = path.join(STORY_GENERATOR_SUMMARY_DIR, "chapters");
+  fs.mkdirSync(chapterDir, { recursive: true });
+
+  const chapterFile = path.join(chapterDir, `${runId}_chapter_${Number(row.id)}.txt`);
+  fs.writeFileSync(chapterFile, row.chapter_text, "utf-8");
+
+  return {
+    chapter_id: Number(row.id),
+    book_id: Number(row.book_id),
+    book_title: String(row.book_title || ""),
+    chapter_index: Number(row.chapter_index),
+    chapter_title: String(row.chapter_title || ""),
+    char_count: Number(row.char_count || 0),
+    story_file: chapterFile,
+  };
+}
+
+function readRunEvents(eventLogFile, runId, limit = 20) {
+  try {
+    if (!eventLogFile || !fs.existsSync(eventLogFile)) {
+      return [];
+    }
+
+    const lines = fs.readFileSync(eventLogFile, "utf-8").split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const events = [];
+
+    for (const line of lines) {
+      try {
+        const payload = JSON.parse(line);
+        if (payload && payload.run_id === runId) {
+          events.push(payload);
+        }
+      } catch {
+        // ignore malformed lines
+      }
+    }
+
+    return events.slice(-Math.max(1, limit));
+  } catch {
+    return [];
+  }
+}
+
 function normalizeUsername(value) {
   if (typeof value !== "string") {
     return "";
@@ -1459,12 +2225,359 @@ function normalizePositiveInteger(value) {
   return numberValue;
 }
 
+function normalizeGenerationJobStatus(value) {
+  const text = String(value || "").trim();
+  const allowed = new Set(["succeeded", "failed", "cancelled"]);
+  return allowed.has(text) ? text : "";
+}
+
+function normalizeErrorMessage(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  const text = String(value).trim();
+  if (!text) {
+    return "";
+  }
+  return text.slice(0, 4000);
+}
+
 function normalizeAttempts(value, defaultValue) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
     return defaultValue;
   }
   return parsed;
+}
+
+function enqueueGenerationJob({ runId, requestedBy, targetDate, storyFile, dryRun, payload, logFile, eventLogFile, summaryPath }) {
+  const now = nowIso();
+  db.prepare(
+    `
+    INSERT INTO generation_jobs (
+      run_id, status, requested_by, target_date, story_file, dry_run,
+      payload_json, log_file, event_log_file, summary_path,
+      error_message, exit_code, created_at, started_at, ended_at, updated_at
+    ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, ?, NULL, NULL, ?)
+  `,
+  ).run(
+    runId,
+    requestedBy,
+    targetDate,
+    storyFile || "",
+    dryRun ? 1 : 0,
+    JSON.stringify(payload),
+    logFile,
+    eventLogFile,
+    summaryPath,
+    now,
+    now,
+  );
+
+  cleanupGenerationJobs();
+}
+
+function claimGenerationJob() {
+  const now = nowIso();
+  const tx = db.transaction(() => {
+    const row = db
+      .prepare(
+        `
+        SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
+               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               created_at, started_at, ended_at, updated_at
+        FROM generation_jobs
+        WHERE status = 'queued'
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      `,
+      )
+      .get();
+
+    if (!row) {
+      return null;
+    }
+
+    const updated = db
+      .prepare(
+        `
+        UPDATE generation_jobs
+        SET status = 'running',
+            started_at = COALESCE(started_at, ?),
+            error_message = '',
+            exit_code = NULL,
+            updated_at = ?
+        WHERE id = ? AND status = 'queued'
+      `,
+      )
+      .run(now, now, row.id);
+
+    if (updated.changes !== 1) {
+      return null;
+    }
+
+    const claimed = db
+      .prepare(
+        `
+        SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
+               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               created_at, started_at, ended_at, updated_at
+        FROM generation_jobs
+        WHERE id = ?
+      `,
+      )
+      .get(row.id);
+
+    return claimed ? serializeGenerationJobRow(claimed, true) : null;
+  });
+
+  return tx();
+}
+
+function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage }) {
+  const tx = db.transaction(() => {
+    const existing = db
+      .prepare(
+        `
+        SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
+               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               created_at, started_at, ended_at, updated_at
+        FROM generation_jobs
+        WHERE run_id = ?
+      `,
+      )
+      .get(runId);
+
+    if (!existing) {
+      return null;
+    }
+
+    if (existing.status === "queued" || existing.status === "running") {
+      const now = nowIso();
+      db.prepare(
+        `
+        UPDATE generation_jobs
+        SET status = ?,
+            exit_code = ?,
+            error_message = ?,
+            ended_at = COALESCE(ended_at, ?),
+            updated_at = ?
+        WHERE run_id = ?
+      `,
+      ).run(status, exitCode, errorMessage, now, now, runId);
+    }
+
+    const latest = db
+      .prepare(
+        `
+        SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
+               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               created_at, started_at, ended_at, updated_at
+        FROM generation_jobs
+        WHERE run_id = ?
+      `,
+      )
+      .get(runId);
+
+    return latest ? serializeGenerationJobRow(latest, true) : null;
+  });
+
+  return tx();
+}
+
+function listGenerationJobs(limit = 50) {
+  const rows = db
+    .prepare(
+      `
+      SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
+             log_file, event_log_file, summary_path, error_message, exit_code,
+             created_at, started_at, ended_at, updated_at
+      FROM generation_jobs
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `,
+    )
+    .all(limit);
+
+  return rows.map(serializeGenerationJobRow);
+}
+
+function getGenerationJobByRunId(runId) {
+  const row = db
+    .prepare(
+      `
+      SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
+             payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+             created_at, started_at, ended_at, updated_at
+      FROM generation_jobs
+      WHERE run_id = ?
+    `,
+    )
+    .get(runId);
+
+  if (!row) {
+    return null;
+  }
+
+  return serializeGenerationJobRow(row, true);
+}
+
+function serializeGenerationJobRow(row, includePayload = false) {
+  const payload = includePayload ? safeParseJsonObject(row.payload_json) : undefined;
+
+  return {
+    id: row.id === null || row.id === undefined ? null : Number(row.id),
+    run_id: row.run_id,
+    status: row.status,
+    requested_by: row.requested_by,
+    target_date: row.target_date,
+    story_file: row.story_file || "",
+    dry_run: Boolean(row.dry_run),
+    log_file: row.log_file,
+    event_log_file: row.event_log_file,
+    summary_path: row.summary_path,
+    error_message: row.error_message || "",
+    exit_code: row.exit_code === null || row.exit_code === undefined ? null : Number(row.exit_code),
+    created_at: row.created_at,
+    started_at: row.started_at || null,
+    ended_at: row.ended_at || null,
+    updated_at: row.updated_at,
+    ...(includePayload ? { payload } : {}),
+  };
+}
+
+function safeParseJsonObject(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readJsonSafe(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) {
+      return null;
+    }
+    const content = fs.readFileSync(filePath, "utf-8");
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+function getGeneratedChapterMap(chapterIds = []) {
+  const wanted = new Set(
+    chapterIds
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item > 0),
+  );
+  const map = new Map();
+  if (wanted.size === 0) {
+    return map;
+  }
+
+  const rows = db
+    .prepare(
+      `
+      SELECT run_id, payload_json, summary_path, created_at, ended_at
+      FROM generation_jobs
+      WHERE status = 'succeeded'
+      ORDER BY COALESCE(ended_at, created_at) DESC, id DESC
+    `,
+    )
+    .all();
+
+  for (const row of rows) {
+    const payload = safeParseJsonObject(row.payload_json);
+    const chapterId = Number(payload.chapter_id);
+    if (!Number.isInteger(chapterId) || chapterId <= 0) {
+      continue;
+    }
+    if (!wanted.has(chapterId) || map.has(chapterId)) {
+      continue;
+    }
+
+    const summary = readJsonSafe(row.summary_path);
+    const summaryStoryId = summary && typeof summary.story_id === "string" ? summary.story_id : "";
+    const payloadStoryId = typeof payload.story_id === "string" ? payload.story_id : "";
+
+    map.set(chapterId, {
+      run_id: String(row.run_id || ""),
+      story_id: summaryStoryId || payloadStoryId || "",
+      generated_at: row.ended_at || row.created_at || null,
+    });
+
+    if (map.size >= wanted.size) {
+      break;
+    }
+  }
+
+  return map;
+}
+
+function cleanupGenerationJobs() {
+  const rows = db.prepare("SELECT id FROM generation_jobs ORDER BY created_at DESC, id DESC").all();
+  if (rows.length <= MAX_GENERATION_JOBS) {
+    return;
+  }
+
+  const keepIds = new Set(rows.slice(0, MAX_GENERATION_JOBS).map((item) => Number(item.id)));
+  const removable = rows
+    .slice(MAX_GENERATION_JOBS)
+    .map((item) => Number(item.id))
+    .filter((id) => !keepIds.has(id));
+
+  if (removable.length === 0) {
+    return;
+  }
+
+  const placeholders = removable.map(() => "?").join(", ");
+  db.prepare(
+    `DELETE FROM generation_jobs
+      WHERE id IN (${placeholders})
+        AND status NOT IN ('queued', 'running')`,
+  ).run(...removable);
+}
+
+function markStaleGenerationJobsAsFailed(database) {
+  const now = nowIso();
+  database.prepare(
+    `
+    UPDATE generation_jobs
+    SET status = 'failed',
+        error_message = CASE
+          WHEN error_message IS NULL OR length(trim(error_message)) = 0 THEN 'worker interrupted before completion'
+          ELSE error_message
+        END,
+        ended_at = COALESCE(ended_at, ?),
+        updated_at = ?
+    WHERE status = 'running'
+  `,
+  ).run(now, now);
+}
+
+function readTailLines(filePath, limit = 80) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) {
+      return [];
+    }
+
+    const lines = fs
+      .readFileSync(filePath, "utf-8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    return lines.slice(-Math.max(1, limit));
+  } catch {
+    return [];
+  }
 }
 
 function asMessage(error, fallback) {

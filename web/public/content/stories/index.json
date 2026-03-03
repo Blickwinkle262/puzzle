@@ -24,6 +24,14 @@
       "cover": "/content/stories/huapi/cover.png",
       "manifest": "/content/stories/huapi/story.json",
       "order": 3
+    },
+    {
+      "id": "story-20260303-d53a63",
+      "title": "雨巷幽影：一场避雨，一段孽缘，三世难偿的誓言",
+      "description": "晋阳南氏子弟避雨农家，邂逅清丽少女，情愫暗生。然富贵轻诺，负心背誓，终引幽魂索命，因果轮回，非人力可逃。",
+      "cover": "/content/stories/story-20260303-d53a63/cover.png",
+      "manifest": "/content/stories/story-20260303-d53a63/story.json",
+      "order": 4
     }
   ]
 }

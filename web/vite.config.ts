@@ -9,6 +9,10 @@ export default defineConfig({
         target: "http://localhost:8787",
         changeOrigin: true,
       },
+      "/content/stories": {
+        target: "http://localhost:8787",
+        changeOrigin: true,
+      },
     },
   },
 });

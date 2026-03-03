@@ -662,3 +662,127 @@ body,
     align-items: flex-start;
   }
 }
+
+.form-field select {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(9, 12, 22, 0.84);
+  color: #f5f7ff;
+  padding: 10px;
+  font-size: 15px;
+}
+
+.admin-panel {
+  margin-bottom: 14px;
+  gap: 12px;
+}
+
+.admin-filters {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.admin-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #d8def2;
+}
+
+.admin-chapter-table {
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.admin-chapter-table table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.admin-chapter-table th,
+.admin-chapter-table td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 8px;
+  text-align: left;
+  font-size: 13px;
+  vertical-align: top;
+}
+
+.admin-chapter-table tr.is-selected {
+  background: rgba(67, 146, 108, 0.24);
+}
+
+.admin-chapter-table tr.is-generated {
+  background: rgba(126, 129, 151, 0.14);
+  color: #bfc6d8;
+}
+
+.admin-run-box,
+.admin-progress,
+.admin-recent-jobs {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(11, 16, 30, 0.7);
+  padding: 10px;
+}
+
+.admin-progress h4,
+.admin-recent-jobs h4 {
+  margin: 0 0 8px;
+}
+
+.admin-progress-bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.admin-progress-bar > div {
+  height: 100%;
+  background: linear-gradient(90deg, #3fd68b, #6fe5ff);
+  transition: width 220ms ease;
+}
+
+.admin-log-tail {
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #d9f6e4;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.admin-recent-jobs ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.admin-recent-jobs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+
+.admin-open-story-btn {
+  margin-left: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+}

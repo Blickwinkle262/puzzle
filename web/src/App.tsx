@@ -6,6 +6,7 @@ import {
   apiGetMe,
   apiGuestLogin,
   apiGuestUpgrade,
+  apiListAdminGenerationJobs,
   apiRefreshSession,
   apiResetPassword,
   apiGetStoryDetail,
@@ -17,6 +18,7 @@ import {
   ApiError,
 } from "./core/api";
 import { LevelProgress, StoryDetail, StoryListItem, UserProfile } from "./core/types";
+import { AdminStoryGenerator } from "./components/AdminStoryGenerator";
 import { PuzzlePlayer } from "./components/PuzzlePlayer";
 
 const OPEN_BOOK_ANIMATION_MS = 380;
@@ -56,6 +58,8 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string>("");
   const [info, setInfo] = useState<string>("");
   const [isGuest, setIsGuest] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminGenerator, setShowAdminGenerator] = useState(false);
 
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [usernameInput, setUsernameInput] = useState("");
@@ -95,6 +99,8 @@ export function App(): JSX.Element {
     setHasSession(false);
     setUserName("");
     setIsGuest(false);
+    setIsAdmin(false);
+    setShowAdminGenerator(false);
     setError("");
     setStories([]);
     setActiveStory(null);
@@ -181,6 +187,55 @@ export function App(): JSX.Element {
     setStories(response.stories);
   }, []);
 
+  const probeAdminAccess = useCallback(async () => {
+    try {
+      await apiListAdminGenerationJobs(1);
+      setIsAdmin(true);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        setIsAdmin(false);
+        setShowAdminGenerator(false);
+        return;
+      }
+      setIsAdmin(false);
+    }
+  }, []);
+
+  const handleAdminGenerated = useCallback(
+    async (storyId: string) => {
+      await refreshStories();
+      setScreen("stories");
+      setInfo(storyId ? `新故事已生成：${storyId}` : "新故事已生成，故事首页已刷新");
+      setError("");
+    },
+    [refreshStories],
+  );
+
+  const handleOpenStoryFromAdmin = useCallback(async (storyId: string) => {
+    const targetId = storyId.trim();
+    if (!targetId) {
+      setError("story_id 为空，无法打开");
+      return;
+    }
+
+    setLoadingText("正在打开已生成故事...");
+    setError("");
+    setInfo("");
+
+    try {
+      const response = await apiGetStoryDetail(targetId);
+      setActiveStory(response.story);
+      setPlayIndex(0);
+      setLevelSeed((value) => value + 1);
+      setScreen("story");
+      setShowAdminGenerator(false);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoadingText("");
+    }
+  }, []);
+
   const enterStoriesHub = useCallback(
     async (user: UserProfile) => {
       applyAuthUser(user);
@@ -188,8 +243,9 @@ export function App(): JSX.Element {
       setStories(storiesResponse.stories);
       setScreen("stories");
       clearAccountPanels();
+      await probeAdminAccess();
     },
-    [applyAuthUser, clearAccountPanels],
+    [applyAuthUser, clearAccountPanels, probeAdminAccess],
   );
 
   const bootstrapSession = useCallback(
@@ -204,6 +260,7 @@ export function App(): JSX.Element {
         setStories(storiesResponse.stories);
         setScreen("stories");
         clearAccountPanels();
+        await probeAdminAccess();
       } catch (err) {
         clearSession();
         if (err instanceof ApiError && err.status === 401) {
@@ -215,7 +272,7 @@ export function App(): JSX.Element {
         setLoadingText("");
       }
     },
-    [applyAuthUser, clearAccountPanels, clearSession],
+    [applyAuthUser, clearAccountPanels, clearSession, probeAdminAccess],
   );
 
   useEffect(() => {
@@ -719,6 +776,19 @@ export function App(): JSX.Element {
                 修改密码
               </button>
             )}
+            {isAdmin && (
+              <button
+                type="button"
+                className="nav-btn"
+                onClick={() => {
+                  setShowAdminGenerator((value) => !value);
+                  setError("");
+                  setInfo("");
+                }}
+              >
+                {showAdminGenerator ? "收起章节生成" : "章节生成"}
+              </button>
+            )}
             <button type="button" className="nav-btn" onClick={handleLogout}>
               退出登录
             </button>
@@ -727,6 +797,15 @@ export function App(): JSX.Element {
 
         {error && <div className="banner-error">{error}</div>}
         {info && <div className="banner-info">{info}</div>}
+
+        {isAdmin && showAdminGenerator && (
+          <AdminStoryGenerator
+            visible={showAdminGenerator}
+            onClose={() => setShowAdminGenerator(false)}
+            onGenerated={handleAdminGenerated}
+            onOpenStory={handleOpenStoryFromAdmin}
+          />
+        )}
 
         {isGuest && showGuestUpgrade && (
           <section className="account-panel">

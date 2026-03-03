@@ -113,3 +113,112 @@ export type StoryDetail = {
   levels: LevelConfig[];
   level_progress: Record<string, LevelProgress>;
 };
+
+
+export type AdminBookInfo = {
+  id: number;
+  title: string;
+  author: string;
+  genre: string;
+  source_format: string;
+  chapter_count: number;
+  min_char_count: number;
+  max_char_count: number;
+};
+
+export type AdminChapterSummary = {
+  id: number;
+  book_id: number;
+  book_title: string;
+  genre: string;
+  chapter_index: number;
+  chapter_title: string;
+  char_count: number;
+  word_count: number;
+  used_count: number;
+  last_used_at: string | null;
+  preview: string;
+  has_succeeded_story: boolean;
+  generated_story_id?: string | null;
+  generated_run_id?: string | null;
+  generated_at?: string | null;
+  meta_json: Record<string, unknown>;
+};
+
+export type AdminBookChaptersResponse = {
+  db_path: string;
+  total: number;
+  has_more: boolean;
+  filters: {
+    limit: number;
+    offset: number;
+    min_chars: number | null;
+    max_chars: number | null;
+    keyword: string;
+    include_used: boolean;
+    include_toc_like: boolean;
+    book_id: number | null;
+    book_title: string;
+  };
+  books: AdminBookInfo[];
+  chapters: AdminChapterSummary[];
+};
+
+export type AdminGenerationJob = {
+  run_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  requested_by: string;
+  target_date: string;
+  story_file: string;
+  dry_run: boolean;
+  log_file: string;
+  event_log_file: string;
+  summary_path: string;
+  error_message: string;
+  exit_code: number | null;
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+  updated_at: string;
+};
+
+export type AdminGenerationEvent = {
+  ts?: string;
+  event?: string;
+  run_id?: string;
+  level?: string;
+  message?: string;
+  progress?: number;
+  completed?: number;
+  total?: number;
+  story_id?: string;
+  [key: string]: unknown;
+};
+
+export type AdminGenerationJobDetail = AdminGenerationJob & {
+  payload?: Record<string, unknown>;
+  events: AdminGenerationEvent[];
+  log_tail: string[];
+  summary?: Record<string, unknown> | null;
+};
+
+export type AdminGenerationCreateResponse = {
+  ok: boolean;
+  run_id: string;
+  status: "queued";
+  target_date: string;
+  dry_run: boolean;
+  log_file: string;
+  event_log_file: string;
+  summary_path: string;
+  scene_count: number | null;
+  story_file: string;
+  chapter: {
+    chapter_id: number;
+    chapter_index: number;
+    chapter_title: string;
+    char_count: number;
+    book_id: number;
+    book_title: string;
+  } | null;
+};

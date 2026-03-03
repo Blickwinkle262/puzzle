@@ -1,26 +1,26 @@
 services:
-  backend:
+  node-app:
     build:
       context: .
       dockerfile: backend/Dockerfile
     environment:
       NODE_ENV: production
       PORT: 8787
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
       COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-Lax}
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
       STORY_CONTENT_ROOT: ${STORY_CONTENT_ROOT:-/app/backend/data/generated/content/stories}
-      ADMIN_USERNAMES: ${ADMIN_USERNAMES:-}
+      ADMIN_USERNAMES: ${ADMIN_USERNAMES:-admin}
       MAX_GENERATION_JOBS: ${MAX_GENERATION_JOBS:-100}
-      STORY_GENERATOR_WORKER_TOKEN: ${STORY_GENERATOR_WORKER_TOKEN:-dev-worker-token}
+      STORY_GENERATOR_WORKER_TOKEN: ${STORY_GENERATOR_WORKER_TOKEN:-change-me}
       STORY_GENERATOR_OUTPUT_ROOT: ${STORY_GENERATOR_OUTPUT_ROOT:-/app/backend/data/generated/content/stories}
       STORY_GENERATOR_INDEX_FILE: ${STORY_GENERATOR_INDEX_FILE:-/app/backend/data/generated/content/stories/index.json}
       STORY_GENERATOR_LOG_DIR: ${STORY_GENERATOR_LOG_DIR:-/app/backend/data/generated/logs/story_generator}
       STORY_GENERATOR_SUMMARY_DIR: ${STORY_GENERATOR_SUMMARY_DIR:-/app/backend/data/generated/summaries/story_generator}
-      BOOK_INGEST_DB_PATH: ${BOOK_INGEST_DB_PATH:-/app/book_ingest_data/books.sqlite}
+      BOOK_INGEST_DB_PATH: ${BOOK_INGEST_DB_PATH:-/app/backend/data/books/books.sqlite}
     volumes:
-      - sqlite_data:/app/backend/data
-      - ./scripts/book_ingest/data:/app/book_ingest_data:ro
+      - puzzle_data:/app/backend/data
+      - ./scripts/book_ingest/data:/app/backend/data/books
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -28,26 +28,30 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    networks:
+      default:
+        aliases:
+          - backend
 
-  worker:
+  story-worker:
     build:
       context: .
       dockerfile: deploy/worker/Dockerfile
     environment:
       AIHUBMIX_API_KEY: ${AIHUBMIX_API_KEY:-}
       STORY_GENERATOR_BACKEND_URL: ${STORY_GENERATOR_BACKEND_URL:-http://backend:8787}
-      STORY_GENERATOR_WORKER_TOKEN: ${STORY_GENERATOR_WORKER_TOKEN:-dev-worker-token}
+      STORY_GENERATOR_WORKER_TOKEN: ${STORY_GENERATOR_WORKER_TOKEN:-change-me}
       STORY_GENERATOR_QUEUE_POLL_SECONDS: ${STORY_GENERATOR_QUEUE_POLL_SECONDS:-2}
       STORY_GENERATOR_OUTPUT_ROOT: ${STORY_GENERATOR_OUTPUT_ROOT:-/app/backend/data/generated/content/stories}
       STORY_GENERATOR_INDEX_FILE: ${STORY_GENERATOR_INDEX_FILE:-/app/backend/data/generated/content/stories/index.json}
       STORY_GENERATOR_LOG_DIR: ${STORY_GENERATOR_LOG_DIR:-/app/backend/data/generated/logs/story_generator}
       STORY_GENERATOR_SUMMARY_DIR: ${STORY_GENERATOR_SUMMARY_DIR:-/app/backend/data/generated/summaries/story_generator}
-      BOOK_INGEST_DB_PATH: ${BOOK_INGEST_DB_PATH:-/app/book_ingest_data/books.sqlite}
+      BOOK_INGEST_DB_PATH: ${BOOK_INGEST_DB_PATH:-/app/backend/data/books/books.sqlite}
     volumes:
-      - sqlite_data:/app/backend/data
-      - ./scripts/book_ingest/data:/app/book_ingest_data
+      - puzzle_data:/app/backend/data
+      - ./scripts/book_ingest/data:/app/backend/data/books
     depends_on:
-      backend:
+      node-app:
         condition: service_healthy
     restart: unless-stopped
 
@@ -58,9 +62,9 @@ services:
     ports:
       - ${WEB_PORT:-8080}:80
     depends_on:
-      backend:
+      node-app:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  sqlite_data:
+  puzzle_data:

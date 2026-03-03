@@ -1,4 +1,8 @@
 import {
+  AdminBookChaptersResponse,
+  AdminGenerationCreateResponse,
+  AdminGenerationJob,
+  AdminGenerationJobDetail,
   LevelProgress,
   StoryDetail,
   StoryListItem,
@@ -132,6 +136,18 @@ function readCookie(name: string): string {
   return "";
 }
 
+function buildQueryString(params: Record<string, string | number | boolean | undefined | null>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
 export function apiLogin(username: string, password: string): Promise<AuthResponse> {
   return requestJson<AuthResponse>("/auth/login", {
     method: "POST",
@@ -218,6 +234,58 @@ export function apiUpdateLevelProgress(
     method: "PUT",
     body: payload,
   });
+}
+
+
+export type AdminBookChaptersQuery = {
+  book_id?: number;
+  book_title?: string;
+  min_chars?: number;
+  max_chars?: number;
+  keyword?: string;
+  include_used?: boolean;
+  include_toc_like?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
+export type AdminGenerateStoryPayload = {
+  target_date?: string;
+  run_id?: string;
+  chapter_id?: number;
+  story_file?: string;
+  dry_run?: boolean;
+  story_id?: string;
+  image_size?: string;
+  scene_count?: number;
+  candidate_scenes?: number;
+  min_scenes?: number;
+  max_scenes?: number;
+  concurrency?: number;
+  timeout_sec?: number;
+  poll_seconds?: number;
+  poll_attempts?: number;
+};
+
+export function apiListAdminBookChapters(query: AdminBookChaptersQuery = {}): Promise<AdminBookChaptersResponse> {
+  const qs = buildQueryString(query);
+  return requestJson<AdminBookChaptersResponse>(`/admin/book-chapters${qs}`);
+}
+
+export function apiCreateAdminGenerationJob(payload: AdminGenerateStoryPayload): Promise<AdminGenerationCreateResponse> {
+  return requestJson<AdminGenerationCreateResponse>("/admin/generate-story", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiListAdminGenerationJobs(limit = 50): Promise<{ jobs: AdminGenerationJob[] }> {
+  const qs = buildQueryString({ limit });
+  return requestJson<{ jobs: AdminGenerationJob[] }>(`/admin/generate-story${qs}`);
+}
+
+export function apiGetAdminGenerationJob(runId: string): Promise<AdminGenerationJobDetail> {
+  return requestJson<AdminGenerationJobDetail>(`/admin/generate-story/${encodeURIComponent(runId)}`);
 }
 
 export { ApiError };
