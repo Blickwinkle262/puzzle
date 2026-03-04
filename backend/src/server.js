@@ -66,6 +66,18 @@ const STORY_GENERATOR_WORKER_TOKEN = String(
     || process.env.STORY_GENERATION_WORKER_TOKEN
     || "",
 ).trim();
+const DEFAULT_TIMER_POLICY = Object.freeze({
+  base_seconds: 45,
+  per_piece_seconds: 4,
+  min_seconds: 60,
+  max_seconds: 600,
+  difficulty_factor: {
+    easy: 1.2,
+    normal: 1.0,
+    hard: 0.85,
+    nightmare: 0.7,
+  },
+});
 const BOOK_INGEST_DB_PATH = resolveProjectPath(
   process.env.BOOK_INGEST_DB_PATH,
   path.join(ROOT_DIR, "scripts", "book_ingest", "data", "books.sqlite"),
@@ -1556,9 +1568,13 @@ function loadStoryById(storyId, catalog) {
 
   const manifestPath = resolveManifestFsPath(entry.manifest);
   const payload = readJson(manifestPath);
+  const levelOverrideMap = getLevelOverrideMap(entry.id);
+  const timerPolicy = loadTimerPolicy();
 
   const levelsRaw = Array.isArray(payload.levels) ? payload.levels : [];
-  const levels = levelsRaw.map((level, index) => normalizeLevel(entry.manifest, level, index));
+  const levels = levelsRaw.map(
+    (level, index) => normalizeLevel(entry.manifest, level, index, levelOverrideMap, timerPolicy),
+  );
 
   if (levels.length === 0) {
     throw new Error(`故事 ${storyId} 没有可用关卡`);
@@ -1584,7 +1600,7 @@ function loadStoryById(storyId, catalog) {
   };
 }
 
-function normalizeLevel(manifestUrl, level, index) {
+function normalizeLevel(manifestUrl, level, index, levelOverrideMap, timerPolicy) {
   const levelId = String(level?.id ?? `level_${String(index + 1).padStart(3, "0")}`);
   const sourceImage = normalizeAssetPath(manifestUrl, level?.source_image ?? level?.image);
 
@@ -1594,10 +1610,26 @@ function normalizeLevel(manifestUrl, level, index) {
 
   const rows = Number(level?.grid?.rows);
   const cols = Number(level?.grid?.cols);
+  const override = levelOverrideMap instanceof Map ? levelOverrideMap.get(levelId) : undefined;
+  const overrideRows = normalizePositiveInteger(override?.grid_rows);
+  const overrideCols = normalizePositiveInteger(override?.grid_cols);
+  const finalRows = overrideRows || rows;
+  const finalCols = overrideCols || cols;
 
-  if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows <= 0 || cols <= 0) {
+  if (!Number.isInteger(finalRows) || !Number.isInteger(finalCols) || finalRows <= 0 || finalCols <= 0) {
     throw new Error(`关卡 ${levelId} 的 grid 配置不合法`);
   }
+
+  const difficulty = normalizeDifficulty(override?.difficulty ?? level?.difficulty);
+  const finalTimeLimitSec = resolveLevelTimeLimitSec({
+    rows: finalRows,
+    cols: finalCols,
+    difficulty,
+    overrideTimeLimitSec: normalizePositiveInteger(override?.time_limit_sec),
+    legacyTimeLimitSec: normalizePositiveInteger(level?.time_limit_sec),
+    overrideDifficultyFactor: normalizePositiveNumber(override?.difficulty_factor),
+    timerPolicy,
+  });
 
   return {
     id: levelId,
@@ -1605,18 +1637,158 @@ function normalizeLevel(manifestUrl, level, index) {
     description: typeof level?.description === "string" ? level.description : "",
     story_text: typeof level?.story_text === "string" ? level.story_text : undefined,
     grid: {
-      rows,
-      cols,
+      rows: finalRows,
+      cols: finalCols,
     },
     source_image: sourceImage,
     content_version: normalizeContentVersion(level?.content_version),
     legacy_ids: normalizeLegacyIds(level?.legacy_ids),
     asset_missing: !doesAssetExist(sourceImage),
-    time_limit_sec: normalizePositiveInteger(level?.time_limit_sec),
+    time_limit_sec: finalTimeLimitSec,
+    difficulty,
     shuffle: level?.shuffle && typeof level.shuffle === "object" ? level.shuffle : undefined,
     audio: normalizeAudioMap(manifestUrl, level?.audio),
     mobile: level?.mobile && typeof level.mobile === "object" ? level.mobile : undefined,
   };
+}
+
+function getLevelOverrideMap(storyId) {
+  if (typeof storyId !== "string" || !storyId.trim()) {
+    return new Map();
+  }
+
+  try {
+    const rows = db
+      .prepare(
+        `
+        SELECT level_id, enabled, grid_rows, grid_cols, time_limit_sec, difficulty, difficulty_factor
+        FROM level_overrides
+        WHERE story_id = ?
+      `,
+      )
+      .all(storyId.trim());
+
+    const result = new Map();
+    for (const row of rows) {
+      if (Number(row.enabled) !== 1) {
+        continue;
+      }
+
+      const levelId = String(row.level_id || "").trim();
+      if (!levelId) {
+        continue;
+      }
+
+      result.set(levelId, row);
+    }
+    return result;
+  } catch {
+    return new Map();
+  }
+}
+
+function loadTimerPolicy() {
+  try {
+    const row = db
+      .prepare("SELECT value_json FROM system_settings WHERE key = ? LIMIT 1")
+      .get("timer_policy_v1");
+
+    if (!row || typeof row.value_json !== "string" || !row.value_json.trim()) {
+      return DEFAULT_TIMER_POLICY;
+    }
+
+    const payload = safeParseJsonObject(row.value_json);
+    return normalizeTimerPolicy(payload);
+  } catch {
+    return DEFAULT_TIMER_POLICY;
+  }
+}
+
+function normalizeTimerPolicy(payload) {
+  if (!payload || typeof payload !== "object") {
+    return DEFAULT_TIMER_POLICY;
+  }
+
+  const baseSeconds = normalizePositiveNumber(payload.base_seconds) || DEFAULT_TIMER_POLICY.base_seconds;
+  const perPieceSeconds = normalizePositiveNumber(payload.per_piece_seconds) || DEFAULT_TIMER_POLICY.per_piece_seconds;
+  const minSeconds = normalizePositiveInteger(payload.min_seconds) || DEFAULT_TIMER_POLICY.min_seconds;
+  const maxSecondsRaw = normalizePositiveInteger(payload.max_seconds) || DEFAULT_TIMER_POLICY.max_seconds;
+  const maxSeconds = Math.max(minSeconds, maxSecondsRaw);
+  const factors = payload.difficulty_factor && typeof payload.difficulty_factor === "object"
+    ? payload.difficulty_factor
+    : {};
+
+  return {
+    base_seconds: baseSeconds,
+    per_piece_seconds: perPieceSeconds,
+    min_seconds: minSeconds,
+    max_seconds: maxSeconds,
+    difficulty_factor: {
+      easy: normalizePositiveNumber(factors.easy) || DEFAULT_TIMER_POLICY.difficulty_factor.easy,
+      normal: normalizePositiveNumber(factors.normal) || DEFAULT_TIMER_POLICY.difficulty_factor.normal,
+      hard: normalizePositiveNumber(factors.hard) || DEFAULT_TIMER_POLICY.difficulty_factor.hard,
+      nightmare: normalizePositiveNumber(factors.nightmare) || DEFAULT_TIMER_POLICY.difficulty_factor.nightmare,
+    },
+  };
+}
+
+function normalizeDifficulty(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "easy" || normalized === "hard" || normalized === "nightmare") {
+    return normalized;
+  }
+  return "normal";
+}
+
+function resolveLevelTimeLimitSec({
+  rows,
+  cols,
+  difficulty,
+  overrideTimeLimitSec,
+  legacyTimeLimitSec,
+  overrideDifficultyFactor,
+  timerPolicy,
+}) {
+  if (overrideTimeLimitSec) {
+    return overrideTimeLimitSec;
+  }
+
+  if (legacyTimeLimitSec) {
+    return legacyTimeLimitSec;
+  }
+
+  const activePolicy = timerPolicy && typeof timerPolicy === "object"
+    ? timerPolicy
+    : DEFAULT_TIMER_POLICY;
+  const pieceCount = Math.max(1, rows * cols);
+  const base = activePolicy.base_seconds + (pieceCount * activePolicy.per_piece_seconds);
+  const factor = overrideDifficultyFactor
+    || activePolicy.difficulty_factor[normalizeDifficulty(difficulty)]
+    || activePolicy.difficulty_factor.normal
+    || 1;
+  const computed = Math.round(base * factor);
+
+  return clampInt(computed, activePolicy.min_seconds, activePolicy.max_seconds);
+}
+
+function clampInt(value, minValue, maxValue) {
+  const integerValue = Math.round(Number(value));
+  const min = Math.round(Number(minValue));
+  const max = Math.round(Number(maxValue));
+
+  if (!Number.isFinite(integerValue)) {
+    return min;
+  }
+
+  if (integerValue < min) {
+    return min;
+  }
+
+  if (integerValue > max) {
+    return max;
+  }
+
+  return integerValue;
 }
 
 function normalizeAudioMap(manifestUrl, audio) {
