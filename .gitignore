@@ -58,6 +58,7 @@ web/public/content/stories/xiangyu/
 
 # Keep a single font source in web/public/assets
 materials/source/font/SourceHanSansSC-Regular.otf
+web/public/assets/xiangyu/
 
 # Accidental nested backend folder
 backend/backend/
