@@ -223,3 +223,25 @@ export type AdminGenerationCreateResponse = {
     book_title: string;
   } | null;
 };
+
+export type AdminManagedRole = "admin" | "editor" | "level_designer" | "operator";
+
+export type AdminUserSummary = {
+  id: number;
+  username: string;
+  is_guest: boolean;
+  created_at: string | null;
+  last_login_at: string | null;
+  roles: AdminManagedRole[];
+  is_admin: boolean;
+};
+
+export type AdminUsersResponse = {
+  total: number;
+  filters: {
+    limit: number;
+    keyword: string;
+    role: string;
+  };
+  users: AdminUserSummary[];
+};

@@ -3,6 +3,8 @@ import {
   AdminGenerationCreateResponse,
   AdminGenerationJob,
   AdminGenerationJobDetail,
+  AdminManagedRole,
+  AdminUsersResponse,
   LevelProgress,
   StoryDetail,
   StoryListItem,
@@ -270,6 +272,12 @@ export type AdminGenerateStoryPayload = {
   poll_attempts?: number;
 };
 
+export type AdminUsersQuery = {
+  keyword?: string;
+  role?: AdminManagedRole;
+  limit?: number;
+};
+
 export function apiListAdminBookChapters(query: AdminBookChaptersQuery = {}): Promise<AdminBookChaptersResponse> {
   const qs = buildQueryString(query);
   return requestJson<AdminBookChaptersResponse>(`/admin/book-chapters${qs}`);
@@ -289,6 +297,31 @@ export function apiListAdminGenerationJobs(limit = 50): Promise<{ jobs: AdminGen
 
 export function apiGetAdminGenerationJob(runId: string): Promise<AdminGenerationJobDetail> {
   return requestJson<AdminGenerationJobDetail>(`/admin/generate-story/${encodeURIComponent(runId)}`);
+}
+
+export function apiListAdminUsers(query: AdminUsersQuery = {}): Promise<AdminUsersResponse> {
+  const qs = buildQueryString(query);
+  return requestJson<AdminUsersResponse>(`/admin/users${qs}`);
+}
+
+export function apiGrantAdminUserRole(
+  userId: number,
+  role: AdminManagedRole,
+  note?: string,
+): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>(`/admin/users/${encodeURIComponent(String(userId))}/roles`, {
+    method: "POST",
+    body: {
+      role,
+      note,
+    },
+  });
+}
+
+export function apiRevokeAdminUserRole(userId: number, role: AdminManagedRole): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>(`/admin/users/${encodeURIComponent(String(userId))}/roles/${encodeURIComponent(role)}`, {
+    method: "DELETE",
+  });
 }
 
 export { ApiError };

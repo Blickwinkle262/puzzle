@@ -78,6 +78,7 @@ const DEFAULT_TIMER_POLICY = Object.freeze({
     nightmare: 0.7,
   },
 });
+const MANAGED_ADMIN_ROLES = new Set(["admin", "editor", "level_designer", "operator"]);
 const BOOK_INGEST_DB_PATH = resolveProjectPath(
   process.env.BOOK_INGEST_DB_PATH,
   path.join(ROOT_DIR, "scripts", "book_ingest", "data", "books.sqlite"),
@@ -801,6 +802,178 @@ app.get("/api/admin/generate-story/:runId", requireAuth, requireAdmin, (req, res
     });
   } catch (error) {
     res.status(500).json({ message: asMessage(error, "读取任务详情失败") });
+  }
+});
+
+app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
+  try {
+    const limit = Math.min(300, normalizePositiveInteger(req.query?.limit) || 120);
+    const keyword = normalizeShortText(req.query?.keyword);
+    const role = normalizeAdminRole(req.query?.role);
+
+    const where = ["1 = 1"];
+    const params = [];
+
+    if (keyword) {
+      where.push("u.username LIKE ?");
+      params.push(`%${keyword}%`);
+    }
+
+    if (role) {
+      where.push("EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id AND ur.role = ?)");
+      params.push(role);
+    }
+
+    const whereClause = where.join(" AND ");
+    const totalRow = db
+      .prepare(
+        `
+        SELECT COUNT(1) AS total
+        FROM users u
+        WHERE ${whereClause}
+      `,
+      )
+      .get(...params);
+
+    const users = db
+      .prepare(
+        `
+        SELECT u.id, u.username, u.is_guest, u.created_at, u.last_login_at
+        FROM users u
+        WHERE ${whereClause}
+        ORDER BY u.id DESC
+        LIMIT ?
+      `,
+      )
+      .all(...params, limit);
+
+    const rolesByUserId = getRolesByUserIds(users.map((item) => Number(item.id)));
+
+    res.json({
+      total: Number(totalRow?.total || 0),
+      filters: {
+        limit,
+        keyword,
+        role: role || "",
+      },
+      users: users.map((item) => serializeAdminUser(item, rolesByUserId.get(Number(item.id)) || [])),
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "读取用户权限失败") });
+  }
+});
+
+app.post("/api/admin/users/:id/roles", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const userId = normalizePositiveInteger(req.params.id);
+  if (!userId) {
+    res.status(400).json({ message: "用户 id 不合法" });
+    return;
+  }
+
+  const role = normalizeAdminRole(req.body?.role);
+  if (!role) {
+    res.status(400).json({ message: "role 必须是 admin/editor/level_designer/operator" });
+    return;
+  }
+
+  const note = normalizeShortText(req.body?.note);
+
+  try {
+    const targetUser = db
+      .prepare("SELECT id, username, is_guest, created_at, last_login_at FROM users WHERE id = ?")
+      .get(userId);
+    if (!targetUser) {
+      res.status(404).json({ message: "用户不存在" });
+      return;
+    }
+
+    const beforeRoles = getRolesByUserId(userId);
+
+    db.prepare(
+      `
+      INSERT OR IGNORE INTO user_roles (user_id, role, granted_by_user_id, source, note, granted_at)
+      VALUES (?, ?, ?, 'manual', ?, ?)
+    `,
+    ).run(userId, role, req.authUser.id, note || "", nowIso());
+
+    const afterRoles = getRolesByUserId(userId);
+
+    appendAdminAuditLog({
+      actorUserId: req.authUser.id,
+      actorUsername: req.authUser.username,
+      action: "user.role.grant",
+      targetType: "user",
+      targetId: String(userId),
+      before: { roles: beforeRoles },
+      after: { roles: afterRoles },
+      meta: { role, note: note || "" },
+    });
+
+    res.json({
+      ok: true,
+      user: serializeAdminUser(targetUser, afterRoles),
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "授予角色失败") });
+  }
+});
+
+app.delete("/api/admin/users/:id/roles/:role", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const userId = normalizePositiveInteger(req.params.id);
+  if (!userId) {
+    res.status(400).json({ message: "用户 id 不合法" });
+    return;
+  }
+
+  const role = normalizeAdminRole(req.params.role);
+  if (!role) {
+    res.status(400).json({ message: "role 必须是 admin/editor/level_designer/operator" });
+    return;
+  }
+
+  try {
+    const targetUser = db
+      .prepare("SELECT id, username, is_guest, created_at, last_login_at FROM users WHERE id = ?")
+      .get(userId);
+    if (!targetUser) {
+      res.status(404).json({ message: "用户不存在" });
+      return;
+    }
+
+    const beforeRoles = getRolesByUserId(userId);
+    if (!beforeRoles.includes(role)) {
+      res.status(404).json({ message: "该角色不存在" });
+      return;
+    }
+
+    if (role === "admin") {
+      const adminCount = countAdminUsers();
+      if (adminCount <= 1) {
+        res.status(400).json({ message: "不能移除最后一个 admin" });
+        return;
+      }
+    }
+
+    db.prepare("DELETE FROM user_roles WHERE user_id = ? AND role = ?").run(userId, role);
+    const afterRoles = getRolesByUserId(userId);
+
+    appendAdminAuditLog({
+      actorUserId: req.authUser.id,
+      actorUsername: req.authUser.username,
+      action: "user.role.revoke",
+      targetType: "user",
+      targetId: String(userId),
+      before: { roles: beforeRoles },
+      after: { roles: afterRoles },
+      meta: { role },
+    });
+
+    res.json({
+      ok: true,
+      user: serializeAdminUser(targetUser, afterRoles),
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "移除角色失败") });
   }
 });
 
@@ -2204,6 +2377,123 @@ function isAdminUser(user) {
   }
 
   return process.env.NODE_ENV !== "production";
+}
+
+function normalizeAdminRole(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!MANAGED_ADMIN_ROLES.has(normalized)) {
+    return "";
+  }
+  return normalized;
+}
+
+function getRolesByUserId(userId) {
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return [];
+  }
+
+  try {
+    const rows = db
+      .prepare("SELECT role FROM user_roles WHERE user_id = ? ORDER BY role ASC")
+      .all(userId);
+    return rows
+      .map((item) => normalizeAdminRole(item.role))
+      .filter((item) => item.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function getRolesByUserIds(userIds = []) {
+  const normalizedIds = [...new Set(userIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
+  if (normalizedIds.length === 0) {
+    return new Map();
+  }
+
+  try {
+    const placeholders = normalizedIds.map(() => "?").join(", ");
+    const rows = db
+      .prepare(`SELECT user_id, role FROM user_roles WHERE user_id IN (${placeholders}) ORDER BY user_id ASC, role ASC`)
+      .all(...normalizedIds);
+
+    const result = new Map(normalizedIds.map((item) => [item, []]));
+    for (const row of rows) {
+      const userId = Number(row.user_id);
+      const role = normalizeAdminRole(row.role);
+      if (!role) {
+        continue;
+      }
+      if (!result.has(userId)) {
+        result.set(userId, []);
+      }
+      result.get(userId).push(role);
+    }
+    return result;
+  } catch {
+    return new Map(normalizedIds.map((item) => [item, []]));
+  }
+}
+
+function countAdminUsers() {
+  try {
+    const row = db.prepare("SELECT COUNT(1) AS total FROM user_roles WHERE role = 'admin'").get();
+    return Number(row?.total || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function serializeAdminUser(user, roles = []) {
+  const userId = Number(user?.id || 0);
+  const username = String(user?.username || "");
+  const normalizedRoles = [...new Set(roles.map((item) => normalizeAdminRole(item)).filter((item) => item.length > 0))];
+
+  return {
+    id: userId,
+    username,
+    is_guest: Boolean(user?.is_guest),
+    created_at: user?.created_at || null,
+    last_login_at: user?.last_login_at || null,
+    roles: normalizedRoles,
+    is_admin: isAdminUser({
+      id: userId,
+      username,
+      is_guest: Boolean(user?.is_guest),
+      has_admin_role: normalizedRoles.includes("admin"),
+    }),
+  };
+}
+
+function appendAdminAuditLog({ actorUserId, actorUsername, action, targetType, targetId, before, after, meta }) {
+  try {
+    db.prepare(
+      `
+      INSERT INTO admin_audit_logs (
+        actor_user_id,
+        actor_username_snapshot,
+        action,
+        target_type,
+        target_id,
+        before_json,
+        after_json,
+        meta_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    ).run(
+      Number.isInteger(actorUserId) ? actorUserId : null,
+      String(actorUsername || ""),
+      String(action || ""),
+      String(targetType || ""),
+      String(targetId || ""),
+      JSON.stringify(before && typeof before === "object" ? before : {}),
+      JSON.stringify(after && typeof after === "object" ? after : {}),
+      JSON.stringify(meta && typeof meta === "object" ? meta : {}),
+      nowIso(),
+    );
+  } catch {
+    // ignore audit write failure
+  }
 }
 
 function hasAdminRoleByUserId(userId) {

@@ -786,3 +786,23 @@ body,
   padding: 4px 8px;
   font-size: 12px;
 }
+
+.admin-user-toolbar {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.admin-role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.admin-role-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

@@ -2,12 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   apiCreateAdminGenerationJob,
+  apiGrantAdminUserRole,
   apiGetAdminGenerationJob,
   apiListAdminBookChapters,
   apiListAdminGenerationJobs,
+  apiListAdminUsers,
+  apiRevokeAdminUserRole,
   ApiError,
 } from "../core/api";
-import { AdminBookInfo, AdminChapterSummary, AdminGenerationEvent, AdminGenerationJob, AdminGenerationJobDetail } from "../core/types";
+import {
+  AdminBookInfo,
+  AdminChapterSummary,
+  AdminGenerationEvent,
+  AdminGenerationJob,
+  AdminGenerationJobDetail,
+  AdminManagedRole,
+  AdminUserSummary,
+} from "../core/types";
 
 type AdminStoryGeneratorProps = {
   visible: boolean;
@@ -27,19 +38,24 @@ const DEFAULT_MIN_CHARS = 500;
 const DEFAULT_MAX_CHARS = 2200;
 const DEFAULT_SCENE_COUNT = 12;
 const MIN_SCENE_COUNT = 6;
+const MANAGED_ROLES: AdminManagedRole[] = ["admin", "editor", "level_designer", "operator"];
 
 export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory }: AdminStoryGeneratorProps): JSX.Element | null {
   const [books, setBooks] = useState<AdminBookInfo[]>([]);
   const [chapters, setChapters] = useState<AdminChapterSummary[]>([]);
   const [recentJobs, setRecentJobs] = useState<AdminGenerationJob[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUserSummary[]>([]);
 
   const [loadingChapters, setLoadingChapters] = useState(false);
+  const [loadingUsers, setLoadingUsers] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [roleSubmittingKey, setRoleSubmittingKey] = useState("");
   const [panelError, setPanelError] = useState("");
   const [panelInfo, setPanelInfo] = useState("");
 
   const [bookId, setBookId] = useState<string>("");
   const [keyword, setKeyword] = useState("");
+  const [userKeyword, setUserKeyword] = useState("");
   const [minCharsInput, setMinCharsInput] = useState(String(DEFAULT_MIN_CHARS));
   const [maxCharsInput, setMaxCharsInput] = useState(String(DEFAULT_MAX_CHARS));
   const [includeUsed, setIncludeUsed] = useState(true);
@@ -66,6 +82,22 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       // ignore recent jobs errors in panel
     }
   }, []);
+
+  const loadAdminUsers = useCallback(async (): Promise<void> => {
+    setLoadingUsers(true);
+
+    try {
+      const response = await apiListAdminUsers({
+        keyword: userKeyword.trim() || undefined,
+        limit: 120,
+      });
+      setAdminUsers(response.users || []);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setLoadingUsers(false);
+    }
+  }, [userKeyword]);
 
   const loadChapters = useCallback(async (): Promise<void> => {
     setLoadingChapters(true);
@@ -106,7 +138,32 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
     void loadChapters();
     void loadRecentJobs();
-  }, [loadChapters, loadRecentJobs, visible]);
+    void loadAdminUsers();
+  }, [loadAdminUsers, loadChapters, loadRecentJobs, visible]);
+
+  const handleRoleToggle = async (targetUser: AdminUserSummary, role: AdminManagedRole): Promise<void> => {
+    const hasRole = targetUser.roles.includes(role);
+    const actionKey = `${targetUser.id}:${role}:${hasRole ? "revoke" : "grant"}`;
+
+    setRoleSubmittingKey(actionKey);
+    setPanelError("");
+    setPanelInfo("");
+
+    try {
+      if (hasRole) {
+        await apiRevokeAdminUserRole(targetUser.id, role);
+        setPanelInfo(`已移除 ${targetUser.username} 的 ${role} 角色`);
+      } else {
+        await apiGrantAdminUserRole(targetUser.id, role, "granted via admin panel");
+        setPanelInfo(`已授予 ${targetUser.username} 的 ${role} 角色`);
+      }
+      await loadAdminUsers();
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setRoleSubmittingKey("");
+    }
+  };
 
   useEffect(() => {
     if (!visible || !activeRunId) {
@@ -226,6 +283,84 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
       {panelError && <div className="banner-error">{panelError}</div>}
       {panelInfo && <div className="banner-info">{panelInfo}</div>}
+
+      <div className="admin-run-box">
+        <h4>用户权限管理</h4>
+        <div className="admin-user-toolbar">
+          <label className="form-field">
+            用户名检索
+            <input value={userKeyword} onChange={(event) => setUserKeyword(event.currentTarget.value)} placeholder="输入用户名关键字" />
+          </label>
+
+          <div className="inline-actions">
+            <button type="button" className="nav-btn" onClick={() => void loadAdminUsers()} disabled={loadingUsers}>
+              {loadingUsers ? "加载中..." : "刷新用户"}
+            </button>
+          </div>
+        </div>
+
+        <div className="admin-chapter-table">
+          {adminUsers.length === 0 ? (
+            <div className="progress-inline">暂无匹配用户。</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>用户</th>
+                  <th>当前角色</th>
+                  <th>权限操作</th>
+                  <th>最近登录</th>
+                </tr>
+              </thead>
+              <tbody>
+                {adminUsers.map((user) => (
+                  <tr key={user.id}>
+                    <td>
+                      <strong>{user.username}</strong>
+                      {user.is_guest ? <span className="level-state todo">guest</span> : null}
+                      {user.is_admin ? <span className="level-state done">admin访问</span> : null}
+                    </td>
+                    <td>
+                      <div className="admin-role-list">
+                        {user.roles.length > 0
+                          ? user.roles.map((role) => (
+                            <span key={`${user.id}-${role}`} className="level-state done">{role}</span>
+                          ))
+                          : <span className="level-state todo">无角色</span>}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="admin-role-actions">
+                        {MANAGED_ROLES.map((role) => {
+                          const hasRole = user.roles.includes(role);
+                          const actionKey = `${user.id}:${role}:${hasRole ? "revoke" : "grant"}`;
+
+                          return (
+                            <button
+                              key={`${user.id}-action-${role}`}
+                              type="button"
+                              className={hasRole ? "link-btn" : "nav-btn"}
+                              disabled={Boolean(roleSubmittingKey)}
+                              onClick={() => void handleRoleToggle(user, role)}
+                            >
+                              {roleSubmittingKey === actionKey
+                                ? "处理中..."
+                                : hasRole
+                                  ? `移除 ${role}`
+                                  : `授予 ${role}`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </td>
+                    <td>{formatTime(user.last_login_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
 
       <div className="admin-filters">
         <label className="form-field">
@@ -456,4 +591,11 @@ function errorMessage(err: unknown): string {
     return err.message;
   }
   return "请求失败";
+}
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) {
+    return "-";
+  }
+  return value.replace("T", " ").replace("Z", "");
 }
