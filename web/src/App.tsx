@@ -45,6 +45,14 @@ type SharedCoverTransition = {
   phase: TransitionPhase;
 };
 
+type StoryBookGroup = {
+  key: string;
+  title: string;
+  stories: StoryListItem[];
+  totalLevels: number;
+  completedLevels: number;
+};
+
 export function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>("auth");
   const [hasSession, setHasSession] = useState(false);
@@ -72,6 +80,7 @@ export function App(): JSX.Element {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [nextPasswordInput, setNextPasswordInput] = useState("");
+  const [selectedBookKey, setSelectedBookKey] = useState("");
   const [openingStoryId, setOpeningStoryId] = useState<string | null>(null);
   const [sharedCover, setSharedCover] = useState<SharedCoverTransition | null>(null);
   const [hideDetailCover, setHideDetailCover] = useState(false);
@@ -106,6 +115,7 @@ export function App(): JSX.Element {
     setShowAdminGenerator(false);
     setError("");
     setStories([]);
+    setSelectedBookKey("");
     setActiveStory(null);
     setScreen("auth");
     setLoadingText("");
@@ -615,6 +625,31 @@ export function App(): JSX.Element {
     return result;
   }, [activeStory]);
 
+  const roleKey = isGuest ? "guest" : isAdmin ? "admin" : "user";
+  const roleLabel = isGuest ? "游客" : isAdmin ? "管理员" : "普通用户";
+  const roleHint = isGuest
+    ? "游客可试玩并保存本机进度，建议后续升级账号。"
+    : isAdmin
+      ? "你拥有管理后台权限，可管理用户、关卡和生成任务。"
+      : "这是普通用户模式，可专注闯关并刷新个人最佳记录。";
+
+  const storyBookGroups = useMemo(() => buildStoryBookGroups(stories), [stories]);
+  const activeBookGroup = useMemo(
+    () => storyBookGroups.find((item) => item.key === selectedBookKey) || storyBookGroups[0] || null,
+    [selectedBookKey, storyBookGroups],
+  );
+
+  useEffect(() => {
+    if (storyBookGroups.length === 0) {
+      setSelectedBookKey("");
+      return;
+    }
+
+    if (!storyBookGroups.some((item) => item.key === selectedBookKey)) {
+      setSelectedBookKey(storyBookGroups[0].key);
+    }
+  }, [selectedBookKey, storyBookGroups]);
+
   if (loadingText) {
     return <div className="screen-message">{loadingText}</div>;
   }
@@ -726,14 +761,15 @@ export function App(): JSX.Element {
 
   if (screen === "stories") {
     return (
-      <div className="hub-shell">
+      <div className={`hub-shell role-shell role-${roleKey}`}>
         <header className="hub-header">
           <div>
             <h1>故事导航</h1>
-            <p>
+            <p className="hub-welcome-line">
               欢迎你，{userName || "玩家"}
-              {isGuest ? "（游客）" : isAdmin ? "（管理员）" : "（普通用户）"}
+              <span className={`role-badge role-badge-${roleKey}`}>{roleLabel}</span>
             </p>
+            <p className="hub-role-note">{roleHint}</p>
           </div>
           <div className="toolbar-row">
             {isGuest ? (
@@ -863,39 +899,66 @@ export function App(): JSX.Element {
           </section>
         )}
 
-        <main className={`story-grid ${openingStoryId ? "has-opening" : ""}`}>
-          {stories.map((story) => (
+        <section className="book-collection-grid">
+          {storyBookGroups.map((group) => (
             <button
+              key={group.key}
               type="button"
-              key={story.id}
-              className={`book-card ${openingStoryId === story.id ? "is-opening" : ""}`}
-              onClick={() => void openStory(story)}
+              className={`book-collection-card ${activeBookGroup?.key === group.key ? "is-active" : ""}`}
+              onClick={() => setSelectedBookKey(group.key)}
               disabled={Boolean(openingStoryId)}
             >
-              <span className="book-spine" aria-hidden="true" />
-              <img
-                ref={(node) => {
-                  storyCoverRefs.current[story.id] = node;
-                }}
-                src={coverOrFallback(story.cover)}
-                alt={story.title}
-                className="book-cover"
-                onError={replaceWithFallbackCover}
-              />
-              <span className="book-gloss" aria-hidden="true" />
-              <span className="book-meta">
-                <span className="book-title">{story.title}</span>
-                <span className="book-desc">{story.description}</span>
-                <span className="book-progress">
-                  完成度 {story.completed_levels}/{story.total_levels}
-                </span>
-                <span className="book-action">
-                  {story.completed_levels > 0 ? "继续翻开" : "打开这本故事"} →
-                </span>
-              </span>
+              <span className="book-collection-title">{group.title}</span>
+              <span className="book-collection-meta">故事 {group.stories.length} 本</span>
+              <span className="book-collection-meta">关卡完成 {group.completedLevels}/{group.totalLevels}</span>
             </button>
           ))}
-        </main>
+        </section>
+
+        {activeBookGroup ? (
+          <section className="book-collection-panel">
+            <div className="book-collection-panel-head">
+              <h2>{activeBookGroup.title}</h2>
+              <p>已收录 {activeBookGroup.stories.length} 个故事，支持继续闯关与新故事扩展。</p>
+            </div>
+
+            <main className={`story-grid ${openingStoryId ? "has-opening" : ""}`}>
+              {activeBookGroup.stories.map((story) => (
+                <button
+                  type="button"
+                  key={story.id}
+                  className={`book-card ${openingStoryId === story.id ? "is-opening" : ""}`}
+                  onClick={() => void openStory(story)}
+                  disabled={Boolean(openingStoryId)}
+                >
+                  <span className="book-spine" aria-hidden="true" />
+                  <img
+                    ref={(node) => {
+                      storyCoverRefs.current[story.id] = node;
+                    }}
+                    src={coverOrFallback(story.cover)}
+                    alt={story.title}
+                    className="book-cover"
+                    onError={replaceWithFallbackCover}
+                  />
+                  <span className="book-gloss" aria-hidden="true" />
+                  <span className="book-meta">
+                    <span className="book-title">{story.title}</span>
+                    <span className="book-desc">{story.description}</span>
+                    <span className="book-progress">
+                      完成度 {story.completed_levels}/{story.total_levels}
+                    </span>
+                    <span className="book-action">
+                      {story.completed_levels > 0 ? "继续翻开" : "打开这本故事"} →
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </main>
+          </section>
+        ) : (
+          <div className="screen-message">暂无可展示的故事内容</div>
+        )}
 
         {openingStoryId && <div className="opening-note">正在翻开故事...</div>}
         {sharedCoverOverlay}
@@ -1099,4 +1162,88 @@ function formatBestTime(value?: number): string {
     .toString()
     .padStart(2, "0");
   return `${mm}:${ss}.${cs}`;
+}
+
+function buildStoryBookGroups(stories: StoryListItem[]): StoryBookGroup[] {
+  const groupsByKey = new Map<string, StoryBookGroup>();
+
+  for (const story of stories) {
+    const title = resolveStoryBookTitle(story);
+    const key = resolveStoryBookKey(story, title, groupsByKey.size + 1);
+    const existing = groupsByKey.get(key);
+
+    if (!existing) {
+      groupsByKey.set(key, {
+        key,
+        title,
+        stories: [story],
+        totalLevels: Number(story.total_levels || 0),
+        completedLevels: Number(story.completed_levels || 0),
+      });
+      continue;
+    }
+
+    existing.stories.push(story);
+    existing.totalLevels += Number(story.total_levels || 0);
+    existing.completedLevels += Number(story.completed_levels || 0);
+  }
+
+  return Array.from(groupsByKey.values());
+}
+
+function resolveStoryBookTitle(story: StoryListItem): string {
+  const candidate = String(story.book_title || "").trim();
+  if (candidate) {
+    return candidate;
+  }
+
+  const fromStoryTitle = inferBookTitleFromStoryTitle(story.title);
+  if (fromStoryTitle) {
+    return fromStoryTitle;
+  }
+
+  return "聊斋志异";
+}
+
+function resolveStoryBookKey(story: StoryListItem, fallbackTitle: string, fallbackIndex: number): string {
+  const explicit = normalizeBookKey(story.book_id);
+  if (explicit) {
+    return explicit;
+  }
+
+  const inferred = normalizeBookKey(fallbackTitle);
+  if (inferred) {
+    return inferred;
+  }
+
+  return `book_${fallbackIndex}`;
+}
+
+function inferBookTitleFromStoryTitle(storyTitle: string): string {
+  const title = String(storyTitle || "").trim();
+  if (!title) {
+    return "";
+  }
+
+  const delimiterMatch = title.match(/^([^·：:]{1,24})[·：:]/);
+  if (delimiterMatch && delimiterMatch[1]) {
+    return delimiterMatch[1].trim();
+  }
+
+  if (title.startsWith("聊斋")) {
+    return "聊斋志异";
+  }
+
+  return "";
+}
+
+function normalizeBookKey(value: unknown): string {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return normalized.slice(0, 48);
 }

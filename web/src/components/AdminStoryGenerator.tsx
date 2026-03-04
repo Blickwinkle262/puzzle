@@ -534,6 +534,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 <tr>
                   <th>用户</th>
                   <th>当前角色</th>
+                  <th>关卡最快</th>
                   <th>权限操作</th>
                   <th>最近登录</th>
                 </tr>
@@ -553,6 +554,18 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                             <span key={`${user.id}-${role}`} className="level-state done">{role}</span>
                           ))
                           : <span className="level-state todo">无角色</span>}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="admin-user-best-time-cell">
+                        {user.fastest_level_time_ms && user.fastest_level_time_ms > 0 ? (
+                          <>
+                            <span className="level-state done">最快 {formatDurationMs(user.fastest_level_time_ms)}</span>
+                            <span className="progress-inline">记录关卡 {user.best_time_level_count} · 已通关 {user.completed_level_count}</span>
+                          </>
+                        ) : (
+                          <span className="level-state todo">暂无成绩</span>
+                        )}
                       </div>
                     </td>
                     <td>
@@ -1087,4 +1100,20 @@ function formatTime(value: string | null | undefined): string {
     return "-";
   }
   return value.replace("T", " ").replace("Z", "");
+}
+
+function formatDurationMs(value: number | null | undefined): string {
+  if (!value || value <= 0) {
+    return "-";
+  }
+
+  const totalSeconds = Math.floor(value / 1000);
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  const centiseconds = Math.floor((value % 1000) / 10)
+    .toString()
+    .padStart(2, "0");
+  return `${minutes}:${seconds}.${centiseconds}`;
 }

@@ -96,6 +96,8 @@ export type StoryListItem = {
   title: string;
   description: string;
   cover: string;
+  book_id?: string;
+  book_title?: string;
   cover_missing?: boolean;
   total_levels: number;
   completed_levels: number;
@@ -233,6 +235,9 @@ export type AdminUserSummary = {
   created_at: string | null;
   last_login_at: string | null;
   roles: AdminManagedRole[];
+  best_time_level_count: number;
+  fastest_level_time_ms: number | null;
+  completed_level_count: number;
   is_admin: boolean;
 };
 

@@ -839,8 +839,25 @@ app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
     const users = db
       .prepare(
         `
-        SELECT u.id, u.username, u.is_guest, u.created_at, u.last_login_at
+        SELECT
+          u.id,
+          u.username,
+          u.is_guest,
+          u.created_at,
+          u.last_login_at,
+          COALESCE(stats.best_time_level_count, 0) AS best_time_level_count,
+          stats.fastest_level_time_ms AS fastest_level_time_ms,
+          COALESCE(stats.completed_level_count, 0) AS completed_level_count
         FROM users u
+        LEFT JOIN (
+          SELECT
+            user_id,
+            COUNT(best_time_ms) AS best_time_level_count,
+            MIN(best_time_ms) AS fastest_level_time_ms,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_level_count
+          FROM user_level_progress
+          GROUP BY user_id
+        ) AS stats ON stats.user_id = u.id
         WHERE ${whereClause}
         ORDER BY u.id DESC
         LIMIT ?
@@ -1791,12 +1808,16 @@ function listStoriesForUser(userId) {
       }
     }
 
+    const bookMeta = resolveStoryBookMeta(entry, story);
+
     stories.push({
       id: story.id,
       title: story.title,
       description: story.description,
       cover: story.cover,
       cover_missing: story.cover_missing,
+      book_id: bookMeta.book_id,
+      book_title: bookMeta.book_title,
       total_levels: story.levels.length,
       completed_levels: completedLevels,
       last_level_id: lastLevelId,
@@ -1892,12 +1913,18 @@ function loadStoryCatalog() {
     // 强约束索引模式：索引中声明的 manifest 必须存在。
     resolveManifestFsPath(manifest);
 
+    const storyTitle = typeof item.title === "string" ? item.title : "";
+    const storyBookTitle = normalizeShortText(item.book_title) || inferBookTitleFromStoryTitle(storyTitle);
+    const storyBookId = normalizeStoryBookId(item.book_id) || normalizeStoryBookId(storyBookTitle);
+
     stories.push({
       id,
-      title: typeof item.title === "string" ? item.title : "",
+      title: storyTitle,
       description: typeof item.description === "string" ? item.description : "",
       cover: typeof item.cover === "string" ? item.cover : "",
       manifest,
+      book_id: storyBookId,
+      book_title: storyBookTitle,
       order: Number.isFinite(item.order) ? Number(item.order) : Number.MAX_SAFE_INTEGER,
     });
   }
@@ -1910,6 +1937,55 @@ function loadStoryCatalog() {
       return a.id.localeCompare(b.id);
     }),
   };
+}
+
+function resolveStoryBookMeta(entry, story) {
+  const entryBookTitle = normalizeShortText(entry?.book_title);
+  const storyBookTitle = normalizeShortText(story?.book_title);
+  const derivedBookTitle = inferBookTitleFromStoryTitle(story?.title || entry?.title || "");
+  const finalBookTitle = entryBookTitle || storyBookTitle || derivedBookTitle || "聊斋志异";
+
+  const entryBookId = normalizeStoryBookId(entry?.book_id);
+  const storyBookId = normalizeStoryBookId(story?.book_id);
+  const titleBookId = normalizeStoryBookId(finalBookTitle);
+
+  return {
+    book_id: entryBookId || storyBookId || titleBookId || "book_default",
+    book_title: finalBookTitle,
+  };
+}
+
+function inferBookTitleFromStoryTitle(storyTitle) {
+  const title = normalizeShortText(storyTitle);
+  if (!title) {
+    return "";
+  }
+
+  const delimiterMatch = title.match(/^([^·：:]{1,24})[·：:]/);
+  if (delimiterMatch && delimiterMatch[1]) {
+    return normalizeShortText(delimiterMatch[1]);
+  }
+
+  if (title.startsWith("聊斋")) {
+    return "聊斋志异";
+  }
+
+  return "";
+}
+
+function normalizeStoryBookId(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const normalized = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return normalized.slice(0, 48);
 }
 
 
@@ -2636,6 +2712,9 @@ function serializeAdminUser(user, roles = []) {
     created_at: user?.created_at || null,
     last_login_at: user?.last_login_at || null,
     roles: normalizedRoles,
+    best_time_level_count: normalizeNonNegativeInteger(user?.best_time_level_count, 0),
+    fastest_level_time_ms: normalizePositiveInteger(user?.fastest_level_time_ms) || null,
+    completed_level_count: normalizeNonNegativeInteger(user?.completed_level_count, 0),
     is_admin: isAdminUser({
       id: userId,
       username,

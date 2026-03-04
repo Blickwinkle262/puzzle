@@ -16,7 +16,7 @@ import { useWindowSize } from "../hooks/useWindowSize";
 
 const AUTO_NEXT_LEVEL_DELAY_MS = 1200;
 const CONTINUE_SECONDS = 60;
-const MAX_CONTINUE_COUNT = 1;
+const MAX_CONTINUE_COUNT = 3;
 
 type Orientation = "portrait" | "landscape";
 
@@ -102,6 +102,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
 
   const solved = isSolved(lockedEdges, expectedEdges);
   const hasNextLevel = levelIndex < totalLevels - 1;
+  const remainingContinueCount = Math.max(0, MAX_CONTINUE_COUNT - continueUsedCount);
 
   const linkAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewRafRef = useRef<number | null>(null);
@@ -469,6 +470,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
           {timedMode && <p className="timer">{formatClock(remainingSec)}</p>}
           {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
           {timeExtraSec > 0 && <p className="progress-inline">已续时 +{timeExtraSec}s</p>}
+          {timedMode && <p className="progress-inline">续时次数 {continueUsedCount}/{MAX_CONTINUE_COUNT}</p>}
           <button type="button" className="jump-btn" onClick={onJumpUnfinished}>
             {allCompleted ? "全部完成，回到第一关" : "跳到未完成"}
           </button>
@@ -544,12 +546,12 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
         <div className="mask">
           <div className="mask-card">
             <div>时间到</div>
-            {continueUsedCount < MAX_CONTINUE_COUNT ? (
+            {remainingContinueCount > 0 ? (
               <>
-                <div className="end-note">可续时 {CONTINUE_SECONDS}s 再挑战一次</div>
+                <div className="end-note">还可续时 {remainingContinueCount} 次（每次 {CONTINUE_SECONDS}s）</div>
                 <div className="toolbar-row">
                   <button className="next-btn" type="button" onClick={handleContinue60s}>
-                    续时 {CONTINUE_SECONDS}s
+                    续时 {CONTINUE_SECONDS}s（第 {continueUsedCount + 1}/{MAX_CONTINUE_COUNT} 次）
                   </button>
                   <button className="nav-btn" type="button" onClick={onRestartLevel}>
                     重新开始
