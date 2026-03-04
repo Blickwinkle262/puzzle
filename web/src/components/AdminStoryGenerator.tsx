@@ -504,8 +504,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
   return (
     <section className="account-panel admin-panel">
-      <h3>管理员：章节生成故事</h3>
-      <p>选择聊斋章节后，系统会自动触发 Python 生成并实时回传进度。</p>
+      <h3>管理后台</h3>
+      <p>这里统一处理人员权限、关卡配置（预览/测试）和谜题生成任务。</p>
 
       {panelError && <div className="banner-error">{panelError}</div>}
       {panelInfo && <div className="banner-info">{panelInfo}</div>}
@@ -752,6 +752,11 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
             }, null, 2)}</pre>
           </div>
         )}
+      </div>
+
+      <div className="admin-run-box">
+        <h4>谜题管理（章节生成）</h4>
+        <p className="progress-inline">选择章节后可生成新故事谜题，并在下方查看进度与最近任务。</p>
       </div>
 
       <div className="admin-filters">

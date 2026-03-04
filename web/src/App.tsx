@@ -732,7 +732,7 @@ export function App(): JSX.Element {
             <h1>故事导航</h1>
             <p>
               欢迎你，{userName || "玩家"}
-              {isGuest ? "（游客模式）" : ""}
+              {isGuest ? "（游客）" : isAdmin ? "（管理员）" : "（普通用户）"}
             </p>
           </div>
           <div className="toolbar-row">
@@ -773,7 +773,7 @@ export function App(): JSX.Element {
                   setInfo("");
                 }}
               >
-                {showAdminGenerator ? "收起章节生成" : "章节生成"}
+                {showAdminGenerator ? "收起管理后台" : "管理后台"}
               </button>
             )}
             <button type="button" className="nav-btn" onClick={handleLogout}>
