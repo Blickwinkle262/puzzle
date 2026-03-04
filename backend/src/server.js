@@ -7,6 +7,8 @@ import bcrypt from "bcryptjs";
 import Database from "better-sqlite3";
 import express from "express";
 
+import { runMigrations } from "./migrate.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "../..");
@@ -82,6 +84,7 @@ const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
 initializeSchema(db);
+runMigrations(db);
 
 const authRateBuckets = new Map();
 
@@ -129,11 +132,11 @@ app.post("/api/auth/register", (req, res) => {
   setAuthCookies(res, session);
 
   res.status(201).json({
-    user: {
+    user: buildAuthUserPayload({
       id: userId,
       username,
       is_guest: false,
-    },
+    }),
   });
 });
 
@@ -151,7 +154,21 @@ app.post("/api/auth/login", (req, res) => {
   }
 
   const user = db
-    .prepare("SELECT id, username, password_hash, is_guest FROM users WHERE username = ?")
+    .prepare(
+      `
+      SELECT
+        u.id,
+        u.username,
+        u.password_hash,
+        u.is_guest,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM user_roles ur
+          WHERE ur.user_id = u.id AND ur.role = 'admin'
+        ) THEN 1 ELSE 0 END AS has_admin_role
+      FROM users u
+      WHERE u.username = ?
+      `,
+    )
     .get(username);
 
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
@@ -168,11 +185,7 @@ app.post("/api/auth/login", (req, res) => {
   setAuthCookies(res, session);
 
   res.json({
-    user: {
-      id: user.id,
-      username: user.username,
-      is_guest: Boolean(user.is_guest),
-    },
+    user: buildAuthUserPayload(user),
   });
 });
 
@@ -198,11 +211,11 @@ app.post("/api/auth/guest-login", (req, res) => {
   setAuthCookies(res, session);
 
   res.status(201).json({
-    user: {
+    user: buildAuthUserPayload({
       id: userId,
       username,
       is_guest: true,
-    },
+    }),
   });
 });
 
@@ -246,11 +259,7 @@ app.post("/api/auth/refresh", requireAuth, requireCsrf, (req, res) => {
 
   setAuthCookies(res, rotated);
   res.json({
-    user: {
-      id: req.authUser.id,
-      username: req.authUser.username,
-      is_guest: Boolean(req.authUser.is_guest),
-    },
+    user: buildAuthUserPayload(req.authUser),
     refreshed_at: nowIso(),
   });
 });
@@ -285,11 +294,11 @@ app.post("/api/auth/guest-upgrade", requireAuth, requireCsrf, (req, res) => {
   );
 
   res.json({
-    user: {
+    user: buildAuthUserPayload({
       id: req.authUser.id,
       username,
       is_guest: false,
-    },
+    }),
   });
 });
 
@@ -316,11 +325,11 @@ app.post("/api/auth/change-password", requireAuth, requireCsrf, (req, res) => {
   setAuthCookies(res, session);
 
   res.json({
-    user: {
+    user: buildAuthUserPayload({
       id: req.authUser.id,
       username: row.username,
       is_guest: Boolean(row.is_guest),
-    },
+    }),
   });
 });
 
@@ -381,11 +390,7 @@ app.post("/api/auth/reset-password", (req, res) => {
 
 app.get("/api/auth/me", requireAuth, (req, res) => {
   res.json({
-    user: {
-      id: req.authUser.id,
-      username: req.authUser.username,
-      is_guest: Boolean(req.authUser.is_guest),
-    },
+    user: buildAuthUserPayload(req.authUser),
   });
 });
 
@@ -1144,6 +1149,10 @@ function requireAuth(req, res, next) {
     .prepare(
       `
       SELECT u.id, u.username, u.is_guest, s.token, s.csrf_token
+           , CASE WHEN EXISTS (
+               SELECT 1 FROM user_roles ur
+               WHERE ur.user_id = u.id AND ur.role = 'admin'
+             ) THEN 1 ELSE 0 END AS has_admin_role
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.token = ? AND s.expires_at > ?
@@ -1160,6 +1169,7 @@ function requireAuth(req, res, next) {
     id: row.id,
     username: row.username,
     is_guest: Boolean(row.is_guest),
+    has_admin_role: Boolean(row.has_admin_role),
   };
   req.authToken = row.token;
   req.authCsrfToken = row.csrf_token;
@@ -2011,12 +2021,53 @@ function isAdminUser(user) {
     return false;
   }
 
-  if (ADMIN_USERNAMES.size === 0) {
-    return process.env.NODE_ENV !== "production";
+  if (Boolean(user.has_admin_role)) {
+    return true;
   }
 
   const normalized = String(user.username).trim().toLowerCase();
-  return ADMIN_USERNAMES.has(normalized);
+
+  if (ADMIN_USERNAMES.size > 0) {
+    return ADMIN_USERNAMES.has(normalized);
+  }
+
+  return process.env.NODE_ENV !== "production";
+}
+
+function hasAdminRoleByUserId(userId) {
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return false;
+  }
+
+  try {
+    const row = db
+      .prepare("SELECT 1 FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1")
+      .get(userId);
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+function buildAuthUserPayload(user) {
+  const userId = Number(user?.id || 0);
+  const username = String(user?.username || "");
+  const isGuest = Boolean(user?.is_guest);
+  const hasAdminRole = user && Object.prototype.hasOwnProperty.call(user, "has_admin_role")
+    ? Boolean(user.has_admin_role)
+    : hasAdminRoleByUserId(userId);
+
+  return {
+    id: userId,
+    username,
+    is_guest: isGuest,
+    is_admin: isAdminUser({
+      id: userId,
+      username,
+      is_guest: isGuest,
+      has_admin_role: hasAdminRole,
+    }),
+  };
 }
 
 function normalizeTargetDate(value) {

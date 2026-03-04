@@ -6,7 +6,6 @@ import {
   apiGetMe,
   apiGuestLogin,
   apiGuestUpgrade,
-  apiListAdminGenerationJobs,
   apiRefreshSession,
   apiResetPassword,
   apiGetStoryDetail,
@@ -84,6 +83,10 @@ export function App(): JSX.Element {
     setHasSession(true);
     setUserName(user.username);
     setIsGuest(Boolean(user.is_guest));
+    setIsAdmin(Boolean(user.is_admin));
+    if (!user.is_admin) {
+      setShowAdminGenerator(false);
+    }
   }, []);
 
   const clearAccountPanels = useCallback(() => {
@@ -187,20 +190,6 @@ export function App(): JSX.Element {
     setStories(response.stories);
   }, []);
 
-  const probeAdminAccess = useCallback(async () => {
-    try {
-      await apiListAdminGenerationJobs(1);
-      setIsAdmin(true);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        setIsAdmin(false);
-        setShowAdminGenerator(false);
-        return;
-      }
-      setIsAdmin(false);
-    }
-  }, []);
-
   const handleAdminGenerated = useCallback(
     async (storyId: string) => {
       await refreshStories();
@@ -243,9 +232,8 @@ export function App(): JSX.Element {
       setStories(storiesResponse.stories);
       setScreen("stories");
       clearAccountPanels();
-      await probeAdminAccess();
     },
-    [applyAuthUser, clearAccountPanels, probeAdminAccess],
+    [applyAuthUser, clearAccountPanels],
   );
 
   const bootstrapSession = useCallback(
@@ -260,7 +248,6 @@ export function App(): JSX.Element {
         setStories(storiesResponse.stories);
         setScreen("stories");
         clearAccountPanels();
-        await probeAdminAccess();
       } catch (err) {
         clearSession();
         if (err instanceof ApiError && err.status === 401) {
@@ -272,7 +259,7 @@ export function App(): JSX.Element {
         setLoadingText("");
       }
     },
-    [applyAuthUser, clearAccountPanels, clearSession, probeAdminAccess],
+    [applyAuthUser, clearAccountPanels, clearSession],
   );
 
   useEffect(() => {

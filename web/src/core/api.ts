@@ -14,14 +14,17 @@ const CSRF_COOKIE_NAME = "puzzle_csrf";
 const CSRF_HEADER_NAME = "x-csrf-token";
 
 export type AuthResponse = {
+  // user 内含 is_admin（由后端基于 user_roles + env 兜底计算）
   user: UserProfile;
 };
 
 export type AuthMeResponse = {
+  // /auth/me 返回统一用户态，前端直接消费 is_admin，不再额外探测管理员接口
   user: UserProfile;
 };
 
 export type AuthRefreshResponse = {
+  // 刷新会话后也会返回最新 is_admin，避免前端持有过期权限状态
   user: UserProfile;
   refreshed_at: string;
 };

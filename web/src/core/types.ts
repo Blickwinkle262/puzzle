@@ -76,6 +76,7 @@ export type UserProfile = {
   id: number;
   username: string;
   is_guest: boolean;
+  is_admin: boolean;
 };
 
 export type LevelProgress = {
