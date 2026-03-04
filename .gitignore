@@ -47,9 +47,17 @@ scripts/book_ingest/output/
 # Local source assets (not tracked)
 materials/source/books/
 materials/source/images/huapi/
+materials/source/images/shibian/
+materials/source/images/xiangyu/
 
 # Generated web story folders
 web/public/content/stories/story-*/
+web/public/content/stories/huapi/
+web/public/content/stories/shibian/
+web/public/content/stories/xiangyu/
+
+# Keep a single font source in web/public/assets
+materials/source/font/SourceHanSansSC-Regular.otf
 
 # Accidental nested backend folder
 backend/backend/

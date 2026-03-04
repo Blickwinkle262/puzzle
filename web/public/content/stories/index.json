@@ -1,37 +1,4 @@
 {
-  "version": 3,
-  "stories": [
-    {
-      "id": "xiangyu",
-      "title": "聊斋·香玉",
-      "description": "花妖现身、香玉之死、良师益友、死而复生、最后的陪伴",
-      "cover": "/content/stories/xiangyu/cover.png",
-      "manifest": "/content/stories/xiangyu/story.json",
-      "order": 1
-    },
-    {
-      "id": "shibian",
-      "title": "聊斋·尸变",
-      "description": "屏息凝视、致命冰冷、月夜追逐、古树躲猫猫、凝固死局",
-      "cover": "/content/stories/shibian/cover.png",
-      "manifest": "/content/stories/shibian/story.json",
-      "order": 2
-    },
-    {
-      "id": "huapi",
-      "title": "聊斋·画皮：幽冥绮梦",
-      "description": "17 幕高难拼图：从晨雾偶遇到生心复活，再到白头偕老。",
-      "cover": "/content/stories/huapi/cover.png",
-      "manifest": "/content/stories/huapi/story.json",
-      "order": 3
-    },
-    {
-      "id": "story-20260303-d53a63",
-      "title": "雨巷幽影：一场避雨，一段孽缘，三世难偿的誓言",
-      "description": "晋阳南氏子弟避雨农家，邂逅清丽少女，情愫暗生。然富贵轻诺，负心背誓，终引幽魂索命，因果轮回，非人力可逃。",
-      "cover": "/content/stories/story-20260303-d53a63/cover.png",
-      "manifest": "/content/stories/story-20260303-d53a63/story.json",
-      "order": 4
-    }
-  ]
+  "version": 1,
+  "stories": []
 }
