@@ -3,6 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Default to fast startup: skip install/rebuild unless explicitly requested.
+DEV_ALL_FULL_SETUP="${DEV_ALL_FULL_SETUP:-0}"
+if [[ "${1:-}" == "--full-setup" ]]; then
+  DEV_ALL_FULL_SETUP="1"
+  shift
+fi
+
 # Load local env (non-Docker dev).
 if [[ -f "$ROOT_DIR/.env.local" ]]; then
   set -a
@@ -57,10 +64,21 @@ mkdir -p "$STORY_GENERATOR_OUTPUT_ROOT"
 mkdir -p "$STORY_GENERATOR_LOG_DIR"
 mkdir -p "$STORY_GENERATOR_SUMMARY_DIR"
 
-npm --prefix "$ROOT_DIR/backend" install
-# better-sqlite3 is a native module; rebuild it for the current Node runtime
-npm --prefix "$ROOT_DIR/backend" rebuild better-sqlite3
-npm --prefix "$ROOT_DIR/web" install
+if [[ "$DEV_ALL_FULL_SETUP" == "1" ]]; then
+  echo "[info] full setup enabled, installing dependencies..."
+  npm --prefix "$ROOT_DIR/backend" install
+  # better-sqlite3 is a native module; rebuild it for the current Node runtime
+  npm --prefix "$ROOT_DIR/backend" rebuild better-sqlite3
+  npm --prefix "$ROOT_DIR/web" install
+else
+  echo "[info] fast startup mode: skip install/rebuild (use --full-setup or DEV_ALL_FULL_SETUP=1 to force)"
+  if [[ ! -d "$ROOT_DIR/backend/node_modules" || ! -d "$ROOT_DIR/web/node_modules" ]]; then
+    echo "[warn] missing node_modules, running one-time install..."
+    npm --prefix "$ROOT_DIR/backend" install
+    npm --prefix "$ROOT_DIR/backend" rebuild better-sqlite3
+    npm --prefix "$ROOT_DIR/web" install
+  fi
+fi
 
 npm --prefix "$ROOT_DIR/backend" run dev &
 BACKEND_PID=$!
