@@ -806,3 +806,34 @@ body,
   flex-wrap: wrap;
   gap: 6px;
 }
+
+.admin-config-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 10px;
+}
+
+.admin-config-actions {
+  margin-bottom: 10px;
+}
+
+.admin-config-summary {
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.admin-config-summary pre {
+  margin: 6px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 8px;
+}

@@ -3,6 +3,9 @@ import {
   AdminGenerationCreateResponse,
   AdminGenerationJob,
   AdminGenerationJobDetail,
+  AdminLevelConfigPatch,
+  AdminLevelConfigResponse,
+  AdminLevelTestRunResponse,
   AdminManagedRole,
   AdminUsersResponse,
   LevelProgress,
@@ -322,6 +325,54 @@ export function apiRevokeAdminUserRole(userId: number, role: AdminManagedRole): 
   return requestJson<{ ok: boolean }>(`/admin/users/${encodeURIComponent(String(userId))}/roles/${encodeURIComponent(role)}`, {
     method: "DELETE",
   });
+}
+
+export function apiGetAdminLevelConfig(storyId: string, levelId: string): Promise<AdminLevelConfigResponse> {
+  return requestJson<AdminLevelConfigResponse>(
+    `/admin/stories/${encodeURIComponent(storyId)}/levels/${encodeURIComponent(levelId)}/config`,
+  );
+}
+
+export function apiUpdateAdminLevelConfig(
+  storyId: string,
+  levelId: string,
+  payload: AdminLevelConfigPatch,
+): Promise<AdminLevelConfigResponse> {
+  return requestJson<AdminLevelConfigResponse>(
+    `/admin/stories/${encodeURIComponent(storyId)}/levels/${encodeURIComponent(levelId)}/config`,
+    {
+      method: "PUT",
+      body: payload,
+    },
+  );
+}
+
+export function apiPreviewAdminLevelConfig(
+  storyId: string,
+  levelId: string,
+  payload: AdminLevelConfigPatch,
+): Promise<AdminLevelConfigResponse> {
+  return requestJson<AdminLevelConfigResponse>(
+    `/admin/stories/${encodeURIComponent(storyId)}/levels/${encodeURIComponent(levelId)}/preview`,
+    {
+      method: "POST",
+      body: payload,
+    },
+  );
+}
+
+export function apiRunAdminLevelTest(
+  storyId: string,
+  levelId: string,
+  payload: AdminLevelConfigPatch,
+): Promise<AdminLevelTestRunResponse> {
+  return requestJson<AdminLevelTestRunResponse>(
+    `/admin/stories/${encodeURIComponent(storyId)}/levels/${encodeURIComponent(levelId)}/test-run`,
+    {
+      method: "POST",
+      body: payload,
+    },
+  );
 }
 
 export { ApiError };

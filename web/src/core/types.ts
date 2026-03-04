@@ -245,3 +245,64 @@ export type AdminUsersResponse = {
   };
   users: AdminUserSummary[];
 };
+
+export type AdminLevelDifficulty = "easy" | "normal" | "hard" | "nightmare";
+
+export type AdminLevelEffectiveConfig = {
+  grid_rows: number;
+  grid_cols: number;
+  piece_count: number;
+  time_limit_sec: number | null;
+  difficulty: AdminLevelDifficulty;
+  content_version: number;
+};
+
+export type AdminLevelOverrideConfig = {
+  enabled: boolean;
+  grid_rows: number | null;
+  grid_cols: number | null;
+  time_limit_sec: number | null;
+  difficulty: AdminLevelDifficulty | null;
+  difficulty_factor: number | null;
+  content_version: number | null;
+  updated_by_user_id: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type AdminLevelConfigSnapshot = {
+  story_id: string;
+  level_id: string;
+  level_title: string;
+  base_config: AdminLevelEffectiveConfig;
+  override_config: AdminLevelOverrideConfig | null;
+  effective_config: AdminLevelEffectiveConfig;
+  preview_override_config?: AdminLevelOverrideConfig | null;
+  preview_effective_config?: AdminLevelEffectiveConfig;
+};
+
+export type AdminLevelConfigResponse = AdminLevelConfigSnapshot & {
+  ok?: boolean;
+};
+
+export type AdminLevelTestRunResponse = {
+  ok: boolean;
+  mode: "admin_test";
+  save_progress: false;
+  message: string;
+  test_run_id: string;
+  story_id: string;
+  level_id: string;
+  level: Record<string, unknown>;
+  config: AdminLevelConfigSnapshot;
+};
+
+export type AdminLevelConfigPatch = {
+  enabled?: boolean;
+  grid_rows?: number | null;
+  grid_cols?: number | null;
+  time_limit_sec?: number | null;
+  difficulty?: AdminLevelDifficulty | null;
+  difficulty_factor?: number | null;
+  content_version?: number | null;
+};

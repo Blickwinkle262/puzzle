@@ -3,21 +3,32 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiCreateAdminGenerationJob,
   apiGrantAdminUserRole,
+  apiGetAdminLevelConfig,
   apiGetAdminGenerationJob,
+  apiGetStoryDetail,
   apiListAdminBookChapters,
   apiListAdminGenerationJobs,
   apiListAdminUsers,
+  apiListStories,
+  apiPreviewAdminLevelConfig,
   apiRevokeAdminUserRole,
+  apiRunAdminLevelTest,
+  apiUpdateAdminLevelConfig,
   ApiError,
 } from "../core/api";
 import {
   AdminBookInfo,
   AdminChapterSummary,
+  AdminLevelConfigPatch,
+  AdminLevelConfigResponse,
+  AdminLevelDifficulty,
+  AdminLevelTestRunResponse,
   AdminGenerationEvent,
   AdminGenerationJob,
   AdminGenerationJobDetail,
   AdminManagedRole,
   AdminUserSummary,
+  StoryListItem,
 } from "../core/types";
 
 type AdminStoryGeneratorProps = {
@@ -34,21 +45,44 @@ type JobProgress = {
   message: string;
 };
 
+type LevelOption = {
+  id: string;
+  title: string;
+};
+
+type LevelConfigFormState = {
+  enabled: boolean;
+  grid_rows: string;
+  grid_cols: string;
+  time_limit_sec: string;
+  difficulty: "" | AdminLevelDifficulty;
+  difficulty_factor: string;
+  content_version: string;
+};
+
 const DEFAULT_MIN_CHARS = 500;
 const DEFAULT_MAX_CHARS = 2200;
 const DEFAULT_SCENE_COUNT = 12;
 const MIN_SCENE_COUNT = 6;
 const MANAGED_ROLES: AdminManagedRole[] = ["admin", "editor", "level_designer", "operator"];
+const MANAGED_LEVEL_DIFFICULTIES: AdminLevelDifficulty[] = ["easy", "normal", "hard", "nightmare"];
 
 export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory }: AdminStoryGeneratorProps): JSX.Element | null {
   const [books, setBooks] = useState<AdminBookInfo[]>([]);
   const [chapters, setChapters] = useState<AdminChapterSummary[]>([]);
   const [recentJobs, setRecentJobs] = useState<AdminGenerationJob[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUserSummary[]>([]);
+  const [configStories, setConfigStories] = useState<StoryListItem[]>([]);
+  const [configLevels, setConfigLevels] = useState<LevelOption[]>([]);
 
   const [loadingChapters, setLoadingChapters] = useState(false);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [loadingConfigCatalog, setLoadingConfigCatalog] = useState(false);
+  const [loadingLevelConfig, setLoadingLevelConfig] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configPreviewing, setConfigPreviewing] = useState(false);
+  const [configTesting, setConfigTesting] = useState(false);
   const [roleSubmittingKey, setRoleSubmittingKey] = useState("");
   const [panelError, setPanelError] = useState("");
   const [panelInfo, setPanelInfo] = useState("");
@@ -56,6 +90,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   const [bookId, setBookId] = useState<string>("");
   const [keyword, setKeyword] = useState("");
   const [userKeyword, setUserKeyword] = useState("");
+  const [configStoryId, setConfigStoryId] = useState("");
+  const [configLevelId, setConfigLevelId] = useState("");
   const [minCharsInput, setMinCharsInput] = useState(String(DEFAULT_MIN_CHARS));
   const [maxCharsInput, setMaxCharsInput] = useState(String(DEFAULT_MAX_CHARS));
   const [includeUsed, setIncludeUsed] = useState(true);
@@ -66,6 +102,9 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
   const [activeRunId, setActiveRunId] = useState("");
   const [activeJob, setActiveJob] = useState<AdminGenerationJobDetail | null>(null);
+  const [levelConfigSnapshot, setLevelConfigSnapshot] = useState<AdminLevelConfigResponse | null>(null);
+  const [testRunResult, setTestRunResult] = useState<AdminLevelTestRunResponse | null>(null);
+  const [levelConfigForm, setLevelConfigForm] = useState<LevelConfigFormState>(defaultLevelConfigForm());
 
   const selectedChapter = useMemo(
     () => chapters.find((item) => item.id === selectedChapterId) || null,
@@ -98,6 +137,83 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setLoadingUsers(false);
     }
   }, [userKeyword]);
+
+  const loadConfigStories = useCallback(async (): Promise<void> => {
+    setLoadingConfigCatalog(true);
+
+    try {
+      const response = await apiListStories();
+      const stories = response.stories || [];
+      setConfigStories(stories);
+
+      if (stories.length === 0) {
+        setConfigStoryId("");
+        setConfigLevelId("");
+        setConfigLevels([]);
+        setLevelConfigSnapshot(null);
+        return;
+      }
+
+      if (!stories.some((item) => item.id === configStoryId)) {
+        setConfigStoryId(stories[0].id);
+      }
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setLoadingConfigCatalog(false);
+    }
+  }, [configStoryId]);
+
+  const loadConfigLevels = useCallback(async (storyId: string): Promise<void> => {
+    const targetStoryId = storyId.trim();
+    if (!targetStoryId) {
+      setConfigLevels([]);
+      setConfigLevelId("");
+      return;
+    }
+
+    setLoadingConfigCatalog(true);
+    try {
+      const detail = await apiGetStoryDetail(targetStoryId);
+      const levelOptions = (detail.story?.levels || []).map((item) => ({
+        id: item.id,
+        title: item.title,
+      }));
+
+      setConfigLevels(levelOptions);
+      if (levelOptions.length === 0) {
+        setConfigLevelId("");
+        setLevelConfigSnapshot(null);
+        return;
+      }
+
+      if (!levelOptions.some((item) => item.id === configLevelId)) {
+        setConfigLevelId(levelOptions[0].id);
+      }
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setLoadingConfigCatalog(false);
+    }
+  }, [configLevelId]);
+
+  const loadLevelConfig = useCallback(async (): Promise<void> => {
+    if (!configStoryId || !configLevelId) {
+      return;
+    }
+
+    setLoadingLevelConfig(true);
+    setTestRunResult(null);
+    try {
+      const snapshot = await apiGetAdminLevelConfig(configStoryId, configLevelId);
+      setLevelConfigSnapshot(snapshot);
+      setLevelConfigForm(formFromLevelConfig(snapshot));
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setLoadingLevelConfig(false);
+    }
+  }, [configLevelId, configStoryId]);
 
   const loadChapters = useCallback(async (): Promise<void> => {
     setLoadingChapters(true);
@@ -139,7 +255,24 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     void loadChapters();
     void loadRecentJobs();
     void loadAdminUsers();
-  }, [loadAdminUsers, loadChapters, loadRecentJobs, visible]);
+    void loadConfigStories();
+  }, [loadAdminUsers, loadChapters, loadConfigStories, loadRecentJobs, visible]);
+
+  useEffect(() => {
+    if (!visible || !configStoryId) {
+      return;
+    }
+
+    void loadConfigLevels(configStoryId);
+  }, [configStoryId, loadConfigLevels, visible]);
+
+  useEffect(() => {
+    if (!visible || !configStoryId || !configLevelId) {
+      return;
+    }
+
+    void loadLevelConfig();
+  }, [configLevelId, configStoryId, loadLevelConfig, visible]);
 
   const handleRoleToggle = async (targetUser: AdminUserSummary, role: AdminManagedRole): Promise<void> => {
     const hasRole = targetUser.roles.includes(role);
@@ -162,6 +295,99 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setPanelError(errorMessage(err));
     } finally {
       setRoleSubmittingKey("");
+    }
+  };
+
+  const handleConfigFormChange = (patch: Partial<LevelConfigFormState>): void => {
+    setLevelConfigForm((prev) => ({
+      ...prev,
+      ...patch,
+    }));
+  };
+
+  const handlePreviewLevelConfig = async (): Promise<void> => {
+    if (!configStoryId || !configLevelId) {
+      setPanelError("请先选择故事和关卡");
+      return;
+    }
+
+    const parsed = buildLevelConfigPatch(levelConfigForm);
+    if (!parsed.ok) {
+      setPanelError(parsed.message || "配置参数不合法");
+      return;
+    }
+
+    setConfigPreviewing(true);
+    setPanelError("");
+    setPanelInfo("");
+
+    try {
+      const snapshot = await apiPreviewAdminLevelConfig(configStoryId, configLevelId, parsed.patch || {});
+      setLevelConfigSnapshot(snapshot);
+      setPanelInfo("预览配置已更新（未落库）");
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setConfigPreviewing(false);
+    }
+  };
+
+  const handleSaveLevelConfig = async (): Promise<void> => {
+    if (!configStoryId || !configLevelId) {
+      setPanelError("请先选择故事和关卡");
+      return;
+    }
+
+    const parsed = buildLevelConfigPatch(levelConfigForm);
+    if (!parsed.ok) {
+      setPanelError(parsed.message || "配置参数不合法");
+      return;
+    }
+
+    setConfigSaving(true);
+    setPanelError("");
+    setPanelInfo("");
+
+    try {
+      const snapshot = await apiUpdateAdminLevelConfig(configStoryId, configLevelId, parsed.patch || {});
+      setLevelConfigSnapshot(snapshot);
+      setLevelConfigForm(formFromLevelConfig(snapshot));
+      setPanelInfo("关卡配置已保存");
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const handleTestLevelConfig = async (): Promise<void> => {
+    if (!configStoryId || !configLevelId) {
+      setPanelError("请先选择故事和关卡");
+      return;
+    }
+
+    const parsed = buildLevelConfigPatch(levelConfigForm);
+    if (!parsed.ok) {
+      setPanelError(parsed.message || "配置参数不合法");
+      return;
+    }
+
+    setConfigTesting(true);
+    setPanelError("");
+    setPanelInfo("");
+
+    try {
+      const result = await apiRunAdminLevelTest(configStoryId, configLevelId, parsed.patch || {});
+      setTestRunResult(result);
+      setLevelConfigSnapshot({
+        ok: true,
+        ...result.config,
+      });
+      setPanelInfo(`测试关卡已生成：${result.test_run_id}`);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setConfigTesting(false);
     }
   };
 
@@ -360,6 +586,172 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
             </table>
           )}
         </div>
+      </div>
+
+      <div className="admin-run-box">
+        <h4>关卡配置 / 预览 / 测试</h4>
+
+        <div className="admin-config-grid">
+          <label className="form-field">
+            故事
+            <select
+              value={configStoryId}
+              onChange={(event) => {
+                setConfigStoryId(event.currentTarget.value);
+                setConfigLevelId("");
+                setLevelConfigSnapshot(null);
+                setTestRunResult(null);
+              }}
+            >
+              <option value="">请选择故事</option>
+              {configStories.map((story) => (
+                <option key={story.id} value={story.id}>
+                  {story.title || story.id}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="form-field">
+            关卡
+            <select
+              value={configLevelId}
+              onChange={(event) => {
+                setConfigLevelId(event.currentTarget.value);
+                setLevelConfigSnapshot(null);
+                setTestRunResult(null);
+              }}
+            >
+              <option value="">请选择关卡</option>
+              {configLevels.map((level) => (
+                <option key={level.id} value={level.id}>
+                  {level.title || level.id}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="form-field">
+            启用 override
+            <input
+              type="checkbox"
+              checked={levelConfigForm.enabled}
+              onChange={(event) => handleConfigFormChange({ enabled: event.currentTarget.checked })}
+            />
+          </label>
+
+          <label className="form-field">
+            行数（grid_rows）
+            <input
+              value={levelConfigForm.grid_rows}
+              onChange={(event) => handleConfigFormChange({ grid_rows: event.currentTarget.value })}
+              placeholder="留空=不覆盖"
+              inputMode="numeric"
+            />
+          </label>
+
+          <label className="form-field">
+            列数（grid_cols）
+            <input
+              value={levelConfigForm.grid_cols}
+              onChange={(event) => handleConfigFormChange({ grid_cols: event.currentTarget.value })}
+              placeholder="留空=不覆盖"
+              inputMode="numeric"
+            />
+          </label>
+
+          <label className="form-field">
+            时限（time_limit_sec）
+            <input
+              value={levelConfigForm.time_limit_sec}
+              onChange={(event) => handleConfigFormChange({ time_limit_sec: event.currentTarget.value })}
+              placeholder="留空=自动计算"
+              inputMode="numeric"
+            />
+          </label>
+
+          <label className="form-field">
+            难度（difficulty）
+            <select
+              value={levelConfigForm.difficulty}
+              onChange={(event) => handleConfigFormChange({ difficulty: event.currentTarget.value as "" | AdminLevelDifficulty })}
+            >
+              <option value="">留空=normal</option>
+              {MANAGED_LEVEL_DIFFICULTIES.map((difficulty) => (
+                <option key={difficulty} value={difficulty}>{difficulty}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="form-field">
+            难度系数（difficulty_factor）
+            <input
+              value={levelConfigForm.difficulty_factor}
+              onChange={(event) => handleConfigFormChange({ difficulty_factor: event.currentTarget.value })}
+              placeholder="留空=策略默认"
+              inputMode="decimal"
+            />
+          </label>
+
+          <label className="form-field">
+            content_version
+            <input
+              value={levelConfigForm.content_version}
+              onChange={(event) => handleConfigFormChange({ content_version: event.currentTarget.value })}
+              placeholder="留空=沿用"
+              inputMode="numeric"
+            />
+          </label>
+        </div>
+
+        <div className="admin-config-actions inline-actions">
+          <button type="button" className="nav-btn" onClick={() => void loadConfigStories()} disabled={loadingConfigCatalog}>
+            {loadingConfigCatalog ? "加载中..." : "刷新故事"}
+          </button>
+          <button type="button" className="nav-btn" onClick={() => void loadLevelConfig()} disabled={!configStoryId || !configLevelId || loadingLevelConfig}>
+            {loadingLevelConfig ? "读取中..." : "读取配置"}
+          </button>
+          <button type="button" className="nav-btn" onClick={() => void handlePreviewLevelConfig()} disabled={!configStoryId || !configLevelId || configPreviewing}>
+            {configPreviewing ? "预览中..." : "预览配置"}
+          </button>
+          <button type="button" className="primary-btn" onClick={() => void handleSaveLevelConfig()} disabled={!configStoryId || !configLevelId || configSaving}>
+            {configSaving ? "保存中..." : "保存配置"}
+          </button>
+          <button type="button" className="link-btn" onClick={() => void handleTestLevelConfig()} disabled={!configStoryId || !configLevelId || configTesting}>
+            {configTesting ? "测试中..." : "测试关卡"}
+          </button>
+        </div>
+
+        {levelConfigSnapshot && (
+          <div className="admin-config-summary">
+            <div>
+              <strong>基础配置：</strong>
+              <pre>{JSON.stringify(levelConfigSnapshot.base_config, null, 2)}</pre>
+            </div>
+            <div>
+              <strong>当前生效：</strong>
+              <pre>{JSON.stringify(levelConfigSnapshot.effective_config, null, 2)}</pre>
+            </div>
+            {levelConfigSnapshot.preview_effective_config && (
+              <div>
+                <strong>预览生效：</strong>
+                <pre>{JSON.stringify(levelConfigSnapshot.preview_effective_config, null, 2)}</pre>
+              </div>
+            )}
+          </div>
+        )}
+
+        {testRunResult && (
+          <div className="admin-config-summary">
+            <strong>测试运行：</strong>
+            <pre>{JSON.stringify({
+              test_run_id: testRunResult.test_run_id,
+              message: testRunResult.message,
+              save_progress: testRunResult.save_progress,
+              mode: testRunResult.mode,
+            }, null, 2)}</pre>
+          </div>
+        )}
       </div>
 
       <div className="admin-filters">
@@ -581,6 +973,98 @@ function pickStoryId(detail: AdminGenerationJobDetail): string {
   }
 
   return "";
+}
+
+function defaultLevelConfigForm(): LevelConfigFormState {
+  return {
+    enabled: true,
+    grid_rows: "",
+    grid_cols: "",
+    time_limit_sec: "",
+    difficulty: "",
+    difficulty_factor: "",
+    content_version: "",
+  };
+}
+
+function formFromLevelConfig(snapshot: AdminLevelConfigResponse): LevelConfigFormState {
+  const override = snapshot.override_config;
+  if (!override) {
+    return defaultLevelConfigForm();
+  }
+
+  return {
+    enabled: Boolean(override.enabled),
+    grid_rows: override.grid_rows === null ? "" : String(override.grid_rows),
+    grid_cols: override.grid_cols === null ? "" : String(override.grid_cols),
+    time_limit_sec: override.time_limit_sec === null ? "" : String(override.time_limit_sec),
+    difficulty: override.difficulty || "",
+    difficulty_factor: override.difficulty_factor === null ? "" : String(override.difficulty_factor),
+    content_version: override.content_version === null ? "" : String(override.content_version),
+  };
+}
+
+function buildLevelConfigPatch(form: LevelConfigFormState): { ok: true; patch: AdminLevelConfigPatch } | { ok: false; message: string } {
+  const parseNullableInteger = (
+    rawValue: string,
+    fieldName: string,
+    min: number,
+    max: number,
+  ): number | null => {
+    const text = rawValue.trim();
+    if (!text) {
+      return null;
+    }
+
+    const parsed = Number(text);
+    if (!Number.isInteger(parsed)) {
+      throw new Error(`${fieldName} 必须是整数`);
+    }
+    if (parsed < min || parsed > max) {
+      throw new Error(`${fieldName} 必须在 ${min}-${max} 之间`);
+    }
+    return parsed;
+  };
+
+  const parseNullableNumber = (
+    rawValue: string,
+    fieldName: string,
+    min: number,
+    max: number,
+  ): number | null => {
+    const text = rawValue.trim();
+    if (!text) {
+      return null;
+    }
+
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`${fieldName} 必须是数字`);
+    }
+    if (parsed <= min || parsed > max) {
+      throw new Error(`${fieldName} 必须在 (${min}, ${max}]`);
+    }
+    return parsed;
+  };
+
+  try {
+    const patch: AdminLevelConfigPatch = {
+      enabled: form.enabled,
+      grid_rows: parseNullableInteger(form.grid_rows, "grid_rows", 2, 20),
+      grid_cols: parseNullableInteger(form.grid_cols, "grid_cols", 2, 20),
+      time_limit_sec: parseNullableInteger(form.time_limit_sec, "time_limit_sec", 30, 3600),
+      difficulty: form.difficulty || null,
+      difficulty_factor: parseNullableNumber(form.difficulty_factor, "difficulty_factor", 0, 5),
+      content_version: parseNullableInteger(form.content_version, "content_version", 1, 999999),
+    };
+
+    return { ok: true, patch };
+  } catch (error) {
+    return {
+      ok: false,
+      message: errorMessage(error),
+    };
+  }
 }
 
 function errorMessage(err: unknown): string {
