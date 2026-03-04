@@ -761,7 +761,7 @@ export function App(): JSX.Element {
 
   if (screen === "stories") {
     return (
-      <div className={`hub-shell role-shell role-${roleKey}`}>
+      <div className={`hub-shell stories-shell role-shell role-${roleKey}`}>
         <header className="hub-header">
           <div>
             <h1>故事导航</h1>
@@ -979,7 +979,7 @@ export function App(): JSX.Element {
 
   if (screen === "story") {
     return (
-      <div className="hub-shell story-enter-shell">
+      <div className="hub-shell story-shell story-enter-shell">
         <header className="hub-header">
           <div>
             <h1>{activeStory.title}</h1>

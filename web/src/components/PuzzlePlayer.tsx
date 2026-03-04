@@ -204,6 +204,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   };
 
   const bestTimeText = currentBestTimeMs && currentBestTimeMs > 0 ? formatDurationMs(currentBestTimeMs) : null;
+  const timerClassName = !timedMode ? "timer" : remainingSec <= 10 ? "timer critical" : remainingSec <= 30 ? "timer warning" : "timer";
 
   useEffect(() => {
     if (!solved || !hasNextLevel) {
@@ -438,7 +439,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   const orientationHintText = level.mobile?.orientation_hint || "建议调整手机方向以获得更好体验";
 
   return (
-    <div className="app-shell">
+    <div className="app-shell puzzle-shell">
       <header className="top-bar">
         <div className="top-main">
           <h1>{storyTitle}</h1>
@@ -466,14 +467,22 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
           {level.story_text && <p className="story-inline">{level.story_text}</p>}
         </div>
 
-        <div className="top-actions">
-          {timedMode && <p className="timer">{formatClock(remainingSec)}</p>}
+        <div className="top-actions puzzle-status-card">
+          {timedMode && <p className={timerClassName}>{formatClock(remainingSec)}</p>}
           {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
           {timeExtraSec > 0 && <p className="progress-inline">已续时 +{timeExtraSec}s</p>}
           {timedMode && <p className="progress-inline">续时次数 {continueUsedCount}/{MAX_CONTINUE_COUNT}</p>}
           <button type="button" className="jump-btn" onClick={onJumpUnfinished}>
             {allCompleted ? "全部完成，回到第一关" : "跳到未完成"}
           </button>
+          <div className="progress-dots" aria-label={`关卡进度 ${levelIndex + 1}/${totalLevels}`}>
+            {Array.from({ length: totalLevels }).map((_, index) => {
+              const done = index < levelIndex || (index === levelIndex && currentCompleted);
+              const current = index === levelIndex && !currentCompleted;
+
+              return <span key={`progress-dot-${index}`} className={`progress-dot ${done ? "done" : ""} ${current ? "current" : ""}`.trim()} />;
+            })}
+          </div>
           <p className="progress-inline">
             已完成 {completedCount}/{totalLevels}
           </p>
@@ -483,60 +492,72 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
       {orientationMismatch && <div className="orientation-tip">{orientationHintText}</div>}
 
       <main className="board-wrap">
-        <div
-          className="board"
-          style={{
-            width: boardLayout.boardWidth,
-            height: boardLayout.boardHeight,
-          }}
-        >
-          <div
-            className="board-grid"
-            style={{
-              backgroundSize: `${boardLayout.tileWidth}px ${boardLayout.tileHeight}px`,
-            }}
-          />
+        <div className="wood-frame-shell">
+          <div className="wood-frame">
+            <div className="frame-inner-border">
+              <span className="frame-nail frame-nail-tl" aria-hidden="true" />
+              <span className="frame-nail frame-nail-tr" aria-hidden="true" />
+              <span className="frame-nail frame-nail-bl" aria-hidden="true" />
+              <span className="frame-nail frame-nail-br" aria-hidden="true" />
 
-          {magnetPreviewCells.map((cell, index) => (
-            <div
-              key={`magnet-${index}-${cell.row}-${cell.col}`}
-              className="magnet-preview-cell"
-              style={{
-                width: boardLayout.tileWidth,
-                height: boardLayout.tileHeight,
-                transform: `translate(${cell.col * boardLayout.tileWidth}px, ${cell.row * boardLayout.tileHeight}px)`,
-              }}
-            />
-          ))}
+              <div
+                className="board"
+                style={{
+                  width: boardLayout.boardWidth,
+                  height: boardLayout.boardHeight,
+                }}
+              >
+                <div
+                  className="board-grid"
+                  style={{
+                    backgroundSize: `${boardLayout.tileWidth}px ${boardLayout.tileHeight}px`,
+                  }}
+                />
 
-          {pieces.map((piece) => {
-            const cell = pieceCells[piece.id];
-            const hidden = hiddenSides.get(piece.id) ?? new Set();
-            const selected = selectedGroupIds?.has(piece.id) ?? false;
+                {magnetPreviewCells.map((cell, index) => (
+                  <div
+                    key={`magnet-${index}-${cell.row}-${cell.col}`}
+                    className="magnet-preview-cell"
+                    style={{
+                      width: boardLayout.tileWidth,
+                      height: boardLayout.tileHeight,
+                      transform: `translate(${cell.col * boardLayout.tileWidth}px, ${cell.row * boardLayout.tileHeight}px)`,
+                    }}
+                  />
+                ))}
 
-            return (
-              <button
-                key={piece.id}
-                type="button"
-                className={`tile ${animating ? "is-animating" : ""}`}
-                style={tileStyle({
-                  piece,
-                  cell,
-                  sourceImage: level.source_image,
-                  boardWidth: boardLayout.boardWidth,
-                  boardHeight: boardLayout.boardHeight,
-                  tileWidth: boardLayout.tileWidth,
-                  tileHeight: boardLayout.tileHeight,
-                  hidden,
-                  selected,
-                  previewOffset: selected ? previewOffset : null,
+                {pieces.map((piece) => {
+                  const cell = pieceCells[piece.id];
+                  const hidden = hiddenSides.get(piece.id) ?? new Set();
+                  const selected = selectedGroupIds?.has(piece.id) ?? false;
+
+                  return (
+                    <button
+                      key={piece.id}
+                      type="button"
+                      className={`tile ${animating ? "is-animating" : ""}`}
+                      style={tileStyle({
+                        piece,
+                        cell,
+                        sourceImage: level.source_image,
+                        boardWidth: boardLayout.boardWidth,
+                        boardHeight: boardLayout.boardHeight,
+                        tileWidth: boardLayout.tileWidth,
+                        tileHeight: boardLayout.tileHeight,
+                        hidden,
+                        selected,
+                        previewOffset: selected ? previewOffset : null,
+                      })}
+                      onPointerDown={(event) => handlePiecePointerDown(piece.id, event)}
+                      onPointerMove={handlePiecePointerMove}
+                      onPointerUp={handlePiecePointerUp}
+                    />
+                  );
                 })}
-                onPointerDown={(event) => handlePiecePointerDown(piece.id, event)}
-                onPointerMove={handlePiecePointerMove}
-                onPointerUp={handlePiecePointerUp}
-              />
-            );
-          })}
+              </div>
+            </div>
+          </div>
+          <div className="frame-caption">木框拼图 · 网格 {rows} × {cols} · 第 {levelIndex + 1}/{totalLevels} 关</div>
         </div>
 
         <div className="hint">按住图块(组)直接拖拽，松手后交换；轻点仅高亮</div>
