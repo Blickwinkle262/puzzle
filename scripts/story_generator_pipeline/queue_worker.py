@@ -328,6 +328,7 @@ def complete_job_via_api(
     status: str,
     exit_code: int | None,
     error_message: str,
+    story_id: str = "",
 ) -> None:
     encoded_run_id = urllib.parse.quote(str(run_id).strip(), safe="")
     post_json(
@@ -336,6 +337,7 @@ def complete_job_via_api(
             "status": status,
             "exit_code": exit_code,
             "error_message": error_message,
+            "story_id": story_id,
         },
         worker_token=worker_token,
         timeout=timeout,
@@ -656,6 +658,8 @@ def run_worker(args: argparse.Namespace) -> int:
 
             try:
                 exit_code, error_message = run_job(job, python_bin=args.python_bin)
+                summary = read_json_file(job.summary_path)
+                completed_story_id = extract_story_id(job, summary)
                 if exit_code == 0:
                     if use_api_mode:
                         complete_job_via_api(
@@ -666,6 +670,7 @@ def run_worker(args: argparse.Namespace) -> int:
                             status="succeeded",
                             exit_code=0,
                             error_message="",
+                            story_id=completed_story_id,
                         )
                     else:
                         assert conn is not None
@@ -687,6 +692,7 @@ def run_worker(args: argparse.Namespace) -> int:
                             status="failed",
                             exit_code=exit_code,
                             error_message=error_message,
+                            story_id=completed_story_id,
                         )
                     else:
                         assert conn is not None
@@ -710,6 +716,7 @@ def run_worker(args: argparse.Namespace) -> int:
                             status="failed",
                             exit_code=None,
                             error_message=str(error),
+                            story_id="",
                         )
                     else:
                         assert conn is not None

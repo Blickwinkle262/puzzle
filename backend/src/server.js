@@ -586,12 +586,14 @@ app.post("/api/internal/generation-jobs/:runId/complete", requireWorkerAuth, (re
   }
 
   const errorMessage = normalizeErrorMessage(req.body?.error_message);
+  const storyId = normalizeShortText(req.body?.story_id);
 
   try {
     const job = completeGenerationJobByRunId(runId, {
       status,
       exitCode,
       errorMessage,
+      storyId,
     });
     if (!job) {
       res.status(404).json({ message: "run_id 不存在" });
@@ -1775,6 +1777,8 @@ function pruneExpiredSessions() {
 function listStoriesForUser(userId) {
   const catalog = loadStoryCatalog();
   const stories = [];
+  const generatedStoryBookMap = buildGeneratedStoryBookMap();
+  const defaultBookMeta = resolveDefaultStoryBookMeta(generatedStoryBookMap);
 
   for (const entry of catalog.stories) {
     const story = loadStoryById(entry.id, catalog);
@@ -1808,7 +1812,7 @@ function listStoriesForUser(userId) {
       }
     }
 
-    const bookMeta = resolveStoryBookMeta(entry, story);
+    const bookMeta = resolveStoryBookMeta(entry, story, generatedStoryBookMap, defaultBookMeta);
 
     stories.push({
       id: story.id,
@@ -1914,8 +1918,8 @@ function loadStoryCatalog() {
     resolveManifestFsPath(manifest);
 
     const storyTitle = typeof item.title === "string" ? item.title : "";
-    const storyBookTitle = normalizeShortText(item.book_title) || inferBookTitleFromStoryTitle(storyTitle);
-    const storyBookId = normalizeStoryBookId(item.book_id) || normalizeStoryBookId(storyBookTitle);
+    const storyBookTitle = normalizeShortText(item.book_title);
+    const storyBookId = normalizeStoryBookId(item.book_id);
 
     stories.push({
       id,
@@ -1939,38 +1943,194 @@ function loadStoryCatalog() {
   };
 }
 
-function resolveStoryBookMeta(entry, story) {
+function resolveStoryBookMeta(entry, story, generatedStoryBookMap, defaultBookMeta) {
   const entryBookTitle = normalizeShortText(entry?.book_title);
   const storyBookTitle = normalizeShortText(story?.book_title);
-  const derivedBookTitle = inferBookTitleFromStoryTitle(story?.title || entry?.title || "");
-  const finalBookTitle = entryBookTitle || storyBookTitle || derivedBookTitle || "聊斋志异";
+  const explicitBookTitle = entryBookTitle || storyBookTitle;
 
   const entryBookId = normalizeStoryBookId(entry?.book_id);
   const storyBookId = normalizeStoryBookId(story?.book_id);
-  const titleBookId = normalizeStoryBookId(finalBookTitle);
+  const explicitBookId = entryBookId || storyBookId;
+
+  const storyId = normalizeShortText(story?.id || entry?.id);
+  const generatedBookMeta = storyId && generatedStoryBookMap instanceof Map
+    ? generatedStoryBookMap.get(storyId)
+    : null;
+
+  const fallbackMeta = defaultBookMeta && typeof defaultBookMeta === "object"
+    ? defaultBookMeta
+    : { book_id: "liaozhai", book_title: "聊斋志异" };
+
+  const finalBookTitle = explicitBookTitle
+    || normalizeShortText(generatedBookMeta?.book_title)
+    || normalizeShortText(fallbackMeta.book_title)
+    || "聊斋志异";
+
+  const finalBookId = explicitBookId
+    || normalizeStoryBookId(generatedBookMeta?.book_id)
+    || normalizeStoryBookId(fallbackMeta.book_id)
+    || "liaozhai";
 
   return {
-    book_id: entryBookId || storyBookId || titleBookId || "book_default",
+    book_id: finalBookId,
     book_title: finalBookTitle,
   };
 }
 
-function inferBookTitleFromStoryTitle(storyTitle) {
-  const title = normalizeShortText(storyTitle);
-  if (!title) {
-    return "";
+function buildGeneratedStoryBookMap() {
+  const map = new Map();
+
+  const usageRows = listStoryBookLinksFromBooksDb();
+  for (const row of usageRows) {
+    const storyId = normalizeShortText(row?.story_id);
+    if (!storyId || map.has(storyId)) {
+      continue;
+    }
+
+    map.set(storyId, {
+      book_id: normalizeStoryBookId(row?.book_id) || "liaozhai",
+      book_title: normalizeShortText(row?.book_title) || "聊斋志异",
+    });
   }
 
-  const delimiterMatch = title.match(/^([^·：:]{1,24})[·：:]/);
-  if (delimiterMatch && delimiterMatch[1]) {
-    return normalizeShortText(delimiterMatch[1]);
+  let metaRows = [];
+  try {
+    metaRows = db
+      .prepare(
+        `
+        SELECT result_story_id, book_id
+        FROM generation_job_meta
+        WHERE COALESCE(result_story_id, '') <> ''
+          AND book_id IS NOT NULL
+        ORDER BY COALESCE(updated_at, created_at) DESC
+      `,
+      )
+      .all();
+  } catch {
+    metaRows = [];
   }
 
-  if (title.startsWith("聊斋")) {
-    return "聊斋志异";
+  for (const row of metaRows) {
+    const storyId = normalizeShortText(row.result_story_id);
+    if (!storyId || map.has(storyId)) {
+      continue;
+    }
+
+    const bookMeta = getBookMetaById(row.book_id);
+    map.set(storyId, {
+      book_id: normalizeStoryBookId(bookMeta.book_id || row.book_id) || "liaozhai",
+      book_title: normalizeShortText(bookMeta.book_title) || "聊斋志异",
+    });
   }
 
-  return "";
+  return map;
+}
+
+function listStoryBookLinksFromBooksDb() {
+  try {
+    const booksDatabase = getBooksDbOrThrow();
+    return booksDatabase
+      .prepare(
+        `
+        SELECT
+          cu.generated_story_id AS story_id,
+          c.book_id AS book_id,
+          b.title AS book_title,
+          cu.updated_at
+        FROM chapter_usage cu
+        JOIN chapters c ON c.id = cu.chapter_id
+        JOIN books b ON b.id = c.book_id
+        WHERE cu.usage_type = 'puzzle_story'
+          AND cu.status = 'succeeded'
+          AND COALESCE(cu.generated_story_id, '') <> ''
+        ORDER BY COALESCE(cu.updated_at, cu.created_at) DESC, cu.id DESC
+      `,
+      )
+      .all();
+  } catch {
+    return [];
+  }
+}
+
+function resolveDefaultStoryBookMeta(generatedStoryBookMap) {
+  if (generatedStoryBookMap instanceof Map && generatedStoryBookMap.size > 0) {
+    const first = generatedStoryBookMap.values().next().value;
+    if (first && typeof first === "object") {
+      return {
+        book_id: normalizeStoryBookId(first.book_id) || "liaozhai",
+        book_title: normalizeShortText(first.book_title) || "聊斋志异",
+      };
+    }
+  }
+
+  const preferred = findPreferredBookMeta();
+  if (preferred) {
+    return preferred;
+  }
+
+  return {
+    book_id: "liaozhai",
+    book_title: "聊斋志异",
+  };
+}
+
+function getBookMetaById(bookId) {
+  const normalizedBookId = normalizePositiveInteger(bookId);
+  if (!normalizedBookId) {
+    return {
+      book_id: "liaozhai",
+      book_title: "聊斋志异",
+    };
+  }
+
+  try {
+    const booksDatabase = getBooksDbOrThrow();
+    const row = booksDatabase
+      .prepare("SELECT id, title FROM books WHERE id = ? LIMIT 1")
+      .get(normalizedBookId);
+
+    if (row) {
+      return {
+        book_id: String(row.id),
+        book_title: String(row.title || ""),
+      };
+    }
+  } catch {
+    // ignore lookup errors and fallback
+  }
+
+  return {
+    book_id: String(normalizedBookId),
+    book_title: "聊斋志异",
+  };
+}
+
+function findPreferredBookMeta() {
+  try {
+    const booksDatabase = getBooksDbOrThrow();
+    const preferred = booksDatabase
+      .prepare("SELECT id, title FROM books WHERE title LIKE ? ORDER BY id ASC LIMIT 1")
+      .get("%聊斋%");
+
+    if (preferred) {
+      return {
+        book_id: normalizeStoryBookId(preferred.id) || "liaozhai",
+        book_title: normalizeShortText(preferred.title) || "聊斋志异",
+      };
+    }
+
+    const first = booksDatabase.prepare("SELECT id, title FROM books ORDER BY id ASC LIMIT 1").get();
+    if (first) {
+      return {
+        book_id: normalizeStoryBookId(first.id) || "liaozhai",
+        book_title: normalizeShortText(first.title) || "聊斋志异",
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function normalizeStoryBookId(value) {
@@ -3453,7 +3613,98 @@ function enqueueGenerationJob({ runId, requestedBy, targetDate, storyFile, dryRu
     now,
   );
 
+  upsertGenerationJobMetaOnEnqueue({
+    runId,
+    requestedBy,
+    payload,
+    createdAt: now,
+  });
+
   cleanupGenerationJobs();
+}
+
+function upsertGenerationJobMetaOnEnqueue({ runId, requestedBy, payload, createdAt }) {
+  try {
+    const requestedByUser = db
+      .prepare("SELECT id FROM users WHERE lower(username) = lower(?) LIMIT 1")
+      .get(String(requestedBy || "").trim());
+
+    const chapterId = normalizePositiveInteger(payload?.chapter_id) || null;
+    const bookId = normalizePositiveInteger(payload?.book_id) || null;
+    const usageId = normalizePositiveInteger(payload?.usage_id) || null;
+    const storyId = normalizeShortText(payload?.story_id) || null;
+    const now = createdAt || nowIso();
+
+    db.prepare(
+      `
+      INSERT INTO generation_job_meta (
+        run_id,
+        requested_by_user_id,
+        chapter_id,
+        book_id,
+        usage_id,
+        result_story_id,
+        job_kind,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'story_generation', ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        requested_by_user_id = COALESCE(excluded.requested_by_user_id, generation_job_meta.requested_by_user_id),
+        chapter_id = COALESCE(excluded.chapter_id, generation_job_meta.chapter_id),
+        book_id = COALESCE(excluded.book_id, generation_job_meta.book_id),
+        usage_id = COALESCE(excluded.usage_id, generation_job_meta.usage_id),
+        result_story_id = CASE
+          WHEN COALESCE(excluded.result_story_id, '') <> '' THEN excluded.result_story_id
+          ELSE generation_job_meta.result_story_id
+        END,
+        updated_at = excluded.updated_at
+    `,
+    ).run(
+      runId,
+      Number.isInteger(requestedByUser?.id) ? Number(requestedByUser.id) : null,
+      chapterId,
+      bookId,
+      usageId,
+      storyId,
+      now,
+      now,
+    );
+  } catch {
+    // ignore meta sync errors to keep main queue flow available
+  }
+}
+
+function upsertGenerationJobMetaOnComplete({ runId, status, storyId, updatedAt }) {
+  try {
+    const normalizedStatus = String(status || "").trim();
+    if (normalizedStatus !== "succeeded") {
+      return;
+    }
+
+    let resolvedStoryId = normalizeShortText(storyId);
+    if (!resolvedStoryId) {
+      const row = db
+        .prepare("SELECT payload_json FROM generation_jobs WHERE run_id = ? LIMIT 1")
+        .get(runId);
+      const payload = safeParseJsonObject(row?.payload_json);
+      resolvedStoryId = normalizeShortText(payload?.story_id);
+    }
+
+    if (!resolvedStoryId) {
+      return;
+    }
+
+    db.prepare(
+      `
+      UPDATE generation_job_meta
+      SET result_story_id = ?,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(resolvedStoryId, updatedAt || nowIso(), runId);
+  } catch {
+    // ignore meta sync errors to keep main queue flow available
+  }
 }
 
 function claimGenerationJob() {
@@ -3513,7 +3764,7 @@ function claimGenerationJob() {
   return tx();
 }
 
-function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage }) {
+function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage, storyId }) {
   const tx = db.transaction(() => {
     const existing = db
       .prepare(
@@ -3544,6 +3795,13 @@ function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage })
         WHERE run_id = ?
       `,
       ).run(status, exitCode, errorMessage, now, now, runId);
+
+      upsertGenerationJobMetaOnComplete({
+        runId,
+        status,
+        storyId,
+        updatedAt: now,
+      });
     }
 
     const latest = db

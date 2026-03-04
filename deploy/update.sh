@@ -10,6 +10,7 @@ ENV_FILE=".env.production"
 DO_BUILD="1"
 SKIP_PULL="0"
 ALLOW_DIRTY="0"
+SKIP_BACKFILL="0"
 
 usage() {
   cat <<'USAGE'
@@ -22,6 +23,7 @@ Options:
   --no-build              Skip docker image rebuild
   --skip-pull             Skip git pull
   --allow-dirty           Allow git pull when working tree is dirty
+  --skip-backfill         Skip generation-job-meta data backfill
   -h, --help              Show this help
 USAGE
 }
@@ -50,6 +52,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-dirty)
       ALLOW_DIRTY="1"
+      shift
+      ;;
+    --skip-backfill)
+      SKIP_BACKFILL="1"
       shift
       ;;
     -h|--help)
@@ -112,6 +118,11 @@ fi
 
 echo "[info] Service status"
 "${COMPOSE[@]}" ps
+
+if [[ "$SKIP_BACKFILL" != "1" ]]; then
+  echo "[info] Run data backfill: generation_job_meta"
+  "${COMPOSE[@]}" exec -T node-app npm --prefix backend run backfill:generation-job-meta
+fi
 
 WEB_PORT="$(grep -E '^WEB_PORT=' "$ENV_FILE" | tail -n1 | cut -d= -f2-)"
 WEB_PORT="${WEB_PORT:-8080}"

@@ -1196,12 +1196,6 @@ function resolveStoryBookTitle(story: StoryListItem): string {
   if (candidate) {
     return candidate;
   }
-
-  const fromStoryTitle = inferBookTitleFromStoryTitle(story.title);
-  if (fromStoryTitle) {
-    return fromStoryTitle;
-  }
-
   return "聊斋志异";
 }
 
@@ -1217,24 +1211,6 @@ function resolveStoryBookKey(story: StoryListItem, fallbackTitle: string, fallba
   }
 
   return `book_${fallbackIndex}`;
-}
-
-function inferBookTitleFromStoryTitle(storyTitle: string): string {
-  const title = String(storyTitle || "").trim();
-  if (!title) {
-    return "";
-  }
-
-  const delimiterMatch = title.match(/^([^·：:]{1,24})[·：:]/);
-  if (delimiterMatch && delimiterMatch[1]) {
-    return delimiterMatch[1].trim();
-  }
-
-  if (title.startsWith("聊斋")) {
-    return "聊斋志异";
-  }
-
-  return "";
 }
 
 function normalizeBookKey(value: unknown): string {

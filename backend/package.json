@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "migrate": "node src/migrate.js",
+    "backfill:generation-job-meta": "node src/backfill-generation-job-meta.js",
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/migrate.js"
+    "check": "node --check src/server.js && node --check src/migrate.js && node --check src/backfill-generation-job-meta.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
