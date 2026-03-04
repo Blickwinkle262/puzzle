@@ -439,7 +439,7 @@ def append_optional_number(command: list[str], flag: str, value: Any) -> None:
 
 def build_pipeline_command(job: GenerationJob, python_bin: str) -> list[str]:
     payload = job.payload
-    command = [python_bin, "scripts/story_generator_pipeline/generate_story.py"]
+    command = [python_bin, "-m", "scripts.story_generator_pipeline.generate_story"]
 
     append_optional_arg(command, "--run-id", payload.get("run_id") or job.run_id)
     append_optional_arg(command, "--target-date", payload.get("target_date") or job.target_date)
