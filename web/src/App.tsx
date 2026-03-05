@@ -84,6 +84,7 @@ export function App(): JSX.Element {
   const [openingStoryId, setOpeningStoryId] = useState<string | null>(null);
   const [sharedCover, setSharedCover] = useState<SharedCoverTransition | null>(null);
   const [hideDetailCover, setHideDetailCover] = useState(false);
+  const [activeJumperLevelId, setActiveJumperLevelId] = useState<string>("");
 
   const storyCoverRefs = useRef<Record<string, HTMLImageElement | null>>({});
   const storyDetailCoverRef = useRef<HTMLImageElement | null>(null);
@@ -602,6 +603,103 @@ export function App(): JSX.Element {
     [activeStory, submitLevelProgress],
   );
 
+  const focusStoryLevel = useCallback((levelId: string) => {
+    const element = document.getElementById(`story-level-${levelId}`);
+    if (!element) {
+      return;
+    }
+
+    setActiveJumperLevelId(levelId);
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, []);
+
+  useEffect(() => {
+    if (screen !== "story" || !activeStory) {
+      setActiveJumperLevelId("");
+      return;
+    }
+
+    const levelIds = activeStory.levels.map((level) => level.id);
+    setActiveJumperLevelId((prev) => {
+      if (prev && levelIds.includes(prev)) {
+        return prev;
+      }
+
+      const inProgress = activeStory.levels.find((level) => activeStory.level_progress[level.id]?.status === "in_progress");
+      return inProgress?.id || levelIds[0] || "";
+    });
+  }, [activeStory, screen]);
+
+  useEffect(() => {
+    if (screen !== "story" || !activeStory || activeStory.levels.length === 0) {
+      return;
+    }
+
+    const cards = activeStory.levels
+      .map((level) => document.getElementById(`story-level-${level.id}`))
+      .filter((element): element is HTMLElement => element instanceof HTMLElement);
+
+    if (cards.length === 0) {
+      return;
+    }
+
+    let rafId = 0;
+
+    const updateActiveLevel = () => {
+      rafId = 0;
+      const viewportAnchor = Math.max(150, Math.round(window.innerHeight * 0.32));
+      let bestId = "";
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      cards.forEach((card) => {
+        const rect = card.getBoundingClientRect();
+        const levelId = card.dataset.levelId || "";
+        if (!levelId) {
+          return;
+        }
+
+        const visible = rect.bottom > 90 && rect.top < window.innerHeight - 90;
+        if (!visible) {
+          return;
+        }
+
+        const distance = Math.abs(rect.top - viewportAnchor);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestId = levelId;
+        }
+      });
+
+      if (!bestId) {
+        const firstVisible = cards.find((card) => card.getBoundingClientRect().bottom >= 120) || cards[cards.length - 1];
+        bestId = firstVisible?.dataset.levelId || "";
+      }
+
+      if (bestId) {
+        setActiveJumperLevelId((prev) => (prev === bestId ? prev : bestId));
+      }
+    };
+
+    const requestUpdate = () => {
+      if (rafId) {
+        return;
+      }
+      rafId = window.requestAnimationFrame(updateActiveLevel);
+    };
+
+    requestUpdate();
+    window.addEventListener("scroll", requestUpdate, { passive: true });
+    window.addEventListener("resize", requestUpdate);
+
+    return () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      window.removeEventListener("scroll", requestUpdate);
+      window.removeEventListener("resize", requestUpdate);
+    };
+  }, [activeStory, screen]);
+
   const completedCount = useMemo(() => {
     if (!activeStory) {
       return 0;
@@ -978,13 +1076,32 @@ export function App(): JSX.Element {
   }
 
   if (screen === "story") {
+    const storyLevelTotal = activeStory.levels.length;
+    const storyProgressPercent = storyLevelTotal > 0 ? Math.round((completedCount / storyLevelTotal) * 100) : 0;
+    const overviewTitle = "故事梗概";
+    const overviewCustomTitle = (activeStory.story_overview_title || "").trim();
+    const overviewCustomLead = overviewCustomTitle.replace(/^故事梗概\s*[：:·-]?\s*/u, "").trim();
+    const overviewParagraphs = [
+      overviewCustomLead,
+      ...(activeStory.story_overview_paragraphs ?? []).map((paragraph) => paragraph.trim()),
+    ].filter(Boolean);
+    const storyBestTimeMs = activeStory.levels.reduce((best, level) => {
+      const value = activeStory.level_progress[level.id]?.best_time_ms || 0;
+      if (value <= 0) {
+        return best;
+      }
+      if (best <= 0 || value < best) {
+        return value;
+      }
+      return best;
+    }, 0);
+    const storyBestTimeText = formatBestTime(storyBestTimeMs);
+    const pendingCount = Math.max(0, storyLevelTotal - completedCount);
+
     return (
-      <div className="hub-shell story-shell story-enter-shell">
-        <header className="hub-header">
-          <div>
-            <h1>{activeStory.title}</h1>
-            <p>{activeStory.description}</p>
-          </div>
+      <div className="hub-shell story-shell story-directory-shell story-enter-shell">
+        <header className="story-directory-navbar">
+          <div className="story-directory-brand">故事目录</div>
           <div className="toolbar-row">
             <button type="button" className="nav-btn" onClick={() => setScreen("stories")}>
               ← 返回故事导航
@@ -997,61 +1114,151 @@ export function App(): JSX.Element {
 
         {error && <div className="banner-error">{error}</div>}
 
-        <section className="story-detail-cover-wrap">
+        <section className="story-directory-hero">
           <img
             ref={storyDetailCoverRef}
             src={coverOrFallback(activeStory.cover)}
             alt={activeStory.title}
-            className={`story-detail-cover ${hideDetailCover ? "is-hidden" : ""}`}
+            className={`story-directory-hero-cover ${hideDetailCover ? "is-hidden" : ""}`}
             onError={replaceWithFallbackCover}
           />
+          <div className="story-directory-hero-overlay" />
+          <div className="story-directory-hero-content">
+            <p className="story-directory-eyebrow">聊斋故事线</p>
+            <h1>{activeStory.title}</h1>
+            <p className="story-directory-description">{activeStory.description}</p>
+            <div className="story-directory-progress">
+              <div className="story-directory-progress-row">
+                <span className="progress-inline">故事进度</span>
+                <span className="progress-inline">已完成 {completedCount}/{storyLevelTotal} 关</span>
+              </div>
+              <div className="story-directory-progress-bar">
+                <div style={{ width: `${storyProgressPercent}%` }} />
+              </div>
+            </div>
+          </div>
         </section>
 
-        {activeStory.story_overview_title && (
-          <details className="story-panel" open>
-            <summary>{activeStory.story_overview_title}</summary>
-            {(activeStory.story_overview_paragraphs ?? []).map((paragraph) => (
-              <p key={paragraph}>{paragraph}</p>
-            ))}
-          </details>
-        )}
+        <main className="story-directory-main">
+          <section className="story-directory-left">
+            <article className="story-intro-card">
+              <p className="story-intro-title">故事简介</p>
+              <p className="story-intro-text">{activeStory.description}</p>
+            </article>
 
-        <section className="level-list">
-          {activeStory.levels.map((level, index) => {
-            const progress = activeStory.level_progress[level.id];
-            const completed = progress?.status === "completed";
-            const disabled = Boolean(level.asset_missing);
-            const bestTimeText = formatBestTime(progress?.best_time_ms);
+            <details className="story-narration-card" open={overviewParagraphs.length > 0}>
+              <summary>
+                <span>{overviewTitle}</span>
+              </summary>
+              <div className="story-narration-body">
+                {overviewParagraphs.length > 0 ? (
+                  overviewParagraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)
+                ) : (
+                  <p>暂无旁白，直接选择关卡开始挑战。</p>
+                )}
+              </div>
+            </details>
 
-            return (
-              <article className="level-card" key={level.id}>
+            <div className="story-levels-title">全部关卡</div>
+            <section className="story-level-list">
+              {activeStory.levels.map((level, index) => {
+                const progress = activeStory.level_progress[level.id];
+                const completed = progress?.status === "completed";
+                const inProgress = progress?.status === "in_progress";
+                const disabled = Boolean(level.asset_missing);
+                const stateClass = completed ? "done" : inProgress ? "current" : "locked";
+                const stateLabel = disabled ? "资源缺失" : completed ? "已完成" : inProgress ? "进行中" : "未开始";
+                const bestTimeText = formatBestTime(progress?.best_time_ms);
+                const actionLabel = disabled ? "不可用" : completed ? "重玩" : inProgress ? "继续" : "开始";
+
+                const isLinked = activeJumperLevelId === level.id;
+
+                return (
+                  <article
+                    className={`story-level-card ${stateClass}${isLinked ? " is-focused" : ""}`}
+                    key={level.id}
+                    id={`story-level-${level.id}`}
+                    data-level-id={level.id}
+                  >
+                    <div className="story-level-main">
+                      <div className="story-level-left">
+                        <h3>
+                          {index + 1}. {level.title}
+                        </h3>
+                        <p>{level.description}</p>
+                        <div className="story-level-tags">
+                          <span className="story-level-tag">网格 {level.grid.rows} × {level.grid.cols}</span>
+                          <span className={`story-level-tag story-level-tag-${stateClass}`}>{stateLabel}</span>
+                          {bestTimeText && <span className="story-level-tag">最快 {bestTimeText}</span>}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className={`story-level-action story-level-action-${stateClass}`}
+                        disabled={disabled}
+                        onClick={() => openPlayAtIndex(index, inProgress ? 0 : 1)}
+                      >
+                        {actionLabel}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </section>
+          </section>
+
+          <aside className="story-directory-right">
+            <section className="story-stats-card">
+              <p className="story-stats-title">游玩统计</p>
+              <div className="story-stats-grid">
                 <div>
-                  <h3>
-                    {index + 1}. {level.title}
-                  </h3>
-                  <p>{level.description}</p>
-                  <p className="progress-inline">
-                    网格 {level.grid.rows} × {level.grid.cols}
-                    <span className={`level-state ${completed ? "done" : "todo"}`}>
-                      {disabled ? "资源缺失" : completed ? "已完成" : progress?.status === "in_progress" ? "进行中" : "未开始"}
-                    </span>
-                  </p>
-                  {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
+                  <strong>{completedCount}</strong>
+                  <span>已完成</span>
                 </div>
-                <button
-                  type="button"
-                  className="primary-btn"
-                  disabled={disabled}
-                  onClick={() => openPlayAtIndex(index, progress?.status === "in_progress" ? 0 : 1)}
-                >
-                  {disabled ? "不可用" : completed ? "重玩" : progress?.status === "in_progress" ? "继续" : "开始"}
-                </button>
-              </article>
-            );
-          })}
-        </section>
+                <div>
+                  <strong>{pendingCount}</strong>
+                  <span>待挑战</span>
+                </div>
+                <div>
+                  <strong>{storyBestTimeText || "--:--"}</strong>
+                  <span>最佳用时</span>
+                </div>
+                <div>
+                  <strong>{storyProgressPercent}%</strong>
+                  <span>完成率</span>
+                </div>
+              </div>
+            </section>
 
-        <div className="progress-inline">已完成 {completedCount}/{activeStory.levels.length}</div>
+            <section className="story-jumper-card">
+              <p className="story-stats-title">关卡速览</p>
+              <div className="story-jumper-list">
+                {activeStory.levels.map((level, index) => {
+                  const progress = activeStory.level_progress[level.id];
+                  const completed = progress?.status === "completed";
+                  const inProgress = progress?.status === "in_progress";
+                  const disabled = Boolean(level.asset_missing);
+                  const stateClass = completed ? "done" : inProgress ? "current" : "locked";
+                  const isLinked = activeJumperLevelId === level.id;
+
+                  return (
+                    <button
+                      key={`jumper-${level.id}`}
+                      type="button"
+                      className={`story-jumper-item ${stateClass}${isLinked ? " is-linked" : ""}`}
+                      disabled={disabled}
+                      onClick={() => focusStoryLevel(level.id)}
+                    >
+                      <span>{index + 1}</span>
+                      <i />
+                      <b>{level.title}</b>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          </aside>
+        </main>
         {sharedCoverOverlay}
       </div>
     );
