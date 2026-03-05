@@ -874,6 +874,7 @@ export function App(): JSX.Element {
     const totalStoryCount = stories.length;
     const totalLevelCount = storyBookGroups.reduce((sum, group) => sum + group.totalLevels, 0);
     const totalCompletedCount = storyBookGroups.reduce((sum, group) => sum + group.completedLevels, 0);
+    const hideStoriesHero = isAdmin && showAdminGenerator;
 
     return (
       <div className={`hub-shell stories-shell stories-home-shell role-shell role-${roleKey}`}>
@@ -1007,38 +1008,40 @@ export function App(): JSX.Element {
           </section>
         )}
 
-        <section className="stories-home-hero">
-          <h1>
-            故事<span>导航</span>
-          </h1>
-          <p className="stories-home-sub">
-            欢迎你，{userName || "玩家"}
-            <span className={`role-badge role-badge-${roleKey}`}>{roleLabel}</span>
-          </p>
-          <p className="stories-home-hint">{roleHint}</p>
-          <div className="stories-home-stats">
-            <div className="stories-home-stat">
-              <strong>{totalBookCount}</strong>
-              <span>书目</span>
+        {!hideStoriesHero && (
+          <section className="stories-home-hero">
+            <h1>
+              故事<span>导航</span>
+            </h1>
+            <p className="stories-home-sub">
+              欢迎你，{userName || "玩家"}
+              <span className={`role-badge role-badge-${roleKey}`}>{roleLabel}</span>
+            </p>
+            <p className="stories-home-hint">{roleHint}</p>
+            <div className="stories-home-stats">
+              <div className="stories-home-stat">
+                <strong>{totalBookCount}</strong>
+                <span>书目</span>
+              </div>
+              <div className="stories-home-stat">
+                <strong>{totalStoryCount}</strong>
+                <span>故事</span>
+              </div>
+              <div className="stories-home-stat">
+                <strong>{totalLevelCount}</strong>
+                <span>关卡</span>
+              </div>
+              <div className="stories-home-stat">
+                <strong>{totalCompletedCount}</strong>
+                <span>已完成</span>
+              </div>
             </div>
-            <div className="stories-home-stat">
-              <strong>{totalStoryCount}</strong>
-              <span>故事</span>
-            </div>
-            <div className="stories-home-stat">
-              <strong>{totalLevelCount}</strong>
-              <span>关卡</span>
-            </div>
-            <div className="stories-home-stat">
-              <strong>{totalCompletedCount}</strong>
-              <span>已完成</span>
-            </div>
-          </div>
-        </section>
+          </section>
+        )}
 
         <div className="stories-home-divider">
           <span />
-          <b>全部书目</b>
+          <b>{hideStoriesHero ? "书目" : "全部书目"}</b>
           <span />
         </div>
 
@@ -1092,6 +1095,19 @@ export function App(): JSX.Element {
                   </button>
 
                   <div className="stories-book-body" style={{ maxHeight: isOpen ? "3600px" : "0px" }}>
+                    <div className="stories-book-curtain" aria-hidden="true">
+                      <span className="stories-book-curtain-rod" />
+                      <span className="stories-book-curtain-half left">
+                        <i />
+                        <i />
+                        <i />
+                      </span>
+                      <span className="stories-book-curtain-half right">
+                        <i />
+                        <i />
+                        <i />
+                      </span>
+                    </div>
                     <div className="stories-book-body-inner">
                       <p className="stories-book-description">
                         已收录 {group.stories.length} 个故事，支持继续闯关与新故事扩展。

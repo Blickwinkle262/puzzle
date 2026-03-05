@@ -66,6 +66,9 @@ const DEFAULT_MIN_CHARS = 500;
 const DEFAULT_MAX_CHARS = 2200;
 const DEFAULT_SCENE_COUNT = 12;
 const MIN_SCENE_COUNT = 6;
+const DEFAULT_CHAPTER_PAGE_SIZE = 10;
+const CHAPTER_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+const CHAPTER_PAGE_SIZE_STORAGE_KEY = "admin_story_generator.chapter_page_size";
 const MANAGED_ROLES: AdminManagedRole[] = ["admin", "editor", "level_designer", "operator"];
 const MANAGED_LEVEL_DIFFICULTIES: AdminLevelDifficulty[] = ["easy", "normal", "hard", "nightmare"];
 
@@ -101,16 +104,29 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const [targetDate, setTargetDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [sceneCountInput, setSceneCountInput] = useState(String(DEFAULT_SCENE_COUNT));
+  const [chapterPage, setChapterPage] = useState(1);
+  const [chapterPageSize, setChapterPageSize] = useState<number>(() => {
+    if (typeof window === "undefined") {
+      return DEFAULT_CHAPTER_PAGE_SIZE;
+    }
+
+    const savedValue = Number(window.localStorage.getItem(CHAPTER_PAGE_SIZE_STORAGE_KEY));
+    return CHAPTER_PAGE_SIZE_OPTIONS.includes(savedValue as (typeof CHAPTER_PAGE_SIZE_OPTIONS)[number])
+      ? savedValue
+      : DEFAULT_CHAPTER_PAGE_SIZE;
+  });
+  const [chapterTotal, setChapterTotal] = useState(0);
 
   const [activeRunId, setActiveRunId] = useState("");
   const [activeJob, setActiveJob] = useState<AdminGenerationJobDetail | null>(null);
   const [levelConfigSnapshot, setLevelConfigSnapshot] = useState<AdminLevelConfigResponse | null>(null);
   const [testRunResult, setTestRunResult] = useState<AdminLevelTestRunResponse | null>(null);
   const [levelConfigForm, setLevelConfigForm] = useState<LevelConfigFormState>(defaultLevelConfigForm());
+  const [showGenerateDialog, setShowGenerateDialog] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Record<AdminSectionKey, boolean>>({
-    users: false,
-    levelConfig: false,
-    puzzle: false,
+    users: true,
+    levelConfig: true,
+    puzzle: true,
   });
 
   const selectedChapter = useMemo(
@@ -119,6 +135,14 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   );
 
   const progress = useMemo(() => extractJobProgress(activeJob), [activeJob]);
+  const totalChapterPages = useMemo(() => {
+    const pages = Math.ceil(chapterTotal / chapterPageSize);
+    return pages > 0 ? pages : 1;
+  }, [chapterPageSize, chapterTotal]);
+  const resumableJob = useMemo(
+    () => recentJobs.find((job) => job.status === "running" || job.status === "queued") || null,
+    [recentJobs],
+  );
 
   const toggleSection = useCallback((key: AdminSectionKey): void => {
     setCollapsedSections((prev) => ({
@@ -243,11 +267,13 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         min_chars: Number.isFinite(parsedMinChars) && parsedMinChars > 0 ? parsedMinChars : undefined,
         max_chars: Number.isFinite(parsedMaxChars) && parsedMaxChars > 0 ? parsedMaxChars : undefined,
         include_used: includeUsed,
-        limit: 80,
+        limit: chapterPageSize,
+        offset: (chapterPage - 1) * chapterPageSize,
       });
 
       setBooks(response.books || []);
       setChapters(response.chapters || []);
+      setChapterTotal(Number(response.total || 0));
 
       if (response.chapters.length === 0) {
         setSelectedChapterId(null);
@@ -259,7 +285,23 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     } finally {
       setLoadingChapters(false);
     }
-  }, [bookId, includeUsed, keyword, maxCharsInput, minCharsInput, selectedChapterId]);
+  }, [bookId, chapterPage, chapterPageSize, includeUsed, keyword, maxCharsInput, minCharsInput, selectedChapterId]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setChapterPage(1);
+  }, [bookId, chapterPageSize, includeUsed, keyword, maxCharsInput, minCharsInput, visible]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(CHAPTER_PAGE_SIZE_STORAGE_KEY, String(chapterPageSize));
+  }, [chapterPageSize]);
 
   useEffect(() => {
     if (!visible) {
@@ -267,10 +309,17 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     }
 
     void loadChapters();
+  }, [loadChapters, visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
     void loadRecentJobs();
     void loadAdminUsers();
     void loadConfigStories();
-  }, [loadAdminUsers, loadChapters, loadConfigStories, loadRecentJobs, visible]);
+  }, [visible]);
 
   useEffect(() => {
     if (!visible || !configStoryId) {
@@ -453,6 +502,23 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     };
   }, [activeRunId, loadRecentJobs, onGenerated, visible]);
 
+  const handleViewJobProgress = useCallback((runId: string): void => {
+    const targetRunId = runId.trim();
+    if (!targetRunId) {
+      return;
+    }
+
+    setPanelError("");
+    setPanelInfo(`正在查看任务进度：${targetRunId}`);
+    setShowGenerateDialog(false);
+    setActiveJob(null);
+    setActiveRunId(targetRunId);
+    setCollapsedSections((prev) => ({
+      ...prev,
+      puzzle: false,
+    }));
+  }, []);
+
   const handleOpenGeneratedStory = async (storyId: string): Promise<void> => {
     const targetId = storyId.trim();
     if (!targetId) {
@@ -492,6 +558,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     setSubmitting(true);
     setPanelError("");
     setPanelInfo("");
+    setShowGenerateDialog(false);
 
     try {
       const response = await apiCreateAdminGenerationJob({
@@ -523,6 +590,14 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
       {panelError && <div className="banner-error">{panelError}</div>}
       {panelInfo && <div className="banner-info">{panelInfo}</div>}
+      {resumableJob && !activeRunId && (
+        <div className="banner-info admin-running-banner">
+          <span>检测到运行中任务：{resumableJob.run_id}</span>
+          <button type="button" className="nav-btn" onClick={() => handleViewJobProgress(resumableJob.run_id)}>
+            查看进度
+          </button>
+        </div>
+      )}
 
       <div className="admin-run-box admin-collapsible-box">
         <button
@@ -817,174 +892,277 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
         {!collapsedSections.puzzle && (
           <>
-        <p className="progress-inline">选择章节后可生成新故事谜题，并在下方查看进度与最近任务。</p>
+            <p className="progress-inline">选择章节后，在右侧预览栏点击“去生成”，弹窗填写参数并创建任务。</p>
+
+            <div className="admin-puzzle-layout">
+              <div className="admin-puzzle-main">
+                <div className="admin-filters">
+                  <label className="form-field">
+                    书籍
+                    <select value={bookId} onChange={(event) => setBookId(event.currentTarget.value)}>
+                      <option value="">全部（默认聊斋）</option>
+                      {books.map((book) => (
+                        <option key={book.id} value={book.id}>
+                          {book.title}（{book.chapter_count}章）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="form-field">
+                    关键词
+                    <input value={keyword} onChange={(event) => setKeyword(event.currentTarget.value)} placeholder="章节标题关键词" />
+                  </label>
+
+                  <label className="form-field">
+                    最小字数
+                    <input value={minCharsInput} onChange={(event) => setMinCharsInput(event.currentTarget.value)} inputMode="numeric" />
+                  </label>
+
+                  <label className="form-field">
+                    最大字数
+                    <input value={maxCharsInput} onChange={(event) => setMaxCharsInput(event.currentTarget.value)} inputMode="numeric" />
+                  </label>
+
+                  <label className="form-field">
+                    每页条数
+                    <select
+                      value={chapterPageSize}
+                      onChange={(event) => {
+                        const nextPageSize = Number(event.currentTarget.value);
+                        if (!CHAPTER_PAGE_SIZE_OPTIONS.includes(nextPageSize as (typeof CHAPTER_PAGE_SIZE_OPTIONS)[number])) {
+                          return;
+                        }
+
+                        setChapterPageSize(nextPageSize);
+                        setChapterPage(1);
+                      }}
+                    >
+                      {CHAPTER_PAGE_SIZE_OPTIONS.map((size) => (
+                        <option key={size} value={size}>
+                          {size} 条/页
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="admin-check">
+                    <input type="checkbox" checked={includeUsed} onChange={(event) => setIncludeUsed(event.currentTarget.checked)} />
+                    显示已生成章节（可重生）
+                  </label>
+
+                  <div className="inline-actions">
+                    <button type="button" className="nav-btn" onClick={() => void loadChapters()} disabled={loadingChapters}>
+                      {loadingChapters ? "查询中..." : "刷新章节"}
+                    </button>
+                    <button type="button" className="link-btn" onClick={onClose}>
+                      收起面板
+                    </button>
+                  </div>
+                </div>
+
+                <div className="admin-chapter-table">
+                  {chapters.length === 0 ? (
+                    <div className="progress-inline">没有匹配章节，请调整条件。</div>
+                  ) : (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>选择</th>
+                          <th>书名</th>
+                          <th>章节</th>
+                          <th>字数</th>
+                          <th>使用次数</th>
+                          <th>预览</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {chapters.map((chapter) => (
+                          <tr
+                            key={chapter.id}
+                            className={`${selectedChapterId === chapter.id ? "is-selected" : ""} ${chapter.has_succeeded_story ? "is-generated" : ""}`.trim()}
+                          >
+                            <td>
+                              <input
+                                type="radio"
+                                name="chapter"
+                                checked={selectedChapterId === chapter.id}
+                                onChange={() => setSelectedChapterId(chapter.id)}
+                              />
+                            </td>
+                            <td>{chapter.book_title}</td>
+                            <td>
+                              第{chapter.chapter_index}章 · {chapter.chapter_title}
+                              {chapter.has_succeeded_story && (
+                                <>
+                                  <span className="level-state done" title={chapter.generated_story_id || undefined}>
+                                    已生成（可重生）
+                                  </span>
+                                  {chapter.generated_story_id && (
+                                    <button
+                                      type="button"
+                                      className="link-btn admin-open-story-btn"
+                                      onClick={() => void handleOpenGeneratedStory(chapter.generated_story_id || "")}
+                                    >
+                                      打开故事 {chapter.generated_story_id}
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </td>
+                            <td>{chapter.char_count}</td>
+                            <td>{chapter.used_count}</td>
+                            <td>{chapter.preview || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div className="admin-chapter-pagination">
+                  <button
+                    type="button"
+                    className="nav-btn admin-page-side-btn"
+                    onClick={() => setChapterPage((page) => Math.max(1, page - 1))}
+                    disabled={loadingChapters || chapterPage <= 1}
+                  >
+                    ← 上一页
+                  </button>
+
+                  <div className="admin-page-meta">
+                    第 {chapterPage} / {totalChapterPages} 页 · 每页 {chapterPageSize} 条 · 共 {chapterTotal} 条
+                  </div>
+
+                  <button
+                    type="button"
+                    className="nav-btn admin-page-side-btn"
+                    onClick={() => setChapterPage((page) => Math.min(totalChapterPages, page + 1))}
+                    disabled={loadingChapters || chapterPage >= totalChapterPages}
+                  >
+                    下一页 →
+                  </button>
+                </div>
+              </div>
+
+              <aside className="admin-puzzle-side">
+                <div className="admin-run-box admin-puzzle-preview">
+                  <h4>章节预览</h4>
+                  {selectedChapter ? (
+                    <>
+                      <p className="progress-inline">
+                        当前选择：第{selectedChapter.chapter_index}章 · {selectedChapter.chapter_title}（{selectedChapter.char_count}字）
+                      </p>
+                      <p className="admin-puzzle-preview-text">{selectedChapter.preview || "暂无章节预览"}</p>
+                      <div className="inline-actions">
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          disabled={submitting || Boolean(activeRunId)}
+                          onClick={() => setShowGenerateDialog(true)}
+                        >
+                          {submitting ? "创建中..." : activeRunId ? "任务进行中" : "去生成"}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="progress-inline">请先在左侧选择章节，再发起生成。</p>
+                  )}
+                </div>
+
+                {activeRunId && (
+                  <div className="admin-progress">
+                    <h4>任务进度：{activeRunId}</h4>
+                    <div className="admin-progress-bar">
+                      <div style={{ width: `${Math.min(100, Math.max(0, progress.value * 100))}%` }} />
+                    </div>
+                    <p className="progress-inline">
+                      {progress.message}（{progress.completed}/{progress.total}）
+                    </p>
+                    <p className="progress-inline">状态：{activeJob?.status || "queued"}</p>
+                    {activeJob?.log_tail?.length ? (
+                      <pre className="admin-log-tail">{activeJob.log_tail.slice(-8).join("\n")}</pre>
+                    ) : null}
+                  </div>
+                )}
+
+                {recentJobs.length > 0 && (
+                  <div className="admin-recent-jobs">
+                    <h4>最近任务</h4>
+                    <ul>
+                      {recentJobs.slice(0, 8).map((job) => {
+                        const resumable = job.status === "running" || job.status === "queued";
+                        const viewing = activeRunId === job.run_id;
+
+                        return (
+                          <li key={job.run_id}>
+                            <span>{job.run_id}</span>
+                            <span className={`level-state ${job.status === "succeeded" ? "done" : "todo"}`}>{job.status}</span>
+                            <span>{job.target_date}</span>
+                            {resumable && (
+                              <button
+                                type="button"
+                                className="nav-btn admin-job-view-btn"
+                                onClick={() => handleViewJobProgress(job.run_id)}
+                                disabled={viewing}
+                              >
+                                {viewing ? "查看中" : "查看进度"}
+                              </button>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </aside>
+            </div>
           </>
         )}
       </div>
 
-      {!collapsedSections.puzzle && (
-        <>
-            <div className="admin-filters">
-        <label className="form-field">
-          书籍
-          <select value={bookId} onChange={(event) => setBookId(event.currentTarget.value)}>
-            <option value="">全部（默认聊斋）</option>
-            {books.map((book) => (
-              <option key={book.id} value={book.id}>
-                {book.title}（{book.chapter_count}章）
-              </option>
-            ))}
-          </select>
-        </label>
+      {showGenerateDialog && (
+        <div className="mask" role="dialog" aria-modal="true" onClick={() => setShowGenerateDialog(false)}>
+          <div className="mask-card admin-generate-modal" onClick={(event) => event.stopPropagation()}>
+            <h4>生成参数</h4>
+            <p className="progress-inline">确认参数后开始生成任务。</p>
 
-        <label className="form-field">
-          关键词
-          <input value={keyword} onChange={(event) => setKeyword(event.currentTarget.value)} placeholder="章节标题关键词" />
-        </label>
+            <label className="form-field">
+              生成日期（story_YYYY-MM-DD）
+              <input value={targetDate} onChange={(event) => setTargetDate(event.currentTarget.value)} placeholder="YYYY-MM-DD" />
+            </label>
 
-        <label className="form-field">
-          最小字数
-          <input value={minCharsInput} onChange={(event) => setMinCharsInput(event.currentTarget.value)} inputMode="numeric" />
-        </label>
+            <label className="form-field">
+              目标张数（至少 6）
+              <input
+                value={sceneCountInput}
+                onChange={(event) => setSceneCountInput(event.currentTarget.value)}
+                inputMode="numeric"
+                placeholder={String(DEFAULT_SCENE_COUNT)}
+              />
+            </label>
 
-        <label className="form-field">
-          最大字数
-          <input value={maxCharsInput} onChange={(event) => setMaxCharsInput(event.currentTarget.value)} inputMode="numeric" />
-        </label>
+            {selectedChapter && (
+              <p className="progress-inline">
+                当前选择：{selectedChapter.chapter_title}（{selectedChapter.char_count}字）
+              </p>
+            )}
 
-        <label className="admin-check">
-          <input type="checkbox" checked={includeUsed} onChange={(event) => setIncludeUsed(event.currentTarget.checked)} />
-          显示已生成章节（可重生）
-        </label>
-
-        <div className="inline-actions">
-          <button type="button" className="nav-btn" onClick={() => void loadChapters()} disabled={loadingChapters}>
-            {loadingChapters ? "查询中..." : "刷新章节"}
-          </button>
-          <button type="button" className="link-btn" onClick={onClose}>
-            收起面板
-          </button>
-        </div>
-      </div>
-
-      <div className="admin-chapter-table">
-        {chapters.length === 0 ? (
-          <div className="progress-inline">没有匹配章节，请调整条件。</div>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>选择</th>
-                <th>书名</th>
-                <th>章节</th>
-                <th>字数</th>
-                <th>使用次数</th>
-                <th>预览</th>
-              </tr>
-            </thead>
-            <tbody>
-              {chapters.map((chapter) => (
-                <tr
-                  key={chapter.id}
-                  className={`${selectedChapterId === chapter.id ? "is-selected" : ""} ${chapter.has_succeeded_story ? "is-generated" : ""}`.trim()}
-                >
-                  <td>
-                    <input
-                      type="radio"
-                      name="chapter"
-                      checked={selectedChapterId === chapter.id}
-                      onChange={() => setSelectedChapterId(chapter.id)}
-                    />
-                  </td>
-                  <td>{chapter.book_title}</td>
-                  <td>
-                    第{chapter.chapter_index}章 · {chapter.chapter_title}
-                    {chapter.has_succeeded_story && (
-                      <>
-                        <span className="level-state done" title={chapter.generated_story_id || undefined}>
-                          已生成（可重生）
-                        </span>
-                        {chapter.generated_story_id && (
-                          <button
-                            type="button"
-                            className="link-btn admin-open-story-btn"
-                            onClick={() => void handleOpenGeneratedStory(chapter.generated_story_id || "")}
-                          >
-                            打开故事 {chapter.generated_story_id}
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </td>
-                  <td>{chapter.char_count}</td>
-                  <td>{chapter.used_count}</td>
-                  <td>{chapter.preview || "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="admin-run-box">
-        <label className="form-field">
-          生成日期（story_YYYY-MM-DD）
-          <input value={targetDate} onChange={(event) => setTargetDate(event.currentTarget.value)} placeholder="YYYY-MM-DD" />
-        </label>
-
-        <label className="form-field">
-          目标张数（至少 6）
-          <input
-            value={sceneCountInput}
-            onChange={(event) => setSceneCountInput(event.currentTarget.value)}
-            inputMode="numeric"
-            placeholder={String(DEFAULT_SCENE_COUNT)}
-          />
-        </label>
-
-        <div className="inline-actions">
-          <button type="button" className="primary-btn" disabled={!selectedChapter || submitting || Boolean(activeRunId)} onClick={() => void handleSubmit()}>
-            {submitting ? "创建中..." : "开始生成"}
-          </button>
-          {selectedChapter && (
-            <span className="progress-inline">
-              当前选择：{selectedChapter.chapter_title}（{selectedChapter.char_count}字）
-            </span>
-          )}
-        </div>
-      </div>
-
-      {activeRunId && (
-        <div className="admin-progress">
-          <h4>任务进度：{activeRunId}</h4>
-          <div className="admin-progress-bar">
-            <div style={{ width: `${Math.min(100, Math.max(0, progress.value * 100))}%` }} />
+            <div className="inline-actions">
+              <button
+                type="button"
+                className="primary-btn"
+                disabled={!selectedChapter || submitting || Boolean(activeRunId)}
+                onClick={() => void handleSubmit()}
+              >
+                {submitting ? "创建中..." : "开始生成"}
+              </button>
+              <button type="button" className="link-btn" onClick={() => setShowGenerateDialog(false)}>
+                取消
+              </button>
+            </div>
           </div>
-          <p className="progress-inline">
-            {progress.message}（{progress.completed}/{progress.total}）
-          </p>
-          <p className="progress-inline">状态：{activeJob?.status || "queued"}</p>
-          {activeJob?.log_tail?.length ? (
-            <pre className="admin-log-tail">{activeJob.log_tail.slice(-8).join("\n")}</pre>
-          ) : null}
         </div>
-      )}
-
-      {recentJobs.length > 0 && (
-        <div className="admin-recent-jobs">
-          <h4>最近任务</h4>
-          <ul>
-            {recentJobs.slice(0, 8).map((job) => (
-              <li key={job.run_id}>
-                <span>{job.run_id}</span>
-                <span className={`level-state ${job.status === "succeeded" ? "done" : "todo"}`}>{job.status}</span>
-                <span>{job.target_date}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-        </>
       )}
 
     </section>
