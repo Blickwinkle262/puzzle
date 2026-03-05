@@ -23,6 +23,7 @@ import { PuzzlePlayer } from "./components/PuzzlePlayer";
 const OPEN_BOOK_ANIMATION_MS = 380;
 const SHARED_COVER_ANIMATION_MS = 420;
 const SESSION_REFRESH_INTERVAL_MS = 1000 * 60 * 8;
+const COLLAPSED_BOOK_KEY = "__collapsed__";
 const FALLBACK_COVER =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 800'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%231f1a3b'/%3E%3Cstop offset='1' stop-color='%23101b30'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='600' height='800' fill='url(%23g)'/%3E%3Ctext x='50%25' y='50%25' fill='%23f4e7bf' font-size='44' text-anchor='middle' dominant-baseline='middle'%3EStory%3C/text%3E%3C/svg%3E";
 
@@ -732,14 +733,25 @@ export function App(): JSX.Element {
       : "这是普通用户模式，可专注闯关并刷新个人最佳记录。";
 
   const storyBookGroups = useMemo(() => buildStoryBookGroups(stories), [stories]);
-  const activeBookGroup = useMemo(
-    () => storyBookGroups.find((item) => item.key === selectedBookKey) || storyBookGroups[0] || null,
-    [selectedBookKey, storyBookGroups],
-  );
+  const activeBookGroup = useMemo(() => {
+    if (selectedBookKey === COLLAPSED_BOOK_KEY) {
+      return null;
+    }
+    return storyBookGroups.find((item) => item.key === selectedBookKey) || null;
+  }, [selectedBookKey, storyBookGroups]);
 
   useEffect(() => {
     if (storyBookGroups.length === 0) {
       setSelectedBookKey("");
+      return;
+    }
+
+    if (!selectedBookKey) {
+      setSelectedBookKey(storyBookGroups[0].key);
+      return;
+    }
+
+    if (selectedBookKey === COLLAPSED_BOOK_KEY) {
       return;
     }
 
@@ -858,18 +870,16 @@ export function App(): JSX.Element {
   }
 
   if (screen === "stories") {
+    const totalBookCount = storyBookGroups.length;
+    const totalStoryCount = stories.length;
+    const totalLevelCount = storyBookGroups.reduce((sum, group) => sum + group.totalLevels, 0);
+    const totalCompletedCount = storyBookGroups.reduce((sum, group) => sum + group.completedLevels, 0);
+
     return (
-      <div className={`hub-shell stories-shell role-shell role-${roleKey}`}>
-        <header className="hub-header">
-          <div>
-            <h1>故事导航</h1>
-            <p className="hub-welcome-line">
-              欢迎你，{userName || "玩家"}
-              <span className={`role-badge role-badge-${roleKey}`}>{roleLabel}</span>
-            </p>
-            <p className="hub-role-note">{roleHint}</p>
-          </div>
-          <div className="toolbar-row">
+      <div className={`hub-shell stories-shell stories-home-shell role-shell role-${roleKey}`}>
+        <header className="stories-home-nav">
+          <div className="stories-home-brand">故事导航</div>
+          <div className="toolbar-row nav-right">
             {isGuest ? (
               <button
                 type="button"
@@ -997,63 +1007,146 @@ export function App(): JSX.Element {
           </section>
         )}
 
-        <section className="book-collection-grid">
-          {storyBookGroups.map((group) => (
-            <button
-              key={group.key}
-              type="button"
-              className={`book-collection-card ${activeBookGroup?.key === group.key ? "is-active" : ""}`}
-              onClick={() => setSelectedBookKey(group.key)}
-              disabled={Boolean(openingStoryId)}
-            >
-              <span className="book-collection-title">{group.title}</span>
-              <span className="book-collection-meta">故事 {group.stories.length} 本</span>
-              <span className="book-collection-meta">关卡完成 {group.completedLevels}/{group.totalLevels}</span>
-            </button>
-          ))}
+        <section className="stories-home-hero">
+          <h1>
+            故事<span>导航</span>
+          </h1>
+          <p className="stories-home-sub">
+            欢迎你，{userName || "玩家"}
+            <span className={`role-badge role-badge-${roleKey}`}>{roleLabel}</span>
+          </p>
+          <p className="stories-home-hint">{roleHint}</p>
+          <div className="stories-home-stats">
+            <div className="stories-home-stat">
+              <strong>{totalBookCount}</strong>
+              <span>书目</span>
+            </div>
+            <div className="stories-home-stat">
+              <strong>{totalStoryCount}</strong>
+              <span>故事</span>
+            </div>
+            <div className="stories-home-stat">
+              <strong>{totalLevelCount}</strong>
+              <span>关卡</span>
+            </div>
+            <div className="stories-home-stat">
+              <strong>{totalCompletedCount}</strong>
+              <span>已完成</span>
+            </div>
+          </div>
         </section>
 
-        {activeBookGroup ? (
-          <section className="book-collection-panel">
-            <div className="book-collection-panel-head">
-              <h2>{activeBookGroup.title}</h2>
-              <p>已收录 {activeBookGroup.stories.length} 个故事，支持继续闯关与新故事扩展。</p>
-            </div>
+        <div className="stories-home-divider">
+          <span />
+          <b>全部书目</b>
+          <span />
+        </div>
 
-            <main className={`story-grid ${openingStoryId ? "has-opening" : ""}`}>
-              {activeBookGroup.stories.map((story) => (
-                <button
-                  type="button"
-                  key={story.id}
-                  className={`book-card ${openingStoryId === story.id ? "is-opening" : ""}`}
-                  onClick={() => void openStory(story)}
-                  disabled={Boolean(openingStoryId)}
+        {storyBookGroups.length > 0 ? (
+          <main className="stories-home-main">
+            {storyBookGroups.map((group, groupIndex) => {
+              const isOpen = activeBookGroup?.key === group.key;
+              const bookProgressPercent = group.totalLevels > 0 ? Math.round((group.completedLevels / group.totalLevels) * 100) : 0;
+              const coverStory = group.stories.find((story) => Boolean(story.cover)) || group.stories[0] || null;
+
+              return (
+                <section
+                  key={group.key}
+                  className={`stories-book-section ${isOpen ? "open" : ""}`}
+                  style={{ animationDelay: `${0.08 + groupIndex * 0.06}s` }}
                 >
-                  <span className="book-spine" aria-hidden="true" />
-                  <img
-                    ref={(node) => {
-                      storyCoverRefs.current[story.id] = node;
-                    }}
-                    src={coverOrFallback(story.cover)}
-                    alt={story.title}
-                    className="book-cover"
-                    onError={replaceWithFallbackCover}
-                  />
-                  <span className="book-gloss" aria-hidden="true" />
-                  <span className="book-meta">
-                    <span className="book-title">{story.title}</span>
-                    <span className="book-desc">{story.description}</span>
-                    <span className="book-progress">
-                      完成度 {story.completed_levels}/{story.total_levels}
-                    </span>
-                    <span className="book-action">
-                      {story.completed_levels > 0 ? "继续翻开" : "打开这本故事"} →
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </main>
-          </section>
+                  <button
+                    type="button"
+                    className="stories-book-header"
+                    disabled={Boolean(openingStoryId)}
+                    onClick={() =>
+                      setSelectedBookKey((prev) => (prev === group.key ? COLLAPSED_BOOK_KEY : group.key))
+                    }
+                  >
+                    <div className="stories-book-thumb">
+                      {coverStory ? (
+                        <img src={coverOrFallback(coverStory.cover)} alt={group.title} onError={replaceWithFallbackCover} />
+                      ) : (
+                        <span>📖</span>
+                      )}
+                    </div>
+                    <div className="stories-book-info">
+                      <h2>{group.title}</h2>
+                      <p>
+                        故事 {group.stories.length} 本 · 关卡 {group.totalLevels} 关
+                      </p>
+                      <div className="stories-book-progress-row">
+                        <div className="stories-book-progress-bar">
+                          <i style={{ width: `${bookProgressPercent}%` }} />
+                        </div>
+                        <span>
+                          {group.completedLevels} / {group.totalLevels}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="stories-book-toggle" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="6,9 12,15 18,9" />
+                      </svg>
+                    </div>
+                  </button>
+
+                  <div className="stories-book-body" style={{ maxHeight: isOpen ? "3600px" : "0px" }}>
+                    <div className="stories-book-body-inner">
+                      <p className="stories-book-description">
+                        已收录 {group.stories.length} 个故事，支持继续闯关与新故事扩展。
+                      </p>
+
+                      <div className={`stories-story-grid ${openingStoryId ? "has-opening" : ""}`}>
+                        {group.stories.map((story) => {
+                          const completed = Number(story.completed_levels || 0);
+                          const total = Number(story.total_levels || 0);
+                          const progressPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
+                          const statusClass = completed >= total && total > 0 ? "done" : completed > 0 ? "current" : "none";
+
+                          return (
+                            <button
+                              type="button"
+                              key={story.id}
+                              className={`stories-story-card status-${statusClass} ${openingStoryId === story.id ? "is-opening" : ""}`}
+                              disabled={Boolean(openingStoryId)}
+                              onClick={() => void openStory(story)}
+                            >
+                              <div className="stories-story-cover">
+                                <img
+                                  ref={(node) => {
+                                    storyCoverRefs.current[story.id] = node;
+                                  }}
+                                  src={coverOrFallback(story.cover)}
+                                  alt={story.title}
+                                  onError={replaceWithFallbackCover}
+                                />
+                                {statusClass === "current" && <span className="stories-story-badge current">进行中</span>}
+                                {statusClass === "done" && <span className="stories-story-badge done">已完成</span>}
+                              </div>
+                              <div className="stories-story-info">
+                                <h3>{story.title}</h3>
+                                <p>{story.description}</p>
+                                <div className="stories-story-progress-row">
+                                  <span className={completed > 0 ? "has-progress" : ""}>
+                                    完成度 {completed}/{total}
+                                  </span>
+                                  <div className="stories-story-mini-bar">
+                                    <i style={{ width: `${progressPercent}%` }} />
+                                  </div>
+                                </div>
+                                <div className="stories-story-cta">{completed > 0 ? "继续翻开" : "打开这本故事"} →</div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              );
+            })}
+          </main>
         ) : (
           <div className="screen-message">暂无可展示的故事内容</div>
         )}

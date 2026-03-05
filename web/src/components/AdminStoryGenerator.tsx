@@ -60,6 +60,8 @@ type LevelConfigFormState = {
   content_version: string;
 };
 
+type AdminSectionKey = "users" | "levelConfig" | "puzzle";
+
 const DEFAULT_MIN_CHARS = 500;
 const DEFAULT_MAX_CHARS = 2200;
 const DEFAULT_SCENE_COUNT = 12;
@@ -105,6 +107,11 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   const [levelConfigSnapshot, setLevelConfigSnapshot] = useState<AdminLevelConfigResponse | null>(null);
   const [testRunResult, setTestRunResult] = useState<AdminLevelTestRunResponse | null>(null);
   const [levelConfigForm, setLevelConfigForm] = useState<LevelConfigFormState>(defaultLevelConfigForm());
+  const [collapsedSections, setCollapsedSections] = useState<Record<AdminSectionKey, boolean>>({
+    users: false,
+    levelConfig: false,
+    puzzle: false,
+  });
 
   const selectedChapter = useMemo(
     () => chapters.find((item) => item.id === selectedChapterId) || null,
@@ -112,6 +119,13 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   );
 
   const progress = useMemo(() => extractJobProgress(activeJob), [activeJob]);
+
+  const toggleSection = useCallback((key: AdminSectionKey): void => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
 
   const loadRecentJobs = useCallback(async (): Promise<void> => {
     try {
@@ -510,8 +524,18 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       {panelError && <div className="banner-error">{panelError}</div>}
       {panelInfo && <div className="banner-info">{panelInfo}</div>}
 
-      <div className="admin-run-box">
-        <h4>用户权限管理</h4>
+      <div className="admin-run-box admin-collapsible-box">
+        <button
+          type="button"
+          className={`admin-collapse-head ${collapsedSections.users ? "collapsed" : ""}`}
+          onClick={() => toggleSection("users")}
+        >
+          <h4>用户权限管理</h4>
+          <span className="admin-collapse-icon" aria-hidden="true">▾</span>
+        </button>
+
+        {!collapsedSections.users && (
+          <>
         <div className="admin-user-toolbar">
           <label className="form-field">
             用户名检索
@@ -599,10 +623,22 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
             </table>
           )}
         </div>
+          </>
+        )}
       </div>
 
-      <div className="admin-run-box">
-        <h4>关卡配置 / 预览 / 测试</h4>
+<div className="admin-run-box admin-collapsible-box">
+        <button
+          type="button"
+          className={`admin-collapse-head ${collapsedSections.levelConfig ? "collapsed" : ""}`}
+          onClick={() => toggleSection("levelConfig")}
+        >
+          <h4>关卡配置 / 预览 / 测试</h4>
+          <span className="admin-collapse-icon" aria-hidden="true">▾</span>
+        </button>
+
+        {!collapsedSections.levelConfig && (
+          <>
 
         <div className="admin-config-grid">
           <label className="form-field">
@@ -765,14 +801,30 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
             }, null, 2)}</pre>
           </div>
         )}
+          </>
+        )}
       </div>
 
-      <div className="admin-run-box">
-        <h4>谜题管理（章节生成）</h4>
+<div className="admin-run-box admin-collapsible-box">
+        <button
+          type="button"
+          className={`admin-collapse-head ${collapsedSections.puzzle ? "collapsed" : ""}`}
+          onClick={() => toggleSection("puzzle")}
+        >
+          <h4>谜题管理（章节生成）</h4>
+          <span className="admin-collapse-icon" aria-hidden="true">▾</span>
+        </button>
+
+        {!collapsedSections.puzzle && (
+          <>
         <p className="progress-inline">选择章节后可生成新故事谜题，并在下方查看进度与最近任务。</p>
+          </>
+        )}
       </div>
 
-      <div className="admin-filters">
+      {!collapsedSections.puzzle && (
+        <>
+            <div className="admin-filters">
         <label className="form-field">
           书籍
           <select value={bookId} onChange={(event) => setBookId(event.currentTarget.value)}>
@@ -932,6 +984,9 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
           </ul>
         </div>
       )}
+        </>
+      )}
+
     </section>
   );
 }
