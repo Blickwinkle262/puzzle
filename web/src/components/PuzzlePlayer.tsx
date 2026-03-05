@@ -14,11 +14,11 @@ import { Cell, LevelConfig, PieceDef } from "../core/types";
 import { useImageSize } from "../hooks/useImageSize";
 import { useWindowSize } from "../hooks/useWindowSize";
 
-const AUTO_NEXT_LEVEL_DELAY_MS = 1200;
 const CONTINUE_SECONDS = 60;
 const MAX_CONTINUE_COUNT = 3;
 
 type Orientation = "portrait" | "landscape";
+type GamePhase = "intro" | "countdown" | "play" | "complete";
 
 type PuzzlePlayerProps = {
   storyTitle: string;
@@ -82,6 +82,9 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   const [timedOut, setTimedOut] = useState(false);
   const [continueUsedCount, setContinueUsedCount] = useState(0);
   const [timeExtraSec, setTimeExtraSec] = useState(0);
+  const [phase, setPhase] = useState<GamePhase>("intro");
+  const [countdownValue, setCountdownValue] = useState(3);
+  const [solvedElapsedMs, setSolvedElapsedMs] = useState<number | null>(null);
 
   const windowSize = useWindowSize();
   const imageSize = useImageSize(level.source_image);
@@ -134,6 +137,9 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     setTimedOut(false);
     setContinueUsedCount(0);
     setTimeExtraSec(0);
+    setPhase("intro");
+    setCountdownValue(3);
+    setSolvedElapsedMs(null);
     levelStartAtMsRef.current = Date.now();
 
     pendingPreviewRef.current = null;
@@ -153,7 +159,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   );
 
   useEffect(() => {
-    if (!timedMode || solved || timedOut) {
+    if (!timedMode || phase !== "play" || solved || timedOut) {
       return;
     }
 
@@ -170,7 +176,38 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     return () => {
       window.clearInterval(timer);
     };
-  }, [timedMode, solved, timedOut]);
+  }, [phase, timedMode, solved, timedOut]);
+
+  useEffect(() => {
+    if (phase !== "countdown") {
+      return;
+    }
+
+    setCountdownValue(3);
+    let value = 3;
+    let launchTimer: number | null = null;
+
+    const timer = window.setInterval(() => {
+      value -= 1;
+      if (value <= 0) {
+        setCountdownValue(0);
+        window.clearInterval(timer);
+        launchTimer = window.setTimeout(() => {
+          levelStartAtMsRef.current = Date.now();
+          setPhase("play");
+        }, 700);
+        return;
+      }
+      setCountdownValue(value);
+    }, 900);
+
+    return () => {
+      window.clearInterval(timer);
+      if (launchTimer !== null) {
+        window.clearTimeout(launchTimer);
+      }
+    };
+  }, [phase]);
 
   useEffect(() => {
     const path = level.audio?.piece_link;
@@ -190,6 +227,8 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
 
     solvedReportedRef.current = true;
     const elapsedMs = timedMode ? Math.max(0, Date.now() - levelStartAtMsRef.current) : null;
+    setSolvedElapsedMs(elapsedMs);
+    setPhase("complete");
     onLevelSolved(level.id, elapsedMs);
   }, [level.id, onLevelSolved, solved, timedMode]);
 
@@ -205,20 +244,6 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
 
   const bestTimeText = currentBestTimeMs && currentBestTimeMs > 0 ? formatDurationMs(currentBestTimeMs) : null;
   const timerClassName = !timedMode ? "timer" : remainingSec <= 10 ? "timer critical" : remainingSec <= 30 ? "timer warning" : "timer";
-
-  useEffect(() => {
-    if (!solved || !hasNextLevel) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      onNextLevel();
-    }, AUTO_NEXT_LEVEL_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [solved, hasNextLevel, onNextLevel]);
 
   useEffect(() => {
     const update = () => {
@@ -318,7 +343,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   };
 
   const handlePiecePointerDown = (pieceId: number, event: PointerEvent<HTMLButtonElement>) => {
-    if (animating || solved || timedOut) {
+    if (animating || phase !== "play" || solved || timedOut) {
       return;
     }
 
@@ -434,184 +459,296 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     });
   }, [selectedGroupIds, previewOffset, pieceCells]);
 
+  const handleStartCountdown = (): void => {
+    setTimedOut(false);
+    setContinueUsedCount(0);
+    setTimeExtraSec(0);
+    setRemainingSec(timeLimitSec);
+    setCountdownValue(3);
+    setPhase("countdown");
+  };
+
+  const introParagraphs = useMemo(() => {
+    const merged = [level.description, level.story_text || ""]
+      .flatMap((textLine) =>
+        String(textLine || "")
+          .split(/\n+/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+      );
+    return merged.length > 0 ? merged : ["这一关暂无旁白，点击开始拼图。"];
+  }, [level.description, level.story_text]);
+
+  const completionTimeText = solvedElapsedMs && solvedElapsedMs > 0 ? formatDurationMs(solvedElapsedMs) : "--:--";
+  const introPreviewAspect =
+    imageSize.loaded && imageSize.width > 0 && imageSize.height > 0
+      ? `${imageSize.width} / ${imageSize.height}`
+      : "3 / 4";
+
   const preferredOrientation = level.mobile?.preferred_orientation;
   const orientationMismatch = preferredOrientation ? preferredOrientation !== orientation : false;
   const orientationHintText = level.mobile?.orientation_hint || "建议调整手机方向以获得更好体验";
 
   return (
-    <div className="app-shell puzzle-shell">
-      <header className="top-bar">
-        <div className="top-main">
-          <h1>{storyTitle}</h1>
-          <p>{storyDescription}</p>
+    <div className="app-shell puzzle-shell puzzle-flow-shell">
+      {phase === "intro" && (
+        <section className="puzzle-flow-screen puzzle-flow-intro">
+          <nav className="intro-flow-nav">
+            <button type="button" className="nav-btn" onClick={onBackToStory}>
+              ← 返回故事
+            </button>
+            <div className="progress-dots" aria-label={`关卡进度 ${levelIndex + 1}/${totalLevels}`}>
+              {Array.from({ length: totalLevels }).map((_, index) => {
+                const done = index < levelIndex || (index === levelIndex && currentCompleted);
+                const current = index === levelIndex && !currentCompleted;
+                return <span key={`intro-dot-${index}`} className={`progress-dot ${done ? "done" : ""} ${current ? "current" : ""}`.trim()} />;
+              })}
+            </div>
+          </nav>
 
-          <div className="chapter-nav">
+          <div className="intro-flow-preview-wrap" aria-hidden="true">
+            <div className="intro-flow-preview-frame" style={{ aspectRatio: introPreviewAspect }}>
+              <img src={level.source_image} alt={level.title} className="intro-flow-preview-image" />
+            </div>
+          </div>
+
+          <div className="intro-flow-panel">
+            <p className="intro-flow-tag">第 {levelIndex + 1} / {totalLevels} 关</p>
+            <h2 className="intro-flow-title">{level.title}</h2>
+            <p className="intro-flow-subtitle">{storyTitle}</p>
+            {storyDescription && <p className="intro-flow-story-desc">{storyDescription}</p>}
+            <div className="intro-flow-divider" />
+            <div className="intro-flow-body">
+              {introParagraphs.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+            </div>
+            <div className="intro-flow-actions">
+              <button type="button" className="primary-btn intro-flow-start" onClick={handleStartCountdown}>
+                开始拼图
+              </button>
+              {bestTimeText && <p className="progress-inline">该关个人最快：{bestTimeText}</p>}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {phase === "countdown" && (
+        <section className="puzzle-flow-screen puzzle-flow-countdown">
+          <p className="countdown-label">准备开始</p>
+          <p className="countdown-number">{countdownValue <= 0 ? "开始" : countdownValue}</p>
+          <p className="countdown-note">记住画面细节，马上进入拼图</p>
+        </section>
+      )}
+
+      {phase === "play" && (
+        <section className="puzzle-flow-screen puzzle-flow-game">
+          <header className="game-hud">
+            <div className="hud-left">
+              <p className="hud-chapter">第 {levelIndex + 1} / {totalLevels} 关</p>
+              <p className="hud-title">{level.title}</p>
+            </div>
+            <div className="hud-center progress-dots" aria-label={`关卡进度 ${levelIndex + 1}/${totalLevels}`}>
+              {Array.from({ length: totalLevels }).map((_, index) => {
+                const done = index < levelIndex || (index === levelIndex && currentCompleted);
+                const current = index === levelIndex && !currentCompleted;
+                return <span key={`play-dot-${index}`} className={`progress-dot ${done ? "done" : ""} ${current ? "current" : ""}`.trim()} />;
+              })}
+            </div>
+            <div className="hud-right">
+              {timedMode ? <p className={timerClassName}>{formatClock(remainingSec)}</p> : <p className="timer">∞</p>}
+              <p className="hud-count">网格 {rows} × {cols}</p>
+            </div>
+          </header>
+
+          {orientationMismatch && <div className="orientation-tip">{orientationHintText}</div>}
+
+          <main className="game-puzzle-area">
+            <div className="wood-frame-shell">
+              <div className="wood-frame">
+                <div className="frame-inner-border">
+                  <span className="frame-nail frame-nail-tl" aria-hidden="true" />
+                  <span className="frame-nail frame-nail-tr" aria-hidden="true" />
+                  <span className="frame-nail frame-nail-bl" aria-hidden="true" />
+                  <span className="frame-nail frame-nail-br" aria-hidden="true" />
+
+                  <div
+                    className="board"
+                    style={{
+                      width: boardLayout.boardWidth,
+                      height: boardLayout.boardHeight,
+                    }}
+                  >
+                    <div
+                      className="board-grid"
+                      style={{
+                        backgroundSize: `${boardLayout.tileWidth}px ${boardLayout.tileHeight}px`,
+                      }}
+                    />
+
+                    {magnetPreviewCells.map((cell, index) => (
+                      <div
+                        key={`magnet-${index}-${cell.row}-${cell.col}`}
+                        className="magnet-preview-cell"
+                        style={{
+                          width: boardLayout.tileWidth,
+                          height: boardLayout.tileHeight,
+                          transform: `translate(${cell.col * boardLayout.tileWidth}px, ${cell.row * boardLayout.tileHeight}px)`,
+                        }}
+                      />
+                    ))}
+
+                    {pieces.map((piece) => {
+                      const cell = pieceCells[piece.id];
+                      const hidden = hiddenSides.get(piece.id) ?? new Set();
+                      const selected = selectedGroupIds?.has(piece.id) ?? false;
+
+                      return (
+                        <button
+                          key={piece.id}
+                          type="button"
+                          className={`tile ${animating ? "is-animating" : ""}`}
+                          style={tileStyle({
+                            piece,
+                            cell,
+                            sourceImage: level.source_image,
+                            boardWidth: boardLayout.boardWidth,
+                            boardHeight: boardLayout.boardHeight,
+                            tileWidth: boardLayout.tileWidth,
+                            tileHeight: boardLayout.tileHeight,
+                            hidden,
+                            selected,
+                            previewOffset: selected ? previewOffset : null,
+                          })}
+                          onPointerDown={(event) => handlePiecePointerDown(piece.id, event)}
+                          onPointerMove={handlePiecePointerMove}
+                          onPointerUp={handlePiecePointerUp}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div className="frame-caption">木框拼图 · 网格 {rows} × {cols}</div>
+            </div>
+          </main>
+
+          <div className="game-actions">
             <button type="button" className="nav-btn" onClick={onBackToStory}>
               ← 返回故事
             </button>
             <button type="button" className="nav-btn" onClick={onPrevLevel} disabled={!canPrev}>
               上一关
             </button>
-            <p className="chapter">
-              第 {levelIndex + 1} / {totalLevels} 关 · {level.title}
-              <span className={`level-state ${currentCompleted ? "done" : "todo"}`}>
-                {currentCompleted ? "已完成" : "未完成"}
-              </span>
-            </p>
             <button type="button" className="nav-btn" onClick={onNextLevel} disabled={!canNext}>
               下一关
             </button>
+            <button type="button" className="jump-btn" onClick={onJumpUnfinished}>
+              {allCompleted ? "回到第一关" : "跳到未完成"}
+            </button>
+            <p className="progress-inline">已完成 {completedCount}/{totalLevels}</p>
+            {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
+            {timeExtraSec > 0 && <p className="progress-inline">已续时 +{timeExtraSec}s</p>}
+            {timedMode && <p className="progress-inline">续时次数 {continueUsedCount}/{MAX_CONTINUE_COUNT}</p>}
           </div>
 
-          <p className="chapter-desc">{level.description}</p>
-          {level.story_text && <p className="story-inline">{level.story_text}</p>}
-        </div>
+          <div className="hint">按住图块(组)直接拖拽，松手后交换；轻点仅高亮</div>
 
-        <div className="top-actions puzzle-status-card">
-          {timedMode && <p className={timerClassName}>{formatClock(remainingSec)}</p>}
-          {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
-          {timeExtraSec > 0 && <p className="progress-inline">已续时 +{timeExtraSec}s</p>}
-          {timedMode && <p className="progress-inline">续时次数 {continueUsedCount}/{MAX_CONTINUE_COUNT}</p>}
-          <button type="button" className="jump-btn" onClick={onJumpUnfinished}>
-            {allCompleted ? "全部完成，回到第一关" : "跳到未完成"}
-          </button>
-          <div className="progress-dots" aria-label={`关卡进度 ${levelIndex + 1}/${totalLevels}`}>
-            {Array.from({ length: totalLevels }).map((_, index) => {
-              const done = index < levelIndex || (index === levelIndex && currentCompleted);
-              const current = index === levelIndex && !currentCompleted;
-
-              return <span key={`progress-dot-${index}`} className={`progress-dot ${done ? "done" : ""} ${current ? "current" : ""}`.trim()} />;
-            })}
-          </div>
-          <p className="progress-inline">
-            已完成 {completedCount}/{totalLevels}
-          </p>
-        </div>
-      </header>
-
-      {orientationMismatch && <div className="orientation-tip">{orientationHintText}</div>}
-
-      <main className="board-wrap">
-        <div className="wood-frame-shell">
-          <div className="wood-frame">
-            <div className="frame-inner-border">
-              <span className="frame-nail frame-nail-tl" aria-hidden="true" />
-              <span className="frame-nail frame-nail-tr" aria-hidden="true" />
-              <span className="frame-nail frame-nail-bl" aria-hidden="true" />
-              <span className="frame-nail frame-nail-br" aria-hidden="true" />
-
-              <div
-                className="board"
-                style={{
-                  width: boardLayout.boardWidth,
-                  height: boardLayout.boardHeight,
-                }}
-              >
-                <div
-                  className="board-grid"
-                  style={{
-                    backgroundSize: `${boardLayout.tileWidth}px ${boardLayout.tileHeight}px`,
-                  }}
-                />
-
-                {magnetPreviewCells.map((cell, index) => (
-                  <div
-                    key={`magnet-${index}-${cell.row}-${cell.col}`}
-                    className="magnet-preview-cell"
-                    style={{
-                      width: boardLayout.tileWidth,
-                      height: boardLayout.tileHeight,
-                      transform: `translate(${cell.col * boardLayout.tileWidth}px, ${cell.row * boardLayout.tileHeight}px)`,
-                    }}
-                  />
-                ))}
-
-                {pieces.map((piece) => {
-                  const cell = pieceCells[piece.id];
-                  const hidden = hiddenSides.get(piece.id) ?? new Set();
-                  const selected = selectedGroupIds?.has(piece.id) ?? false;
-
-                  return (
-                    <button
-                      key={piece.id}
-                      type="button"
-                      className={`tile ${animating ? "is-animating" : ""}`}
-                      style={tileStyle({
-                        piece,
-                        cell,
-                        sourceImage: level.source_image,
-                        boardWidth: boardLayout.boardWidth,
-                        boardHeight: boardLayout.boardHeight,
-                        tileWidth: boardLayout.tileWidth,
-                        tileHeight: boardLayout.tileHeight,
-                        hidden,
-                        selected,
-                        previewOffset: selected ? previewOffset : null,
-                      })}
-                      onPointerDown={(event) => handlePiecePointerDown(piece.id, event)}
-                      onPointerMove={handlePiecePointerMove}
-                      onPointerUp={handlePiecePointerUp}
-                    />
-                  );
-                })}
+          {timedOut && !solved && (
+            <div className="mask">
+              <div className="mask-card">
+                <div>时间到</div>
+                {remainingContinueCount > 0 ? (
+                  <>
+                    <div className="end-note">还可续时 {remainingContinueCount} 次（每次 {CONTINUE_SECONDS}s）</div>
+                    <div className="toolbar-row">
+                      <button className="next-btn" type="button" onClick={handleContinue60s}>
+                        续时 {CONTINUE_SECONDS}s（第 {continueUsedCount + 1}/{MAX_CONTINUE_COUNT} 次）
+                      </button>
+                      <button className="nav-btn" type="button" onClick={onRestartLevel}>
+                        重新开始
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="end-note">本关超时，试试重新挑战</div>
+                    <button className="next-btn" type="button" onClick={onRestartLevel}>
+                      重新开始
+                    </button>
+                  </>
+                )}
               </div>
             </div>
-          </div>
-          <div className="frame-caption">木框拼图 · 网格 {rows} × {cols} · 第 {levelIndex + 1}/{totalLevels} 关</div>
-        </div>
-
-        <div className="hint">按住图块(组)直接拖拽，松手后交换；轻点仅高亮</div>
-      </main>
-
-      {timedOut && !solved && (
-        <div className="mask">
-          <div className="mask-card">
-            <div>时间到</div>
-            {remainingContinueCount > 0 ? (
-              <>
-                <div className="end-note">还可续时 {remainingContinueCount} 次（每次 {CONTINUE_SECONDS}s）</div>
-                <div className="toolbar-row">
-                  <button className="next-btn" type="button" onClick={handleContinue60s}>
-                    续时 {CONTINUE_SECONDS}s（第 {continueUsedCount + 1}/{MAX_CONTINUE_COUNT} 次）
-                  </button>
-                  <button className="nav-btn" type="button" onClick={onRestartLevel}>
-                    重新开始
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="end-note">本关超时，试试重新挑战</div>
-                <button className="next-btn" type="button" onClick={onRestartLevel}>
-                  重新开始
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+          )}
+        </section>
       )}
 
-      {solved && (
-        <div className="mask">
-          <div className="mask-card">
-            <div>{hasNextLevel ? "本关完成" : "该故事已完成"}</div>
-            {hasNextLevel ? (
-              <>
-                <div className="next-note">即将进入下一关…</div>
-                <button className="next-btn" type="button" onClick={onNextLevel}>
-                  立即下一关
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="end-note">恭喜通关整个故事线</div>
-                <button className="next-btn" type="button" onClick={onBackToStory}>
-                  返回故事列表
-                </button>
-              </>
-            )}
+      {phase === "complete" && (
+        <section className="puzzle-flow-screen puzzle-flow-complete">
+          <div className="complete-image-wrap">
+            <div className="complete-image-stage">
+              <div className="wood-frame complete-wood-frame">
+                <div className="frame-inner-border complete-frame-inner" style={{ aspectRatio: introPreviewAspect }}>
+                  <span className="frame-nail frame-nail-tl" aria-hidden="true" />
+                  <span className="frame-nail frame-nail-tr" aria-hidden="true" />
+                  <span className="frame-nail frame-nail-bl" aria-hidden="true" />
+                  <span className="frame-nail frame-nail-br" aria-hidden="true" />
+                  <img src={level.source_image} alt={level.title} className="complete-image-real" />
+                </div>
+              </div>
+              <div className="complete-badge">✓ 拼图完成</div>
+            </div>
+            <div className="complete-nav">
+              <button type="button" className="nav-btn" onClick={onBackToStory}>
+                ← 返回故事
+              </button>
+              <span className="progress-inline">第 {levelIndex + 1} / {totalLevels} 关</span>
+            </div>
           </div>
-        </div>
+
+          <div className="complete-card">
+            <div className="complete-stats">
+              <div className="stat-item">
+                <p className="stat-value">{completionTimeText}</p>
+                <p className="stat-label">完成时间</p>
+              </div>
+              <div className="stat-item">
+                <p className="stat-value">{rows * cols}/{rows * cols}</p>
+                <p className="stat-label">碎片归位</p>
+              </div>
+              <div className="stat-item">
+                <p className="stat-value">{timedMode ? `${continueUsedCount}/${MAX_CONTINUE_COUNT}` : "∞"}</p>
+                <p className="stat-label">续时使用</p>
+              </div>
+            </div>
+
+            <div className="complete-story">
+              <h3 className="complete-story-title">{level.title}</h3>
+              {storyDescription && <p className="complete-story-note">{storyDescription}</p>}
+              {introParagraphs.map((paragraph) => (
+                <p key={`complete-${paragraph}`} className="complete-story-text">
+                  {paragraph}
+                </p>
+              ))}
+            </div>
+          </div>
+
+          <div className="complete-actions">
+            {hasNextLevel ? (
+              <button type="button" className="next-btn" onClick={onNextLevel}>
+                下一关 →
+              </button>
+            ) : (
+              <button type="button" className="next-btn" onClick={onBackToStory}>
+                返回故事列表
+              </button>
+            )}
+            <button type="button" className="link-btn" onClick={onRestartLevel}>
+              重新挑战本关
+            </button>
+          </div>
+        </section>
       )}
     </div>
   );
