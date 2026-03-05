@@ -8,7 +8,9 @@ On success it also syncs chapter-generation linkage into book_ingest SQLite.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime as dt
+import ipaddress
 import json
 import logging
 import os
@@ -25,9 +27,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.story_generator_pipeline.config import get_required_api_key
+    from scripts.story_generator_pipeline.image_generator import generate_images_for_story
+    from scripts.story_generator_pipeline.models import SceneDraft
+except ImportError:  # pragma: no cover - fallback for direct script execution
+    from config import get_required_api_key
+    from image_generator import generate_images_for_story
+    from models import SceneDraft
+
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = ROOT_DIR / "backend" / "data" / "puzzle.sqlite"
 DEFAULT_BOOKS_DB_PATH = ROOT_DIR / "scripts" / "book_ingest" / "data" / "books.sqlite"
+DEFAULT_IMAGE_BASE_URL = "https://aihubmix.com/v1"
+DEFAULT_IMAGE_MODEL = "doubao/doubao-seedream-4-5-251128"
 LOGGER = logging.getLogger("story_generator.queue_worker")
 
 
@@ -43,6 +56,30 @@ class GenerationJob:
     log_file: str
     event_log_file: str
     summary_path: str
+
+
+@dataclass
+class RetryImageTask:
+    retry_id: int
+    run_id: str
+    scene_index: int
+    scene_id: int
+    title: str
+    description: str
+    story_text: str
+    image_prompt: str
+    mood: str
+    characters: list[str]
+    grid_rows: int
+    grid_cols: int
+    time_limit_sec: int
+    target_date: str
+    image_size: str
+    timeout_sec: float
+    poll_seconds: float
+    poll_attempts: int
+    watermark: bool
+    output_root: str
 
 
 class StopSignal:
@@ -260,6 +297,26 @@ def read_json_response(raw_text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def should_bypass_proxy_for_backend(url: str) -> bool:
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return False
+
+    if not host:
+        return False
+
+    if host in {"localhost", "backend", "node-app", "story-worker"}:
+        return True
+
+    try:
+        ip_addr = ipaddress.ip_address(host)
+    except ValueError:
+        return host.endswith(".local")
+
+    return bool(ip_addr.is_loopback or ip_addr.is_private or ip_addr.is_link_local)
+
+
 def post_json(url: str, payload: dict[str, Any], *, worker_token: str, timeout: float) -> dict[str, Any]:
     request = urllib.request.Request(
         url=url,
@@ -272,8 +329,15 @@ def post_json(url: str, payload: dict[str, Any], *, worker_token: str, timeout: 
         method="POST",
     )
 
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if should_bypass_proxy_for_backend(url) else None
+
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        if opener is not None:
+            response_ctx = opener.open(request, timeout=timeout)
+        else:
+            response_ctx = urllib.request.urlopen(request, timeout=timeout)
+
+        with response_ctx as response:
             body = response.read().decode("utf-8", errors="replace")
             parsed = read_json_response(body)
             if parsed:
@@ -304,6 +368,152 @@ def build_generation_job_from_api(raw_job: dict[str, Any]) -> GenerationJob:
         event_log_file=str(raw_job.get("event_log_file") or ""),
         summary_path=str(raw_job.get("summary_path") or ""),
     )
+
+
+def parse_positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def parse_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def build_retry_image_task_from_api(raw_task: dict[str, Any]) -> RetryImageTask:
+    return RetryImageTask(
+        retry_id=parse_positive_int(raw_task.get("retry_id")) or 0,
+        run_id=str(raw_task.get("run_id") or ""),
+        scene_index=parse_positive_int(raw_task.get("scene_index")) or 0,
+        scene_id=parse_positive_int(raw_task.get("scene_id")) or parse_positive_int(raw_task.get("scene_index")) or 1,
+        title=str(raw_task.get("title") or "").strip(),
+        description=str(raw_task.get("description") or "").strip(),
+        story_text=str(raw_task.get("story_text") or "").strip(),
+        image_prompt=str(raw_task.get("image_prompt") or "").strip(),
+        mood=str(raw_task.get("mood") or "").strip(),
+        characters=parse_string_list(raw_task.get("characters")),
+        grid_rows=parse_positive_int(raw_task.get("grid_rows")) or 6,
+        grid_cols=parse_positive_int(raw_task.get("grid_cols")) or 4,
+        time_limit_sec=parse_positive_int(raw_task.get("time_limit_sec")) or 180,
+        target_date=str(raw_task.get("target_date") or "").strip(),
+        image_size=str(raw_task.get("image_size") or "2K").strip() or "2K",
+        timeout_sec=parse_positive_float(raw_task.get("timeout_sec")) or 120.0,
+        poll_seconds=parse_positive_float(raw_task.get("poll_seconds")) or 2.5,
+        poll_attempts=parse_positive_int(raw_task.get("poll_attempts")) or 40,
+        watermark=bool(raw_task.get("watermark")),
+        output_root=str(raw_task.get("output_root") or "").strip(),
+    )
+
+
+def claim_next_retry_image_task_via_api(*, backend_url: str, worker_token: str, timeout: float) -> RetryImageTask | None:
+    response = post_json(
+        f"{backend_url}/api/internal/generation-candidate-retries/claim",
+        {},
+        worker_token=worker_token,
+        timeout=timeout,
+    )
+    raw_task = response.get("task")
+    if not isinstance(raw_task, dict) or not raw_task:
+        return None
+    return build_retry_image_task_from_api(raw_task)
+
+
+def complete_retry_image_task_via_api(
+    *,
+    backend_url: str,
+    worker_token: str,
+    timeout: float,
+    retry_id: int,
+    status: str,
+    image_url: str = "",
+    image_path: str = "",
+    error_message: str = "",
+) -> None:
+    encoded_retry_id = urllib.parse.quote(str(retry_id).strip(), safe="")
+    post_json(
+        f"{backend_url}/api/internal/generation-candidate-retries/{encoded_retry_id}/complete",
+        {
+            "status": status,
+            "image_url": image_url,
+            "image_path": image_path,
+            "error_message": error_message,
+        },
+        worker_token=worker_token,
+        timeout=timeout,
+    )
+
+
+def build_story_asset_url(local_path: Path, output_root: Path) -> str:
+    try:
+        normalized_output_root = output_root.resolve()
+        normalized_local_path = local_path.resolve()
+        relative = normalized_local_path.relative_to(normalized_output_root)
+    except (OSError, ValueError):
+        return ""
+
+    return f"/content/stories/{relative.as_posix()}"
+
+
+def run_retry_image_task(task: RetryImageTask) -> tuple[bool, str, str, str]:
+    if not task.image_prompt:
+        return False, "", "", "image_prompt is empty"
+
+    api_key = get_required_api_key()
+    base_url = get_env("AIHUBMIX_BASE_URL", "AIHUBMIX_OPENAI_BASE_URL", "OPENAI_BASE_URL", default=DEFAULT_IMAGE_BASE_URL)
+    image_model = get_env("AIHUBMIX_IMAGE_MODEL", "STORY_GENERATOR_IMAGE_MODEL", default=DEFAULT_IMAGE_MODEL)
+
+    output_root = Path(task.output_root).expanduser().resolve() if task.output_root else (ROOT_DIR / "backend" / "data" / "generated" / "content" / "stories")
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    safe_run_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", task.run_id).strip("-") or "retry"
+    date_segment = task.target_date or dt.date.today().isoformat()
+    date_segment = re.sub(r"[^0-9-]", "", date_segment) or dt.date.today().isoformat()
+    retry_dir = f".review_candidates/{safe_run_id}/{date_segment}"
+
+    scene = SceneDraft(
+        scene_id=max(1, int(task.scene_id or task.scene_index or 1)),
+        title=task.title or f"scene_{task.scene_index}",
+        description=task.description,
+        story_text=task.story_text,
+        image_prompt=task.image_prompt,
+        mood=task.mood,
+        characters=task.characters,
+        rows=max(2, int(task.grid_rows or 6)),
+        cols=max(2, int(task.grid_cols or 4)),
+        time_limit_sec=max(30, int(task.time_limit_sec or 180)),
+    )
+
+    results = asyncio.run(
+        generate_images_for_story(
+            scenes=[scene],
+            date_str=retry_dir,
+            images_dir=output_root,
+            api_key=api_key,
+            base_url=base_url,
+            image_model=image_model,
+            image_size=task.image_size,
+            watermark=task.watermark,
+            concurrency=1,
+            timeout_sec=max(10.0, float(task.timeout_sec)),
+            poll_seconds=max(0.2, float(task.poll_seconds)),
+            poll_attempts=max(1, int(task.poll_attempts)),
+        )
+    )
+
+    if not results:
+        return False, "", "", "no image result"
+
+    result = results[0]
+    if result.status != "success" or result.local_path is None:
+        return False, str(result.image_url or ""), "", str(result.reason or "retry image generation failed")
+
+    local_path = result.local_path.resolve()
+    image_url = build_story_asset_url(local_path, output_root)
+    return True, image_url, str(local_path), ""
 
 
 def claim_next_job_via_api(*, backend_url: str, worker_token: str, timeout: float) -> GenerationJob | None:
@@ -467,6 +677,8 @@ def build_pipeline_command(job: GenerationJob, python_bin: str) -> list[str]:
 
     if bool(payload.get("watermark")):
         command.append("--watermark")
+    if bool(payload.get("review_mode")):
+        command.append("--review-mode")
     if job.dry_run or bool(payload.get("dry_run")):
         command.append("--dry-run")
 
@@ -626,12 +838,20 @@ def run_worker(args: argparse.Namespace) -> int:
                 break
 
             try:
+                job: GenerationJob | None = None
+                retry_task: RetryImageTask | None = None
                 if use_api_mode:
                     job = claim_next_job_via_api(
                         backend_url=backend_url,
                         worker_token=worker_token,
                         timeout=http_timeout,
                     )
+                    if job is None:
+                        retry_task = claim_next_retry_image_task_via_api(
+                            backend_url=backend_url,
+                            worker_token=worker_token,
+                            timeout=http_timeout,
+                        )
                 else:
                     assert conn is not None
                     job = claim_next_job(conn)
@@ -646,11 +866,87 @@ def run_worker(args: argparse.Namespace) -> int:
                 time.sleep(poll_seconds)
                 continue
 
-            if job is None:
+            if job is None and retry_task is None:
                 if args.once:
-                    LOGGER.info("No queued job found, exiting due to --once")
+                    LOGGER.info("No queued task found, exiting due to --once")
                     break
                 time.sleep(poll_seconds)
+                continue
+
+            if retry_task is not None:
+                processed += 1
+                LOGGER.info(
+                    "Claimed retry task retry_id=%s run_id=%s scene_index=%s",
+                    retry_task.retry_id,
+                    retry_task.run_id,
+                    retry_task.scene_index,
+                )
+
+                try:
+                    succeeded, image_url, image_path, error_message = run_retry_image_task(retry_task)
+                    if succeeded:
+                        complete_retry_image_task_via_api(
+                            backend_url=backend_url,
+                            worker_token=worker_token,
+                            timeout=http_timeout,
+                            retry_id=retry_task.retry_id,
+                            status="succeeded",
+                            image_url=image_url,
+                            image_path=image_path,
+                            error_message="",
+                        )
+                        LOGGER.info(
+                            "Retry task succeeded: retry_id=%s run_id=%s scene_index=%s",
+                            retry_task.retry_id,
+                            retry_task.run_id,
+                            retry_task.scene_index,
+                        )
+                    else:
+                        complete_retry_image_task_via_api(
+                            backend_url=backend_url,
+                            worker_token=worker_token,
+                            timeout=http_timeout,
+                            retry_id=retry_task.retry_id,
+                            status="failed",
+                            image_url=image_url,
+                            image_path=image_path,
+                            error_message=error_message,
+                        )
+                        LOGGER.warning(
+                            "Retry task failed: retry_id=%s run_id=%s scene_index=%s error=%s",
+                            retry_task.retry_id,
+                            retry_task.run_id,
+                            retry_task.scene_index,
+                            error_message,
+                        )
+                except Exception as error:  # noqa: BLE001
+                    try:
+                        complete_retry_image_task_via_api(
+                            backend_url=backend_url,
+                            worker_token=worker_token,
+                            timeout=http_timeout,
+                            retry_id=retry_task.retry_id,
+                            status="failed",
+                            image_url="",
+                            image_path="",
+                            error_message=str(error),
+                        )
+                    except Exception as complete_error:  # noqa: BLE001
+                        LOGGER.warning(
+                            "Mark retry task failed error: retry_id=%s err=%s",
+                            retry_task.retry_id,
+                            complete_error,
+                        )
+
+                    LOGGER.exception(
+                        "Unexpected retry task error: retry_id=%s run_id=%s scene_index=%s",
+                        retry_task.retry_id,
+                        retry_task.run_id,
+                        retry_task.scene_index,
+                    )
+
+                if args.once:
+                    break
                 continue
 
             processed += 1

@@ -474,6 +474,7 @@ app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (r
   }
 
   const dryRun = Boolean(req.body?.dry_run);
+  const reviewMode = req.body?.review_mode === undefined ? true : normalizeBoolean(req.body?.review_mode);
   const logFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.log`);
   const eventLogFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.events.jsonl`);
   const summaryPath = path.join(STORY_GENERATOR_SUMMARY_DIR, `story_${targetDate}.json`);
@@ -483,6 +484,7 @@ app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (r
     target_date: targetDate,
     story_file: storyFile || "",
     dry_run: dryRun,
+    review_mode: reviewMode,
     output_root: STORY_GENERATOR_OUTPUT_ROOT,
     index_file: STORY_GENERATOR_INDEX_FILE,
     summary_output_dir: STORY_GENERATOR_SUMMARY_DIR,
@@ -534,6 +536,7 @@ app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (r
     status: "queued",
     target_date: targetDate,
     dry_run: dryRun,
+    review_mode: reviewMode,
     log_file: logFile,
     event_log_file: eventLogFile,
     summary_path: summaryPath,
@@ -602,6 +605,66 @@ app.post("/api/internal/generation-jobs/:runId/complete", requireWorkerAuth, (re
     res.json({ job });
   } catch (error) {
     res.status(500).json({ message: asMessage(error, "更新任务状态失败") });
+  }
+});
+
+app.post("/api/internal/generation-candidate-retries/claim", requireWorkerAuth, (_req, res) => {
+  try {
+    const task = claimGenerationCandidateImageRetry();
+    res.json({ task });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "领取重试任务失败") });
+  }
+});
+
+app.post("/api/internal/generation-candidate-retries/:retryId/complete", requireWorkerAuth, (req, res) => {
+  const retryId = normalizePositiveInteger(req.params.retryId);
+  if (!retryId) {
+    res.status(400).json({ message: "retry_id 不合法" });
+    return;
+  }
+
+  const status = String(req.body?.status || "").trim();
+  if (status !== "succeeded" && status !== "failed" && status !== "cancelled") {
+    res.status(400).json({ message: "status 必须是 succeeded/failed/cancelled" });
+    return;
+  }
+
+  const imageUrl = String(req.body?.image_url || "").trim();
+  const imagePath = String(req.body?.image_path || "").trim();
+  const errorMessage = normalizeErrorMessage(req.body?.error_message);
+
+  try {
+    const result = completeGenerationCandidateImageRetry({
+      retryId,
+      status,
+      imageUrl,
+      imagePath,
+      errorMessage,
+    });
+
+    if (!result) {
+      res.status(404).json({ message: "retry_id 不存在" });
+      return;
+    }
+
+    const runId = String(result.retry?.run_id || "").trim();
+    if (runId) {
+      const job = getGenerationJobByRunId(runId);
+      appendRunEvent(job?.event_log_file, {
+        ts: nowIso(),
+        event: "review.retry.completed",
+        run_id: runId,
+        retry_id: Number(result.retry?.retry_id || 0),
+        scene_index: Number(result.retry?.scene_index || 0),
+        status: String(result.retry?.status || status),
+        error_message: String(result.retry?.error_message || ""),
+      });
+    }
+
+    res.json({ ok: true, retry: result.retry, candidate: result.candidate });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "更新重试任务失败") });
   }
 });
 
@@ -796,15 +859,217 @@ app.get("/api/admin/generate-story/:runId", requireAuth, requireAdmin, (req, res
     const events = readRunEvents(job.event_log_file, runId, 30);
     const logTail = readTailLines(job.log_file, 80);
     const summary = readJsonSafe(job.summary_path);
+    if (job.status === "succeeded") {
+      syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+    }
+    const candidates = listGenerationJobCandidates(runId);
+    const candidateCounts = summarizeGenerationCandidates(candidates);
 
     res.json({
       ...job,
       events,
       log_tail: logTail,
       summary,
+      candidates,
+      candidate_counts: candidateCounts,
     });
   } catch (error) {
     res.status(500).json({ message: asMessage(error, "读取任务详情失败") });
+  }
+});
+
+app.get("/api/admin/generation-jobs/:runId/review", requireAuth, requireAdmin, (req, res) => {
+  const runId = String(req.params.runId || "").trim();
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不能为空" });
+    return;
+  }
+
+  try {
+    const job = getGenerationJobByRunId(runId);
+    if (!job) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    if (job.status === "succeeded") {
+      syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+    }
+
+    const candidates = listGenerationJobCandidates(runId);
+    const counts = summarizeGenerationCandidates(candidates);
+    res.json({
+      job,
+      candidates,
+      counts,
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "读取审核数据失败") });
+  }
+});
+
+app.patch("/api/admin/generation-jobs/:runId/candidates/:sceneIndex", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const runId = String(req.params.runId || "").trim();
+  const sceneIndex = normalizePositiveInteger(req.params.sceneIndex);
+  if (!runId || !sceneIndex) {
+    res.status(400).json({ message: "run_id 或 scene_index 不合法" });
+    return;
+  }
+
+  const selectedRaw = req.body?.selected;
+  const hasSelected = selectedRaw !== undefined;
+  const selectedValue = hasSelected ? normalizeBoolean(selectedRaw) : null;
+
+  const rowsRaw = req.body?.grid_rows;
+  const colsRaw = req.body?.grid_cols;
+  const hasRows = rowsRaw !== undefined;
+  const hasCols = colsRaw !== undefined;
+
+  const gridRows = hasRows ? normalizeIntegerInRange(rowsRaw, 2, 20) : null;
+  const gridCols = hasCols ? normalizeIntegerInRange(colsRaw, 2, 20) : null;
+
+  if ((hasRows && !gridRows) || (hasCols && !gridCols)) {
+    res.status(400).json({ message: "grid_rows/grid_cols 必须在 2~20 之间" });
+    return;
+  }
+
+  if (!hasSelected && !hasRows && !hasCols) {
+    res.status(400).json({ message: "至少需要更新 selected 或 grid_rows/grid_cols" });
+    return;
+  }
+
+  try {
+    const updated = updateGenerationJobCandidate({
+      runId,
+      sceneIndex,
+      selected: hasSelected ? selectedValue : null,
+      gridRows,
+      gridCols,
+    });
+
+    if (!updated) {
+      res.status(404).json({ message: "候选关卡不存在" });
+      return;
+    }
+
+    res.json({ ok: true, candidate: updated });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "更新候选关卡失败") });
+  }
+});
+
+app.post(
+  "/api/admin/generation-jobs/:runId/candidates/:sceneIndex/retry-image",
+  requireAuth,
+  requireCsrf,
+  requireAdmin,
+  (req, res) => {
+    const runId = String(req.params.runId || "").trim();
+    const sceneIndex = normalizePositiveInteger(req.params.sceneIndex);
+    if (!runId || !sceneIndex) {
+      res.status(400).json({ message: "run_id 或 scene_index 不合法" });
+      return;
+    }
+
+    try {
+      const job = getGenerationJobByRunId(runId);
+      if (!job) {
+        res.status(404).json({ message: "run_id 不存在" });
+        return;
+      }
+
+      if (job.status !== "succeeded") {
+        res.status(409).json({ message: "仅支持对 succeeded 任务执行重试" });
+        return;
+      }
+
+      syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+      const candidate = listGenerationJobCandidates(runId).find((item) => item.scene_index === sceneIndex) || null;
+      if (!candidate) {
+        res.status(404).json({ message: "候选关卡不存在" });
+        return;
+      }
+
+      if (!candidate.image_prompt) {
+        res.status(400).json({ message: "该候选缺少 image_prompt，无法重试" });
+        return;
+      }
+
+      const queued = enqueueGenerationCandidateImageRetry({
+        runId,
+        sceneIndex,
+        requestedBy: req.authUser?.username || "",
+      });
+
+      appendRunEvent(job.event_log_file, {
+        ts: nowIso(),
+        event: "review.retry.queued",
+        run_id: runId,
+        scene_index: sceneIndex,
+        retry_id: queued.retry_id,
+      });
+
+      res.json({
+        ok: true,
+        retry_id: queued.retry_id,
+        retry: queued.retry,
+        candidate: queued.candidate,
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "创建重试任务失败") });
+    }
+  },
+);
+
+app.post("/api/admin/generation-jobs/:runId/publish-selected", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const runId = String(req.params.runId || "").trim();
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不能为空" });
+    return;
+  }
+
+  try {
+    const job = getGenerationJobByRunId(runId);
+    if (!job) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    if (job.status !== "succeeded") {
+      res.status(409).json({ message: "仅支持发布 succeeded 状态的任务" });
+      return;
+    }
+
+    if (job.dry_run) {
+      res.status(409).json({ message: "dry_run 任务不支持发布" });
+      return;
+    }
+
+    syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+    const allCandidates = listGenerationJobCandidates(runId);
+    const selectedCandidates = allCandidates.filter((item) => item.selected && item.image_status === "success");
+    if (selectedCandidates.length === 0) {
+      res.status(400).json({ message: "没有可发布的关卡，请先勾选至少一个成功关卡" });
+      return;
+    }
+
+    const summary = readJsonSafe(job.summary_path) || {};
+    const published = publishSelectedGenerationCandidates({
+      runId,
+      job,
+      summary,
+      selectedCandidates,
+    });
+
+    const latestCandidates = listGenerationJobCandidates(runId);
+    res.json({
+      ok: true,
+      run_id: runId,
+      ...published,
+      counts: summarizeGenerationCandidates(latestCandidates),
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "发布选中关卡失败") });
   }
 });
 
@@ -3564,6 +3829,19 @@ function normalizePositiveInteger(value) {
   return numberValue;
 }
 
+function normalizeIntegerInRange(value, minValue, maxValue) {
+  const numberValue = Number(value);
+  if (!Number.isInteger(numberValue)) {
+    return undefined;
+  }
+
+  if (numberValue < minValue || numberValue > maxValue) {
+    return undefined;
+  }
+
+  return numberValue;
+}
+
 function normalizeGenerationJobStatus(value) {
   const text = String(value || "").trim();
   const allowed = new Set(["succeeded", "failed", "cancelled"]);
@@ -3802,6 +4080,10 @@ function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage, s
         storyId,
         updatedAt: now,
       });
+
+      if (status === "succeeded") {
+        syncGenerationJobCandidatesFromSummary(runId, existing.summary_path);
+      }
     }
 
     const latest = db
@@ -3820,6 +4102,1018 @@ function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage, s
   });
 
   return tx();
+}
+
+function normalizeCandidateImageStatus(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "success" || text === "failed" || text === "skipped") {
+    return text;
+  }
+  return "pending";
+}
+
+function normalizeCandidateCharacters(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0)
+    .slice(0, 20);
+}
+
+function normalizeGenerationCandidate(rawCandidate, fallbackIndex) {
+  const sceneIndex = normalizePositiveInteger(rawCandidate?.scene_index) || fallbackIndex;
+  const sceneId = normalizePositiveInteger(rawCandidate?.scene_id) || null;
+  const imageStatus = normalizeCandidateImageStatus(rawCandidate?.image_status);
+  const selectedRaw = rawCandidate?.selected;
+  const selected = selectedRaw === undefined
+    ? imageStatus === "success"
+    : normalizeBoolean(selectedRaw);
+
+  return {
+    scene_index: sceneIndex,
+    scene_id: sceneId,
+    title: String(rawCandidate?.title || "").trim(),
+    description: String(rawCandidate?.description || "").trim(),
+    story_text: String(rawCandidate?.story_text || "").trim(),
+    image_prompt: String(rawCandidate?.image_prompt || "").trim(),
+    mood: String(rawCandidate?.mood || "").trim(),
+    characters: normalizeCandidateCharacters(rawCandidate?.characters),
+    grid_rows: normalizeIntegerInRange(rawCandidate?.grid_rows, 2, 20) || 6,
+    grid_cols: normalizeIntegerInRange(rawCandidate?.grid_cols, 2, 20) || 4,
+    time_limit_sec: normalizeIntegerInRange(rawCandidate?.time_limit_sec, 30, 3600) || 180,
+    image_status: imageStatus,
+    image_url: String(rawCandidate?.image_url || "").trim(),
+    image_path: String(rawCandidate?.image_path || "").trim(),
+    error_message: String(rawCandidate?.error_message || "").trim(),
+    selected,
+  };
+}
+
+function parseSceneIdFromLevelId(levelId, fallbackIndex) {
+  const text = String(levelId || "").trim();
+  if (!text) {
+    return fallbackIndex;
+  }
+
+  const matched = text.match(/_(\d+)$/);
+  if (!matched) {
+    return fallbackIndex;
+  }
+
+  const parsed = normalizePositiveInteger(matched[1]);
+  return parsed || fallbackIndex;
+}
+
+function resolveLegacyReviewManifestPath(summary) {
+  const publishManifest = String(summary?.publish?.manifest || "").trim();
+  if (publishManifest && fs.existsSync(publishManifest) && fs.statSync(publishManifest).isFile()) {
+    return path.normalize(publishManifest);
+  }
+
+  const publishStoryId = normalizeGeneratedStoryId(summary?.publish?.story_id);
+  const summaryStoryId = normalizeGeneratedStoryId(summary?.story_id);
+  const targetStoryId = publishStoryId || summaryStoryId;
+  if (!targetStoryId) {
+    return "";
+  }
+
+  const manifestPath = path.join(STORIES_ROOT_DIR, targetStoryId, "story.json");
+  if (fs.existsSync(manifestPath) && fs.statSync(manifestPath).isFile()) {
+    return manifestPath;
+  }
+
+  return "";
+}
+
+function buildLegacyReviewCandidatesFromSummary(summary) {
+  const manifestPath = resolveLegacyReviewManifestPath(summary);
+  if (!manifestPath) {
+    return [];
+  }
+
+  const manifestPayload = readJsonSafe(manifestPath);
+  if (!manifestPayload || !Array.isArray(manifestPayload.levels) || manifestPayload.levels.length === 0) {
+    return [];
+  }
+
+  const manifestDir = path.dirname(manifestPath);
+  const normalizedManifestDir = path.normalize(manifestDir);
+  const levels = manifestPayload.levels;
+
+  return levels.map((level, index) => {
+    const fallbackIndex = index + 1;
+    const sourceImage = String(level?.source_image || "").trim();
+    const relativeImagePath = sourceImage.replace(/^\/+/, "");
+
+    let imagePath = "";
+    if (relativeImagePath) {
+      const resolvedImagePath = path.normalize(path.resolve(manifestDir, relativeImagePath));
+      if (
+        resolvedImagePath === normalizedManifestDir
+        || resolvedImagePath.startsWith(`${normalizedManifestDir}${path.sep}`)
+      ) {
+        try {
+          if (fs.existsSync(resolvedImagePath) && fs.statSync(resolvedImagePath).isFile()) {
+            imagePath = resolvedImagePath;
+          }
+        } catch {
+          imagePath = "";
+        }
+      }
+    }
+
+    const imageUrl = imagePath ? resolveStoryAssetUrlFromFsPath(imagePath) : "";
+    const imageStatus = imagePath ? "success" : "failed";
+    const gridRows = normalizeIntegerInRange(level?.grid?.rows, 2, 20) || 6;
+    const gridCols = normalizeIntegerInRange(level?.grid?.cols, 2, 20) || 4;
+    const timeLimitSec = normalizeIntegerInRange(level?.time_limit_sec, 30, 3600) || 180;
+
+    return {
+      scene_index: fallbackIndex,
+      scene_id: parseSceneIdFromLevelId(level?.id, fallbackIndex),
+      title: String(level?.title || "").trim(),
+      description: String(level?.description || "").trim(),
+      story_text: String(level?.story_text || "").trim(),
+      image_prompt: "",
+      mood: "",
+      characters: [],
+      grid_rows: gridRows,
+      grid_cols: gridCols,
+      time_limit_sec: timeLimitSec,
+      image_status: imageStatus,
+      image_url: imageUrl,
+      image_path: imagePath,
+      error_message: imagePath ? "" : "legacy_manifest_image_missing",
+      selected: Boolean(imagePath),
+    };
+  });
+}
+
+function syncGenerationJobCandidatesFromSummary(runId, summaryPath) {
+  const summary = readJsonSafe(summaryPath);
+  if (!summary) {
+    return { upserted: 0 };
+  }
+
+  const rawCandidates = Array.isArray(summary.candidates) && summary.candidates.length > 0
+    ? summary.candidates
+    : buildLegacyReviewCandidatesFromSummary(summary);
+
+  if (!Array.isArray(rawCandidates) || rawCandidates.length === 0) {
+    return { upserted: 0 };
+  }
+
+  const candidates = rawCandidates
+    .map((item, index) => normalizeGenerationCandidate(item, index + 1))
+    .filter((item) => Number.isInteger(item.scene_index) && item.scene_index > 0);
+
+  if (candidates.length === 0) {
+    return { upserted: 0 };
+  }
+
+  const now = nowIso();
+  try {
+    const upsert = db.prepare(
+      `
+      INSERT INTO generation_job_level_candidates (
+        run_id,
+        scene_index,
+        scene_id,
+        title,
+        description,
+        story_text,
+        image_prompt,
+        mood,
+        characters_json,
+        grid_rows,
+        grid_cols,
+        time_limit_sec,
+        image_status,
+        image_url,
+        image_path,
+        error_message,
+        selected,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, scene_index) DO UPDATE SET
+        scene_id = excluded.scene_id,
+        title = excluded.title,
+        description = excluded.description,
+        story_text = excluded.story_text,
+        image_prompt = excluded.image_prompt,
+        mood = excluded.mood,
+        characters_json = excluded.characters_json,
+        grid_rows = excluded.grid_rows,
+        grid_cols = excluded.grid_cols,
+        time_limit_sec = excluded.time_limit_sec,
+        image_status = excluded.image_status,
+        image_url = excluded.image_url,
+        image_path = excluded.image_path,
+        error_message = excluded.error_message,
+        selected = excluded.selected,
+        updated_at = excluded.updated_at
+    `,
+    );
+
+    const tx = db.transaction((items) => {
+      for (const item of items) {
+        upsert.run(
+          runId,
+          item.scene_index,
+          item.scene_id,
+          item.title,
+          item.description,
+          item.story_text,
+          item.image_prompt,
+          item.mood,
+          JSON.stringify(item.characters),
+          item.grid_rows,
+          item.grid_cols,
+          item.time_limit_sec,
+          item.image_status,
+          item.image_url,
+          item.image_path,
+          item.error_message,
+          item.selected ? 1 : 0,
+          now,
+          now,
+        );
+      }
+    });
+
+    tx(candidates);
+    return { upserted: candidates.length };
+  } catch {
+    return { upserted: 0 };
+  }
+}
+
+function listGenerationJobCandidates(runId) {
+  try {
+    const rows = db
+      .prepare(
+        `
+        SELECT run_id, scene_index, scene_id, title, description, story_text,
+               image_prompt, mood, characters_json, grid_rows, grid_cols,
+               time_limit_sec, image_status, image_url, image_path,
+               error_message, selected, created_at, updated_at
+        FROM generation_job_level_candidates
+        WHERE run_id = ?
+        ORDER BY scene_index ASC
+      `,
+      )
+      .all(runId);
+
+    return rows.map((row) => ({
+      run_id: row.run_id,
+      scene_index: Number(row.scene_index),
+      scene_id: row.scene_id === null || row.scene_id === undefined ? null : Number(row.scene_id),
+      title: String(row.title || ""),
+      description: String(row.description || ""),
+      story_text: String(row.story_text || ""),
+      image_prompt: String(row.image_prompt || ""),
+      mood: String(row.mood || ""),
+      characters: safeParseJsonArray(row.characters_json),
+      grid_rows: Number(row.grid_rows || 6),
+      grid_cols: Number(row.grid_cols || 4),
+      time_limit_sec: Number(row.time_limit_sec || 180),
+      image_status: String(row.image_status || "pending"),
+      image_url: String(row.image_url || ""),
+      image_path: String(row.image_path || ""),
+      error_message: String(row.error_message || ""),
+      selected: Boolean(row.selected),
+      created_at: row.created_at || null,
+      updated_at: row.updated_at || null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function summarizeGenerationCandidates(candidates) {
+  const summary = {
+    total: 0,
+    success: 0,
+    failed: 0,
+    pending: 0,
+    selected: 0,
+    ready_for_publish: 0,
+  };
+
+  for (const item of candidates) {
+    summary.total += 1;
+    if (item.image_status === "success") {
+      summary.success += 1;
+    } else if (item.image_status === "failed" || item.image_status === "skipped") {
+      summary.failed += 1;
+    } else {
+      summary.pending += 1;
+    }
+
+    if (item.selected) {
+      summary.selected += 1;
+      if (item.image_status === "success") {
+        summary.ready_for_publish += 1;
+      }
+    }
+  }
+
+  return summary;
+}
+
+function updateGenerationJobCandidate({ runId, sceneIndex, selected, gridRows, gridCols }) {
+  const existing = db
+    .prepare(
+      `
+      SELECT run_id, scene_index, scene_id, title, description, story_text,
+             image_prompt, mood, characters_json, grid_rows, grid_cols,
+             time_limit_sec, image_status, image_url, image_path,
+             error_message, selected, created_at, updated_at
+      FROM generation_job_level_candidates
+      WHERE run_id = ? AND scene_index = ?
+    `,
+    )
+    .get(runId, sceneIndex);
+
+  if (!existing) {
+    return null;
+  }
+
+  const nextSelected = selected === null ? Boolean(existing.selected) : Boolean(selected);
+  const nextGridRows = gridRows ?? Number(existing.grid_rows || 6);
+  const nextGridCols = gridCols ?? Number(existing.grid_cols || 4);
+
+  db.prepare(
+    `
+    UPDATE generation_job_level_candidates
+    SET selected = ?,
+        grid_rows = ?,
+        grid_cols = ?,
+        updated_at = ?
+    WHERE run_id = ? AND scene_index = ?
+  `,
+  ).run(nextSelected ? 1 : 0, nextGridRows, nextGridCols, nowIso(), runId, sceneIndex);
+
+  return listGenerationJobCandidates(runId).find((item) => item.scene_index === sceneIndex) || null;
+}
+
+function normalizeGenerationCandidateRetryStatus(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "queued" || text === "running" || text === "succeeded" || text === "failed" || text === "cancelled") {
+    return text;
+  }
+  return "queued";
+}
+
+function serializeGenerationCandidateRetryRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    retry_id: Number(row.id),
+    run_id: String(row.run_id || ""),
+    scene_index: Number(row.scene_index || 0),
+    status: normalizeGenerationCandidateRetryStatus(row.status),
+    requested_by: String(row.requested_by || ""),
+    attempts: Number(row.attempts || 0),
+    error_message: String(row.error_message || ""),
+    created_at: row.created_at || null,
+    started_at: row.started_at || null,
+    ended_at: row.ended_at || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
+function resolveStoryAssetUrlFromFsPath(filePath) {
+  const normalizedPath = path.normalize(String(filePath || "").trim());
+  if (!normalizedPath) {
+    return "";
+  }
+
+  const normalizedStoriesRoot = path.normalize(STORIES_ROOT_DIR);
+  if (normalizedPath !== normalizedStoriesRoot && !normalizedPath.startsWith(`${normalizedStoriesRoot}${path.sep}`)) {
+    return "";
+  }
+
+  const relativePath = path.relative(normalizedStoriesRoot, normalizedPath);
+  if (!relativePath || relativePath.startsWith("..")) {
+    return "";
+  }
+
+  return `${STORY_PUBLIC_PREFIX}/${relativePath.split(path.sep).join("/")}`;
+}
+
+function enqueueGenerationCandidateImageRetry({ runId, sceneIndex, requestedBy }) {
+  const now = nowIso();
+  const tx = db.transaction(() => {
+    const candidate = db
+      .prepare(
+        `
+        SELECT run_id, scene_index, image_prompt
+        FROM generation_job_level_candidates
+        WHERE run_id = ? AND scene_index = ?
+      `,
+      )
+      .get(runId, sceneIndex);
+
+    if (!candidate) {
+      throw new Error("候选关卡不存在");
+    }
+
+    if (!String(candidate.image_prompt || "").trim()) {
+      throw new Error("候选关卡缺少 image_prompt");
+    }
+
+    db.prepare(
+      `
+      UPDATE generation_job_level_candidates
+      SET image_status = 'pending',
+          selected = 0,
+          error_message = '',
+          updated_at = ?
+      WHERE run_id = ? AND scene_index = ?
+    `,
+    ).run(now, runId, sceneIndex);
+
+    db.prepare(
+      `
+      UPDATE generation_candidate_image_retries
+      SET status = 'cancelled',
+          error_message = CASE
+            WHEN COALESCE(trim(error_message), '') = '' THEN 'superseded by new retry request'
+            ELSE error_message
+          END,
+          ended_at = COALESCE(ended_at, ?),
+          updated_at = ?
+      WHERE run_id = ?
+        AND scene_index = ?
+        AND status IN ('queued', 'running')
+    `,
+    ).run(now, now, runId, sceneIndex);
+
+    const inserted = db
+      .prepare(
+        `
+        INSERT INTO generation_candidate_image_retries (
+          run_id,
+          scene_index,
+          status,
+          requested_by,
+          attempts,
+          error_message,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, 'queued', ?, 0, '', ?, ?)
+      `,
+      )
+      .run(runId, sceneIndex, String(requestedBy || "").trim(), now, now);
+
+    const retryId = Number(inserted.lastInsertRowid);
+    const retryRow = db
+      .prepare(
+        `
+        SELECT id, run_id, scene_index, status, requested_by, attempts, error_message,
+               created_at, started_at, ended_at, updated_at
+        FROM generation_candidate_image_retries
+        WHERE id = ?
+      `,
+      )
+      .get(retryId);
+
+    return {
+      retry_id: retryId,
+      retry: serializeGenerationCandidateRetryRow(retryRow),
+      candidate: listGenerationJobCandidates(runId).find((item) => item.scene_index === sceneIndex) || null,
+    };
+  });
+
+  return tx();
+}
+
+function claimGenerationCandidateImageRetry() {
+  const now = nowIso();
+  const tx = db.transaction(() => {
+    const queued = db
+      .prepare(
+        `
+        SELECT id, run_id, scene_index
+        FROM generation_candidate_image_retries
+        WHERE status = 'queued'
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      `,
+      )
+      .get();
+
+    if (!queued) {
+      return null;
+    }
+
+    const updated = db
+      .prepare(
+        `
+        UPDATE generation_candidate_image_retries
+        SET status = 'running',
+            attempts = attempts + 1,
+            started_at = COALESCE(started_at, ?),
+            error_message = '',
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'queued'
+      `,
+      )
+      .run(now, now, queued.id);
+
+    if (updated.changes !== 1) {
+      return null;
+    }
+
+    const claimed = db
+      .prepare(
+        `
+        SELECT r.id AS retry_id,
+               r.run_id,
+               r.scene_index,
+               r.status,
+               r.requested_by,
+               r.attempts,
+               r.error_message,
+               r.created_at,
+               r.started_at,
+               r.ended_at,
+               r.updated_at,
+               c.scene_id,
+               c.title,
+               c.description,
+               c.story_text,
+               c.image_prompt,
+               c.mood,
+               c.characters_json,
+               c.grid_rows,
+               c.grid_cols,
+               c.time_limit_sec,
+               g.target_date,
+               g.payload_json,
+               g.event_log_file
+        FROM generation_candidate_image_retries r
+        JOIN generation_job_level_candidates c
+          ON c.run_id = r.run_id
+         AND c.scene_index = r.scene_index
+        JOIN generation_jobs g
+          ON g.run_id = r.run_id
+        WHERE r.id = ?
+        LIMIT 1
+      `,
+      )
+      .get(queued.id);
+
+    if (!claimed) {
+      return null;
+    }
+
+    const payload = safeParseJsonObject(claimed.payload_json);
+    const outputRoot = resolveProjectPath(
+      payload.output_root || payload.story_output_root || payload.story_content_root,
+      STORY_GENERATOR_OUTPUT_ROOT,
+    );
+
+    return {
+      retry_id: Number(claimed.retry_id),
+      run_id: String(claimed.run_id || ""),
+      scene_index: Number(claimed.scene_index || 0),
+      scene_id: Number(claimed.scene_id || claimed.scene_index || 0),
+      title: String(claimed.title || ""),
+      description: String(claimed.description || ""),
+      story_text: String(claimed.story_text || ""),
+      image_prompt: String(claimed.image_prompt || ""),
+      mood: String(claimed.mood || ""),
+      characters: safeParseJsonArray(claimed.characters_json),
+      grid_rows: normalizeIntegerInRange(claimed.grid_rows, 2, 20) || 6,
+      grid_cols: normalizeIntegerInRange(claimed.grid_cols, 2, 20) || 4,
+      time_limit_sec: normalizeIntegerInRange(claimed.time_limit_sec, 30, 3600) || 180,
+      target_date: String(claimed.target_date || ""),
+      image_size: String(payload.image_size || "2K"),
+      timeout_sec: normalizePositiveNumber(payload.timeout_sec) || 120,
+      poll_seconds: normalizePositiveNumber(payload.poll_seconds) || 2.5,
+      poll_attempts: normalizePositiveInteger(payload.poll_attempts) || 40,
+      watermark: normalizeBoolean(payload.watermark),
+      output_root: outputRoot,
+      event_log_file: String(claimed.event_log_file || ""),
+    };
+  });
+
+  return tx();
+}
+
+function completeGenerationCandidateImageRetry({ retryId, status, imageUrl, imagePath, errorMessage }) {
+  const normalizedStatus = normalizeGenerationCandidateRetryStatus(status);
+  if (!normalizedStatus || normalizedStatus === "queued" || normalizedStatus === "running") {
+    throw new Error("重试任务状态不合法");
+  }
+
+  const now = nowIso();
+  const tx = db.transaction(() => {
+    const existing = db
+      .prepare(
+        `
+        SELECT id, run_id, scene_index, status
+        FROM generation_candidate_image_retries
+        WHERE id = ?
+      `,
+      )
+      .get(retryId);
+
+    if (!existing) {
+      return null;
+    }
+
+    const normalizedImagePath = String(imagePath || "").trim();
+    const normalizedImageUrl = String(imageUrl || "").trim();
+    const resolvedImageUrl = normalizedImageUrl || resolveStoryAssetUrlFromFsPath(normalizedImagePath);
+
+    if (normalizedStatus === "succeeded") {
+      if (!normalizedImagePath) {
+        throw new Error("重试成功时缺少 image_path");
+      }
+
+      db.prepare(
+        `
+        UPDATE generation_job_level_candidates
+        SET image_status = 'success',
+            image_url = ?,
+            image_path = ?,
+            error_message = '',
+            selected = 1,
+            updated_at = ?
+        WHERE run_id = ? AND scene_index = ?
+      `,
+      ).run(resolvedImageUrl, normalizedImagePath, now, existing.run_id, existing.scene_index);
+    } else {
+      db.prepare(
+        `
+        UPDATE generation_job_level_candidates
+        SET image_status = 'failed',
+            error_message = ?,
+            selected = 0,
+            updated_at = ?
+        WHERE run_id = ? AND scene_index = ?
+      `,
+      ).run(errorMessage || "retry failed", now, existing.run_id, existing.scene_index);
+    }
+
+    db.prepare(
+      `
+      UPDATE generation_candidate_image_retries
+      SET status = ?,
+          error_message = ?,
+          ended_at = COALESCE(ended_at, ?),
+          updated_at = ?
+      WHERE id = ?
+    `,
+    ).run(normalizedStatus, normalizedStatus === "succeeded" ? "" : errorMessage, now, now, retryId);
+
+    const retry = db
+      .prepare(
+        `
+        SELECT id, run_id, scene_index, status, requested_by, attempts, error_message,
+               created_at, started_at, ended_at, updated_at
+        FROM generation_candidate_image_retries
+        WHERE id = ?
+      `,
+      )
+      .get(retryId);
+
+    return {
+      retry: serializeGenerationCandidateRetryRow(retry),
+      candidate: listGenerationJobCandidates(existing.run_id).find((item) => item.scene_index === Number(existing.scene_index)) || null,
+    };
+  });
+
+  return tx();
+}
+
+function normalizeGeneratedStoryId(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return normalized;
+}
+
+function resolveGenerationPublishStoryId({ runId, job, summary }) {
+  const summaryStoryId = normalizeGeneratedStoryId(summary?.story_id);
+  if (summaryStoryId) {
+    return summaryStoryId;
+  }
+
+  const payloadStoryId = normalizeGeneratedStoryId(job?.payload?.story_id);
+  if (payloadStoryId) {
+    return payloadStoryId;
+  }
+
+  const dateStamp = String(job?.target_date || "")
+    .replace(/[^0-9]/g, "")
+    .slice(0, 8);
+  const runPart = normalizeGeneratedStoryId(runId).slice(0, 24) || randomToken().slice(0, 6);
+  return normalizeGeneratedStoryId(`story-${dateStamp || "unknown"}-${runPart}`) || `story-${Date.now()}`;
+}
+
+function resolveCandidateImageSourcePath(candidate) {
+  const directPath = String(candidate?.image_path || "").trim();
+  if (directPath) {
+    try {
+      const normalized = path.normalize(directPath);
+      if (fs.existsSync(normalized) && fs.statSync(normalized).isFile()) {
+        return normalized;
+      }
+    } catch {
+      // fallback to image_url
+    }
+  }
+
+  const imageUrl = String(candidate?.image_url || "").trim();
+  if (imageUrl) {
+    try {
+      const fromUrl = resolveStoryAssetFsPath(imageUrl);
+      if (fromUrl && fs.existsSync(fromUrl) && fs.statSync(fromUrl).isFile()) {
+        return fromUrl;
+      }
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+}
+
+function writeJsonAtomic(filePath, payload) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${randomToken().slice(0, 6)}`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+  fs.renameSync(tmpPath, filePath);
+}
+
+function upsertStoryIndexEntry({
+  indexFile,
+  storyId,
+  title,
+  description,
+  cover,
+  manifest,
+  bookId,
+  bookTitle,
+}) {
+  let payload = { version: 1, stories: [] };
+  if (fs.existsSync(indexFile)) {
+    const existing = readJsonSafe(indexFile);
+    if (existing && typeof existing === "object") {
+      payload = {
+        ...payload,
+        ...existing,
+      };
+    }
+  }
+
+  const stories = Array.isArray(payload.stories) ? payload.stories.filter((item) => item && typeof item === "object") : [];
+  const filteredStories = stories.filter((item) => String(item.id || "") !== storyId);
+  const maxOrder = filteredStories.reduce((max, item) => {
+    const order = Number(item.order);
+    return Number.isFinite(order) ? Math.max(max, order) : max;
+  }, 0);
+
+  const entry = {
+    id: storyId,
+    title,
+    description,
+    cover,
+    manifest,
+    order: maxOrder + 1,
+  };
+
+  const normalizedBookId = normalizeStoryBookId(bookId);
+  const normalizedBookTitle = normalizeShortText(bookTitle);
+  if (normalizedBookId) {
+    entry.book_id = normalizedBookId;
+  }
+  if (normalizedBookTitle) {
+    entry.book_title = normalizedBookTitle;
+  }
+
+  filteredStories.push(entry);
+  payload.version = Number(payload.version) || 1;
+  payload.stories = filteredStories.sort((first, second) => {
+    const firstOrder = Number.isFinite(Number(first.order)) ? Number(first.order) : Number.MAX_SAFE_INTEGER;
+    const secondOrder = Number.isFinite(Number(second.order)) ? Number(second.order) : Number.MAX_SAFE_INTEGER;
+    if (firstOrder !== secondOrder) {
+      return firstOrder - secondOrder;
+    }
+    return String(first.id || "").localeCompare(String(second.id || ""));
+  });
+
+  writeJsonAtomic(indexFile, payload);
+}
+
+function appendRunEvent(eventLogFile, payload) {
+  if (!eventLogFile) {
+    return;
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(eventLogFile), { recursive: true });
+    const line = JSON.stringify(payload);
+    fs.appendFileSync(eventLogFile, `${line}\n`, "utf-8");
+  } catch {
+    // ignore event append failures
+  }
+}
+
+function publishSelectedGenerationCandidates({ runId, job, summary, selectedCandidates }) {
+  const sortedCandidates = [...selectedCandidates].sort((first, second) => first.scene_index - second.scene_index);
+  if (sortedCandidates.length === 0) {
+    throw new Error("没有可发布的候选关卡");
+  }
+
+  const missingSceneIndexes = [];
+  const copiedScenes = [];
+  const storyId = resolveGenerationPublishStoryId({ runId, job, summary });
+  const stagingDir = path.join(STORY_GENERATOR_OUTPUT_ROOT, `.staging_${storyId}_${runId}`);
+  const stagingImagesDir = path.join(stagingDir, "images");
+
+  fs.rmSync(stagingDir, { recursive: true, force: true });
+  fs.mkdirSync(stagingImagesDir, { recursive: true });
+
+  for (let index = 0; index < sortedCandidates.length; index += 1) {
+    const candidate = sortedCandidates[index];
+    const sourcePath = resolveCandidateImageSourcePath(candidate);
+    if (!sourcePath) {
+      missingSceneIndexes.push(candidate.scene_index);
+      continue;
+    }
+
+    const ext = path.extname(sourcePath).toLowerCase();
+    const safeExt = ext === ".jpg" || ext === ".jpeg" || ext === ".webp" ? ext : ".png";
+    const fileName = `scene_${String(index + 1).padStart(3, "0")}${safeExt}`;
+    const targetPath = path.join(stagingImagesDir, fileName);
+
+    fs.copyFileSync(sourcePath, targetPath);
+    copiedScenes.push({
+      candidate,
+      file_name: fileName,
+      source_path: sourcePath,
+    });
+  }
+
+  if (missingSceneIndexes.length > 0) {
+    throw new Error(`候选图片缺失，scene_index=${missingSceneIndexes.join(", ")}`);
+  }
+
+  if (copiedScenes.length === 0) {
+    throw new Error("没有可用图片可发布");
+  }
+
+  const firstImageName = copiedScenes[0].file_name;
+  const coverExt = path.extname(firstImageName) || ".png";
+  const coverName = `cover${coverExt}`;
+  fs.copyFileSync(path.join(stagingImagesDir, firstImageName), path.join(stagingDir, coverName));
+
+  const storyTitle = String(summary?.title || "").trim() || storyId;
+  const storyDescription = String(summary?.description || "").trim();
+  const overviewTitle = String(summary?.story_overview_title || "").trim();
+  const overviewParagraphs = Array.isArray(summary?.story_overview_paragraphs)
+    ? summary.story_overview_paragraphs.map((item) => String(item || "").trim()).filter((item) => item.length > 0)
+    : [];
+
+  const levels = copiedScenes.map((item, index) => ({
+    id: `${storyId}_${String(index + 1).padStart(2, "0")}`,
+    title: item.candidate.title || `关卡 ${index + 1}`,
+    description: item.candidate.description || item.candidate.title || `关卡 ${index + 1}`,
+    story_text: item.candidate.story_text || item.candidate.description || item.candidate.title || "",
+    grid: {
+      rows: normalizeIntegerInRange(item.candidate.grid_rows, 2, 20) || 6,
+      cols: normalizeIntegerInRange(item.candidate.grid_cols, 2, 20) || 4,
+    },
+    source_image: `images/${item.file_name}`,
+    content_version: 1,
+    time_limit_sec: normalizeIntegerInRange(item.candidate.time_limit_sec, 30, 3600) || 180,
+    shuffle: {
+      seed: 1000 + index + 1,
+      mode: "grid_shuffle",
+    },
+    mobile: {
+      preferred_orientation: "portrait",
+      orientation_hint: "本关建议竖屏体验",
+    },
+  }));
+
+  const manifestPayload = {
+    id: storyId,
+    title: storyTitle,
+    description: storyDescription,
+    cover: coverName,
+    story_overview_title: overviewTitle,
+    story_overview_paragraphs: overviewParagraphs,
+    levels,
+  };
+
+  writeJsonAtomic(path.join(stagingDir, "story.json"), manifestPayload);
+
+  const finalStoryDir = path.join(STORY_GENERATOR_OUTPUT_ROOT, storyId);
+  fs.rmSync(finalStoryDir, { recursive: true, force: true });
+  fs.renameSync(stagingDir, finalStoryDir);
+
+  const manifestUrl = `${STORY_PUBLIC_PREFIX}/${storyId}/story.json`;
+  const coverUrl = `${STORY_PUBLIC_PREFIX}/${storyId}/${coverName}`;
+  const indexFiles = [...new Set([STORY_INDEX_FILE, STORY_GENERATOR_INDEX_FILE].filter((item) => Boolean(item)))];
+
+  for (const indexFile of indexFiles) {
+    upsertStoryIndexEntry({
+      indexFile,
+      storyId,
+      title: manifestPayload.title,
+      description: manifestPayload.description,
+      cover: coverUrl,
+      manifest: manifestUrl,
+      bookId: job?.payload?.book_id ?? summary?.book_id,
+      bookTitle: job?.payload?.book_title ?? summary?.book_title,
+    });
+  }
+
+  const now = nowIso();
+  const nextPayload = {
+    ...(job?.payload && typeof job.payload === "object" ? job.payload : {}),
+    story_id: storyId,
+    review_mode: true,
+  };
+
+  db.prepare(
+    `
+    UPDATE generation_jobs
+    SET payload_json = ?,
+        updated_at = ?
+    WHERE run_id = ?
+  `,
+  ).run(JSON.stringify(nextPayload), now, runId);
+
+  db.prepare(
+    `
+    INSERT INTO generation_job_meta (
+      run_id,
+      result_story_id,
+      job_kind,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, 'story_generation', ?, ?)
+    ON CONFLICT(run_id) DO UPDATE SET
+      result_story_id = excluded.result_story_id,
+      updated_at = excluded.updated_at
+  `,
+  ).run(runId, storyId, now, now);
+
+  if (job.summary_path) {
+    const nextSummary = {
+      ...(summary && typeof summary === "object" ? summary : {}),
+      story_id: storyId,
+      generated_scenes: levels.length,
+      review_mode: true,
+      publish: {
+        mode: "selected",
+        story_id: storyId,
+        story_dir: finalStoryDir,
+        manifest: path.join(finalStoryDir, "story.json"),
+        level_count: levels.length,
+        selected_count: selectedCandidates.length,
+        published_at: now,
+      },
+    };
+    writeJsonAtomic(job.summary_path, nextSummary);
+  }
+
+  appendRunEvent(job.event_log_file, {
+    ts: now,
+    event: "publish.selected.completed",
+    run_id: runId,
+    story_id: storyId,
+    level_count: levels.length,
+    selected_count: selectedCandidates.length,
+    manifest: manifestUrl,
+  });
+
+  return {
+    story_id: storyId,
+    manifest: manifestUrl,
+    cover: coverUrl,
+    level_count: levels.length,
+    selected_count: selectedCandidates.length,
+    published_at: now,
+  };
 }
 
 function listGenerationJobs(limit = 50) {
@@ -3893,6 +5187,24 @@ function safeParseJsonObject(value) {
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
+  }
+}
+
+function safeParseJsonArray(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((item) => String(item || "").trim())
+      .filter((item) => item.length > 0);
+  } catch {
+    return [];
   }
 }
 
