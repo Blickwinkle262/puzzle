@@ -255,7 +255,7 @@ async def generate_images_for_story(
 
         def _default_session_factory() -> Any:
             timeout = aiohttp.ClientTimeout(total=timeout_sec)
-            return aiohttp.ClientSession(timeout=timeout)
+            return aiohttp.ClientSession(timeout=timeout, trust_env=True)
 
         session_factory = _default_session_factory
 
