@@ -67,6 +67,7 @@ class PipelineConfig:
     event_log_backup_count: int
 
     dry_run: bool
+    review_mode: bool
 
 
 def get_required_api_key(value: str | None = None) -> str:

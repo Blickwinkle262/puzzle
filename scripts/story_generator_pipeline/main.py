@@ -154,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--review-mode", action="store_true")
     return parser
 
 
@@ -207,6 +208,7 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         event_log_max_bytes=max(1024, int(args.event_log_max_bytes)),
         event_log_backup_count=max(1, int(args.event_log_backup_count)),
         dry_run=bool(args.dry_run),
+        review_mode=bool(args.review_mode),
     )
 
 
@@ -248,6 +250,7 @@ def main() -> int:
             run_id=config.run_id,
             target_date=config.target_date.isoformat(),
             dry_run=config.dry_run,
+            review_mode=config.review_mode,
             log_file=str(config.log_file),
             event_log_file=str(config.event_log_file),
         )

@@ -35,6 +35,51 @@ def _progress_payload(scene: SceneDraft, result: ImageResult, completed: int, to
     }
 
 
+def _build_scene_candidates(
+    *,
+    scenes: list[SceneDraft],
+    image_results: list[ImageResult],
+) -> list[dict[str, Any]]:
+    result_map = {item.scene_id: item for item in image_results}
+    candidates: list[dict[str, Any]] = []
+
+    for index, scene in enumerate(scenes, start=1):
+        result = result_map.get(scene.scene_id)
+        image_status = "pending"
+        image_url = ""
+        image_path = ""
+        error_message = ""
+
+        if result is not None:
+            image_status = result.status if result.status in {"success", "failed", "skipped"} else "failed"
+            image_url = result.image_url or ""
+            image_path = str(result.local_path) if result.local_path else ""
+            error_message = result.reason or ""
+
+        candidates.append(
+            {
+                "scene_index": index,
+                "scene_id": scene.scene_id,
+                "title": scene.title,
+                "description": scene.description,
+                "story_text": scene.story_text,
+                "image_prompt": scene.image_prompt,
+                "mood": scene.mood,
+                "characters": scene.characters,
+                "grid_rows": int(scene.rows),
+                "grid_cols": int(scene.cols),
+                "time_limit_sec": int(scene.time_limit_sec),
+                "image_status": image_status,
+                "image_url": image_url,
+                "image_path": image_path,
+                "error_message": error_message,
+                "selected": image_status == "success",
+            }
+        )
+
+    return candidates
+
+
 async def run_pipeline(
     config: PipelineConfig,
     *,
@@ -96,7 +141,7 @@ async def run_pipeline(
         base_url=config.base_url,
         text_model=config.text_model,
         candidate_scenes=config.candidate_scenes,
-        min_scenes=config.min_scenes,
+        min_scenes=1 if config.review_mode else config.min_scenes,
         max_scenes=config.candidate_scenes,
     )
     emit_event(
@@ -133,6 +178,19 @@ async def run_pipeline(
         on_scene_done=on_scene_done,
     )
 
+    candidates = _build_scene_candidates(scenes=draft.scenes, image_results=image_results)
+    success_candidates = [item for item in candidates if item["image_status"] == "success"]
+    failed_candidates = [item for item in candidates if item["image_status"] != "success"]
+
+    emit_event(
+        "review.ready",
+        run_id=config.run_id,
+        total=len(candidates),
+        success=len(success_candidates),
+        failed=len(failed_candidates),
+        review_mode=config.review_mode,
+    )
+
     filtered_scenes, filtered_images, skipped = filter_results(draft.scenes, image_results)
     emit_event(
         "images.filtered",
@@ -142,7 +200,7 @@ async def run_pipeline(
         skipped=len(skipped),
     )
 
-    if len(filtered_scenes) < config.min_scenes:
+    if not config.review_mode and len(filtered_scenes) < config.min_scenes:
         emit_event(
             "pipeline.aborted",
             run_id=config.run_id,
@@ -166,7 +224,7 @@ async def run_pipeline(
     )
 
     publish_result = {}
-    if not config.dry_run:
+    if not config.dry_run and not config.review_mode:
         emit_event("publish.started", run_id=config.run_id, story_id=story_id, level_count=len(final_scenes))
         publish_result = publish_story(
             story_id=story_id,
@@ -184,7 +242,12 @@ async def run_pipeline(
             publish_event_payload["published_story_id"] = published_story_id
         emit_event("publish.completed", run_id=config.run_id, story_id=story_id, **publish_event_payload)
     else:
-        emit_event("publish.skipped", run_id=config.run_id, story_id=story_id, reason="dry_run")
+        emit_event(
+            "publish.skipped",
+            run_id=config.run_id,
+            story_id=story_id,
+            reason="review_mode" if config.review_mode else "dry_run",
+        )
 
     summary = {
         "date": date_str,
@@ -195,8 +258,16 @@ async def run_pipeline(
         "total_scenes": len(draft.scenes),
         "successful_scenes": len(filtered_scenes),
         "generated_scenes": len(final_scenes),
+        "review_mode": config.review_mode,
         "skipped": skipped,
         "images": final_images,
+        "candidates": candidates,
+        "candidate_counts": {
+            "total": len(candidates),
+            "success": len(success_candidates),
+            "failed": len(failed_candidates),
+            "selected": len([item for item in candidates if item["selected"]]),
+        },
         "dry_run": config.dry_run,
         "log_file": str(config.log_file),
         "event_log_file": str(config.event_log_file),
