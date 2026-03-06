@@ -15,7 +15,7 @@ import { useImageSize } from "../hooks/useImageSize";
 import { useWindowSize } from "../hooks/useWindowSize";
 
 const CONTINUE_SECONDS = 60;
-const MAX_CONTINUE_COUNT = 3;
+const MAX_CONTINUE_COUNT = 5;
 
 type Orientation = "portrait" | "landscape";
 type GamePhase = "intro" | "countdown" | "play" | "complete";
