@@ -142,3 +142,21 @@ uv run python scripts/story_generator_pipeline/queue_worker.py \
 兼容说明：`--db/STORY_GENERATOR_QUEUE_DB_PATH` 仍可作为旧模式回退（不推荐），默认建议用 `--backend-url`。
 
 向后兼容：历史变量名 `STORY_GENERATION_*` 仍然可用，但建议逐步迁移到 `STORY_GENERATOR_*`。
+
+## 原子子命令（供 Node scene API 调用）
+
+`atomic_cli.py` 提供三类子命令，输入 stdin JSON，输出 stdout JSON：
+
+- `generate-text`：只生成场景文案与每个 scene 的 `image_prompt`
+- `generate-image`：仅生成单个 scene 图片
+- `generate-images`：批量生成多个 scene 图片
+
+示例：
+
+```bash
+cat payload.json | python -m scripts.story_generator_pipeline.atomic_cli generate-text
+cat payload.json | python -m scripts.story_generator_pipeline.atomic_cli generate-image
+cat payload.json | python -m scripts.story_generator_pipeline.atomic_cli generate-images
+```
+
+该模式用于后端 `/api/runs/*` 原子化接口，Node 侧逐 scene 回写 SQLite，不再依赖 summary 全量同步。

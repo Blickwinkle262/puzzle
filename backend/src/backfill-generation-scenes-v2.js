@@ -126,9 +126,12 @@ function deriveTextStatus(scene) {
 function deriveFlowStage(job) {
   const status = normalizeShortText(job.status, 30).toLowerCase();
   const reviewStatus = normalizeShortText(job.review_status, 40).toLowerCase();
+  const payload = safeParseJsonObject(job.payload_json);
+  const reviewMode = normalizeBoolean(payload.review_mode);
+  const dryRun = normalizeBoolean(job.dry_run);
 
   if (status === "queued") {
-    return "queued";
+    return "text_generating";
   }
   if (status === "running") {
     return "images_generating";
@@ -143,10 +146,13 @@ function deriveFlowStage(job) {
     return "review_ready";
   }
   if (status === "succeeded") {
-    return "completed";
+    if (reviewMode || dryRun) {
+      return "review_ready";
+    }
+    return "published";
   }
 
-  return "";
+  return "text_generating";
 }
 
 function readSummaryCandidates(summaryPath) {

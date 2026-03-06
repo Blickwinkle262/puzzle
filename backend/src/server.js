@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,6 +67,32 @@ const STORY_GENERATOR_WORKER_TOKEN = String(
     || process.env.STORY_GENERATION_WORKER_TOKEN
     || "",
 ).trim();
+const STORY_GENERATOR_PYTHON_BIN = String(
+  process.env.STORY_GENERATOR_PYTHON_BIN
+    || process.env.STORY_GENERATION_PYTHON_BIN
+    || process.env.PYTHON_BIN
+    || "python3",
+).trim();
+const STORY_GENERATOR_ATOMIC_MODULE = "scripts.story_generator_pipeline.atomic_cli";
+const parsedAtomicTimeoutMs = Number(
+  process.env.STORY_GENERATOR_ATOMIC_TIMEOUT_MS
+    || process.env.STORY_GENERATION_ATOMIC_TIMEOUT_MS
+    || 1000 * 60 * 8,
+);
+const STORY_GENERATOR_ATOMIC_TIMEOUT_MS = Number.isFinite(parsedAtomicTimeoutMs) && parsedAtomicTimeoutMs > 0
+  ? Math.floor(parsedAtomicTimeoutMs)
+  : 1000 * 60 * 8;
+const GENERATION_FLOW_STAGES = new Set([
+  "",
+  "text_generating",
+  "text_ready",
+  "images_generating",
+  "review_ready",
+  "published",
+  "failed",
+]);
+const GENERATION_SCENE_TEXT_STATUSES = new Set(["pending", "ready", "failed", "deleted"]);
+const GENERATION_SCENE_IMAGE_STATUSES = new Set(["pending", "queued", "running", "success", "failed", "skipped"]);
 const DEFAULT_TIMER_POLICY = Object.freeze({
   base_seconds: 45,
   per_piece_seconds: 4,
@@ -861,12 +888,39 @@ app.get("/api/admin/generate-story/:runId", requireAuth, requireAdmin, (req, res
 
     const events = readRunEvents(job.event_log_file, runId, 30);
     const logTail = readTailLines(job.log_file, 80);
-    const summary = readJsonSafe(job.summary_path);
-    if (job.status === "succeeded") {
-      syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+    let summary = readJsonSafe(job.summary_path);
+    let candidates = [];
+    let candidateCounts = {
+      total: 0,
+      success: 0,
+      failed: 0,
+      pending: 0,
+      selected: 0,
+      ready_for_publish: 0,
+    };
+
+    if (hasGenerationSceneRows(runId)) {
+      const scenes = listGenerationScenes(runId, { include_deleted: true });
+      const sceneCounts = summarizeGenerationScenes(scenes);
+      candidates = scenes.map((scene) => serializeGenerationSceneAsLegacyCandidate(scene));
+      candidateCounts = summarizeLegacyCandidateCountsFromScenes(sceneCounts);
+
+      if (!summary || typeof summary !== "object") {
+        summary = {
+          run_id: runId,
+          total_scenes: Math.max(0, candidateCounts.total),
+          generated_scenes: Number(sceneCounts.images_success || 0),
+          review_mode: true,
+          review_status: job.review_status,
+        };
+      }
+    } else {
+      if (job.status === "succeeded") {
+        syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+      }
+      candidates = listGenerationJobCandidates(runId);
+      candidateCounts = summarizeGenerationCandidates(candidates);
     }
-    const candidates = listGenerationJobCandidates(runId);
-    const candidateCounts = summarizeGenerationCandidates(candidates);
 
     res.json({
       ...job,
@@ -881,6 +935,903 @@ app.get("/api/admin/generate-story/:runId", requireAuth, requireAdmin, (req, res
   }
 });
 
+app.get("/api/runs", requireAuth, requireAdmin, (_req, res) => {
+  try {
+    const runs = listGenerationJobs(60);
+    res.json({ runs });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "读取 runs 失败") });
+  }
+});
+
+app.get("/api/runs/:runId", requireAuth, requireAdmin, (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不合法" });
+    return;
+  }
+
+  try {
+    const job = getGenerationJobByRunId(runId);
+    if (!job) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    const scenes = listGenerationScenes(runId, { include_deleted: true });
+    const attempts = listGenerationSceneAttempts(runId);
+    const attemptsByScene = {};
+    for (const item of attempts) {
+      const key = String(item.scene_index || 0);
+      const bucket = attemptsByScene[key] || [];
+      bucket.push(item);
+      attemptsByScene[key] = bucket;
+    }
+
+    let compatibleScenes = scenes;
+    if (compatibleScenes.length === 0 && !hasGenerationSceneRows(runId)) {
+      if (job.status === "succeeded") {
+        syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+      }
+
+      const legacyCandidates = listGenerationJobCandidates(runId);
+      if (legacyCandidates.length > 0) {
+        compatibleScenes = legacyCandidates.map((item) => ({
+          ...item,
+          text_status: "ready",
+          image_status: normalizeGenerationSceneImageStatus(item.image_status),
+          deleted_at: null,
+          source_kind: "legacy",
+        }));
+      }
+    }
+
+    res.json({
+      job,
+      scenes: compatibleScenes,
+      counts: summarizeGenerationScenes(compatibleScenes),
+      attempts_by_scene: attemptsByScene,
+      attempts,
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "读取 run 详情失败") });
+  }
+});
+
+app.post("/api/runs/:runId/generate-text", requireAuth, requireCsrf, requireAdmin, async (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不合法" });
+    return;
+  }
+
+  const writable = ensureGenerationRunWritable(runId);
+  if (writable.status !== 200 && writable.status !== 404) {
+    res.status(writable.status).json({ message: writable.message });
+    return;
+  }
+
+  const targetDate = normalizeTargetDate(req.body?.target_date || writable.job?.target_date);
+  if (!targetDate) {
+    res.status(400).json({ message: "target_date 必须是 YYYY-MM-DD" });
+    return;
+  }
+
+  const chapterId = normalizePositiveInteger(req.body?.chapter_id);
+  if (req.body?.chapter_id !== undefined && !chapterId) {
+    res.status(400).json({ message: "chapter_id 必须是正整数" });
+    return;
+  }
+
+  const inputStoryFile = normalizeStoryFile(req.body?.story_file);
+  if (req.body?.story_file !== undefined && !inputStoryFile) {
+    res.status(400).json({ message: "story_file 无效或不存在" });
+    return;
+  }
+
+  if (chapterId && inputStoryFile) {
+    res.status(400).json({ message: "chapter_id 与 story_file 只能二选一" });
+    return;
+  }
+
+  const requestedSceneCount = normalizePositiveInteger(req.body?.scene_count);
+  if (req.body?.scene_count !== undefined && (!requestedSceneCount || requestedSceneCount < 6)) {
+    res.status(400).json({ message: "scene_count 必须是 >= 6 的正整数" });
+    return;
+  }
+
+  let chapterSource = null;
+  let storyFile = inputStoryFile || writable.job?.story_file || "";
+
+  try {
+    if (chapterId) {
+      chapterSource = materializeChapterTextToFile(chapterId, runId);
+      storyFile = chapterSource.story_file;
+    }
+  } catch (error) {
+    const message = asMessage(error, "读取章节失败");
+    res.status(message.includes("不存在") ? 404 : 400).json({ message });
+    return;
+  }
+
+  if (!storyFile) {
+    res.status(400).json({ message: "缺少 story_file，请选择 chapter 或传入 story_file" });
+    return;
+  }
+
+  const existingPayload = writable.job?.payload && typeof writable.job.payload === "object"
+    ? writable.job.payload
+    : {};
+  let candidateScenes = normalizePositiveInteger(req.body?.candidate_scenes)
+    || normalizePositiveInteger(existingPayload.candidate_scenes)
+    || requestedSceneCount
+    || 12;
+  let minScenes = normalizePositiveInteger(req.body?.min_scenes)
+    || normalizePositiveInteger(existingPayload.min_scenes)
+    || Math.max(6, candidateScenes - 2);
+  let maxScenes = normalizePositiveInteger(req.body?.max_scenes)
+    || normalizePositiveInteger(existingPayload.max_scenes)
+    || requestedSceneCount
+    || candidateScenes;
+
+  if (requestedSceneCount) {
+    candidateScenes = requestedSceneCount;
+    minScenes = Math.max(6, requestedSceneCount - 2);
+    maxScenes = requestedSceneCount;
+  }
+
+  if (maxScenes < minScenes) {
+    res.status(400).json({ message: "max_scenes 必须 >= min_scenes" });
+    return;
+  }
+
+  if (candidateScenes < maxScenes) {
+    res.status(400).json({ message: "candidate_scenes 必须 >= max_scenes" });
+    return;
+  }
+
+  const logFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.log`);
+  const eventLogFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.events.jsonl`);
+  const summaryPath = path.join(STORY_GENERATOR_SUMMARY_DIR, buildGenerationSummaryFileName(targetDate, runId));
+
+  const mergedPayload = {
+    ...existingPayload,
+    run_id: runId,
+    target_date: targetDate,
+    story_file: storyFile,
+    review_mode: true,
+    dry_run: false,
+    chapter_id: chapterSource?.chapter_id || chapterId || normalizePositiveInteger(existingPayload.chapter_id) || null,
+    chapter_title: chapterSource?.chapter_title || String(existingPayload.chapter_title || ""),
+    chapter_index: chapterSource?.chapter_index ?? normalizePositiveInteger(existingPayload.chapter_index) ?? null,
+    chapter_char_count: chapterSource?.char_count ?? normalizePositiveInteger(existingPayload.chapter_char_count) ?? null,
+    book_id: chapterSource?.book_id ?? normalizePositiveInteger(existingPayload.book_id) ?? null,
+    book_title: chapterSource?.book_title || String(existingPayload.book_title || ""),
+    candidate_scenes: candidateScenes,
+    min_scenes: minScenes,
+    max_scenes: maxScenes,
+    scene_count: maxScenes,
+    log_file: logFile,
+    event_log_file: eventLogFile,
+    summary_path: summaryPath,
+  };
+
+  try {
+    createOrUpdateAtomicGenerationRun({
+      runId,
+      requestedBy: req.authUser.username,
+      targetDate,
+      storyFile,
+      payload: mergedPayload,
+      logFile,
+      eventLogFile,
+      summaryPath,
+    });
+
+    db.prepare("DELETE FROM generation_job_scene_image_attempts WHERE run_id = ?").run(runId);
+    db.prepare("DELETE FROM generation_job_scenes WHERE run_id = ?").run(runId);
+
+    const atomicResult = await runStoryGeneratorAtomicCommand("generate-text", {
+      story_file: storyFile,
+      target_date: targetDate,
+      scene_count: maxScenes,
+      candidate_scenes: candidateScenes,
+      min_scenes: minScenes,
+      max_scenes: maxScenes,
+      max_source_chars: normalizePositiveInteger(req.body?.max_source_chars)
+        || normalizePositiveInteger(existingPayload.max_source_chars)
+        || 12000,
+      base_url: String(req.body?.base_url || existingPayload.base_url || "").trim() || undefined,
+      text_model: String(req.body?.text_model || existingPayload.text_model || "").trim() || undefined,
+      prompts_dir: String(req.body?.prompts_dir || existingPayload.prompts_dir || "").trim() || undefined,
+      system_prompt_file: String(req.body?.system_prompt_file || existingPayload.system_prompt_file || "").trim() || undefined,
+      user_prompt_template_file: String(req.body?.user_prompt_template_file || existingPayload.user_prompt_template_file || "").trim() || undefined,
+      image_prompt_suffix_file: String(req.body?.image_prompt_suffix_file || existingPayload.image_prompt_suffix_file || "").trim() || undefined,
+    });
+
+    const scenes = Array.isArray(atomicResult?.scenes)
+      ? atomicResult.scenes
+      : [];
+    if (scenes.length === 0) {
+      throw new Error("文本生成结果为空（scenes=0）");
+    }
+
+    const sceneRows = scenes.map((item, index) => ({
+      scene_index: normalizePositiveInteger(item.scene_index) || index + 1,
+      scene_id: normalizePositiveInteger(item.scene_id) || normalizePositiveInteger(item.scene_index) || index + 1,
+      title: String(item.title || "").trim(),
+      description: String(item.description || "").trim(),
+      story_text: String(item.story_text || "").trim(),
+      image_prompt: String(item.image_prompt || "").trim(),
+      mood: String(item.mood || "").trim(),
+      characters: normalizeGenerationSceneCharacters(item.characters),
+      grid_rows: normalizeIntegerInRange(item.grid_rows, 2, 20) || 6,
+      grid_cols: normalizeIntegerInRange(item.grid_cols, 2, 20) || 4,
+      time_limit_sec: normalizeIntegerInRange(item.time_limit_sec, 30, 3600) || 180,
+      text_status: "ready",
+      image_status: "pending",
+      image_url: "",
+      image_path: "",
+      error_message: "",
+      selected: true,
+    }));
+
+    const storedScenes = replaceGenerationScenes(runId, sceneRows, "pipeline");
+
+    const now = nowIso();
+    const nextPayload = {
+      ...mergedPayload,
+      title: String(atomicResult.title || "").trim(),
+      description: String(atomicResult.description || "").trim(),
+      story_overview_title: String(atomicResult.story_overview_title || "").trim(),
+      story_overview_paragraphs: Array.isArray(atomicResult.story_overview_paragraphs)
+        ? atomicResult.story_overview_paragraphs.map((item) => String(item || "").trim()).filter((item) => item.length > 0)
+        : [],
+      source_file: String(atomicResult.source_file || "").trim() || storyFile,
+    };
+
+    db.prepare(
+      `
+      UPDATE generation_jobs
+      SET status = 'running',
+          review_status = '',
+          flow_stage = 'text_ready',
+          payload_json = ?,
+          error_message = '',
+          exit_code = NULL,
+          published_at = NULL,
+          ended_at = NULL,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(JSON.stringify(nextPayload), now, runId);
+
+    writeJsonAtomic(summaryPath, {
+      run_id: runId,
+      target_date: targetDate,
+      review_mode: true,
+      review_status: "pending_review",
+      title: String(atomicResult.title || "").trim(),
+      description: String(atomicResult.description || "").trim(),
+      story_overview_title: String(atomicResult.story_overview_title || "").trim(),
+      story_overview_paragraphs: Array.isArray(atomicResult.story_overview_paragraphs)
+        ? atomicResult.story_overview_paragraphs.map((item) => String(item || "").trim()).filter((item) => item.length > 0)
+        : [],
+      source_file: String(atomicResult.source_file || "").trim(),
+      total_scenes: storedScenes.length,
+      generated_scenes: 0,
+      candidate_counts: {
+        total: storedScenes.length,
+        success: 0,
+        failed: 0,
+        selected: storedScenes.length,
+      },
+      candidates: storedScenes.map((scene) => ({
+        scene_index: scene.scene_index,
+        scene_id: scene.scene_id,
+        title: scene.title,
+        description: scene.description,
+        story_text: scene.story_text,
+        image_prompt: scene.image_prompt,
+        mood: scene.mood,
+        characters: scene.characters,
+        grid_rows: scene.grid_rows,
+        grid_cols: scene.grid_cols,
+        time_limit_sec: scene.time_limit_sec,
+        image_status: "pending",
+        image_url: "",
+        image_path: "",
+        error_message: "",
+        selected: scene.selected,
+      })),
+    });
+
+    const latestJob = refreshGenerationRunState(runId) || getGenerationJobByRunId(runId);
+    const latestScenes = listGenerationScenes(runId, { include_deleted: true });
+    res.json({
+      ok: true,
+      run_id: runId,
+      job: latestJob,
+      scenes: latestScenes,
+      counts: summarizeGenerationScenes(latestScenes),
+    });
+  } catch (error) {
+    const now = nowIso();
+    db.prepare(
+      `
+      UPDATE generation_jobs
+      SET status = 'failed',
+          review_status = '',
+          flow_stage = 'failed',
+          error_message = ?,
+          exit_code = 1,
+          ended_at = COALESCE(ended_at, ?),
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(asMessage(error, "文本生成失败"), now, now, runId);
+
+    res.status(500).json({ message: asMessage(error, "文本生成失败") });
+  }
+});
+
+app.post("/api/runs/:runId/scenes/:sceneIndex/generate-image", requireAuth, requireCsrf, requireAdmin, async (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  const sceneIndex = normalizePositiveInteger(req.params.sceneIndex);
+  if (!runId || !sceneIndex) {
+    res.status(400).json({ message: "run_id 或 scene_index 不合法" });
+    return;
+  }
+
+  const writable = ensureGenerationRunWritable(runId);
+  if (writable.status !== 200) {
+    res.status(writable.status).json({ message: writable.message });
+    return;
+  }
+
+  const scene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: false });
+  if (!scene) {
+    res.status(404).json({ message: "scene 不存在" });
+    return;
+  }
+
+  if (scene.text_status !== "ready") {
+    res.status(409).json({ message: "scene 文案未就绪，无法生成图片" });
+    return;
+  }
+
+  const payload = writable.job?.payload && typeof writable.job.payload === "object" ? writable.job.payload : {};
+  const now = nowIso();
+  db.prepare(
+    `
+    UPDATE generation_jobs
+    SET status = 'running',
+        review_status = '',
+        flow_stage = 'images_generating',
+        error_message = '',
+        exit_code = NULL,
+        ended_at = NULL,
+        updated_at = ?
+    WHERE run_id = ?
+  `,
+  ).run(now, runId);
+
+  const attemptRow = createGenerationSceneImageAttempt({
+    runId,
+    sceneIndex,
+    provider: "atomic_cli",
+    model: String(req.body?.image_model || payload.image_model || "").trim(),
+    imagePrompt: scene.image_prompt,
+  });
+  const attemptNo = Number(attemptRow?.attempt_no || nextGenerationSceneAttemptNo(runId, sceneIndex));
+  setGenerationSceneImageRunning(runId, sceneIndex);
+
+  const startedAtMs = Date.now();
+
+  try {
+    const atomicResult = await runStoryGeneratorAtomicCommand("generate-image", {
+      target_date: writable.job?.target_date || now.slice(0, 10),
+      images_dir: resolveGenerationRunImagesDir(runId),
+      base_url: String(req.body?.base_url || payload.base_url || "").trim() || undefined,
+      image_model: String(req.body?.image_model || payload.image_model || "").trim() || undefined,
+      image_size: String(req.body?.image_size || payload.image_size || "").trim() || undefined,
+      watermark: req.body?.watermark !== undefined ? normalizeBoolean(req.body?.watermark) : normalizeBoolean(payload.watermark),
+      concurrency: 1,
+      timeout_sec: normalizePositiveNumber(req.body?.timeout_sec) || normalizePositiveNumber(payload.timeout_sec) || 120,
+      poll_seconds: normalizePositiveNumber(req.body?.poll_seconds) || normalizePositiveNumber(payload.poll_seconds) || 2.5,
+      poll_attempts: normalizePositiveInteger(req.body?.poll_attempts) || normalizePositiveInteger(payload.poll_attempts) || 40,
+      scene: {
+        scene_index: scene.scene_index,
+        scene_id: scene.scene_id || scene.scene_index,
+        title: scene.title,
+        description: scene.description,
+        story_text: scene.story_text,
+        image_prompt: scene.image_prompt,
+        mood: scene.mood,
+        characters: scene.characters,
+        grid_rows: scene.grid_rows,
+        grid_cols: scene.grid_cols,
+        time_limit_sec: scene.time_limit_sec,
+      },
+    });
+
+    const firstResult = Array.isArray(atomicResult?.results) && atomicResult.results.length > 0
+      ? atomicResult.results[0]
+      : null;
+
+    const imageStatus = normalizeGenerationSceneImageStatus(firstResult?.status || "failed");
+    const imagePath = String(firstResult?.image_path || "").trim();
+    const imageUrl = String(firstResult?.image_url || "").trim() || resolveStoryAssetUrlFromFsPath(imagePath);
+    const errorMessage = imageStatus === "success"
+      ? ""
+      : String(firstResult?.error_message || "image generation failed").trim();
+
+    finalizeGenerationSceneImageAttempt({
+      runId,
+      sceneIndex,
+      attemptNo,
+      status: imageStatus === "success" ? "succeeded" : "failed",
+      imageUrl,
+      imagePath,
+      errorMessage,
+      latencyMs: Date.now() - startedAtMs,
+    });
+
+    setGenerationSceneImageResult({
+      runId,
+      sceneIndex,
+      status: imageStatus,
+      imageUrl,
+      imagePath,
+      errorMessage,
+    });
+
+    const latestJob = refreshGenerationRunState(runId) || getGenerationJobByRunId(runId);
+    const latestScene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: true });
+    const attempts = listGenerationSceneAttempts(runId, sceneIndex);
+
+    res.json({
+      ok: true,
+      run_id: runId,
+      job: latestJob,
+      scene: latestScene,
+      attempt: attempts.length > 0 ? attempts[attempts.length - 1] : null,
+      counts: summarizeGenerationScenes(listGenerationScenes(runId, { include_deleted: true })),
+    });
+  } catch (error) {
+    const errorMessage = asMessage(error, "生成图片失败");
+    finalizeGenerationSceneImageAttempt({
+      runId,
+      sceneIndex,
+      attemptNo,
+      status: "failed",
+      imageUrl: "",
+      imagePath: "",
+      errorMessage,
+      latencyMs: Date.now() - startedAtMs,
+    });
+    setGenerationSceneImageResult({
+      runId,
+      sceneIndex,
+      status: "failed",
+      imageUrl: "",
+      imagePath: "",
+      errorMessage,
+    });
+    refreshGenerationRunState(runId);
+    res.status(500).json({ message: errorMessage });
+  }
+});
+
+app.post("/api/runs/:runId/scenes/generate-images-batch", requireAuth, requireCsrf, requireAdmin, async (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不合法" });
+    return;
+  }
+
+  const writable = ensureGenerationRunWritable(runId);
+  if (writable.status !== 200) {
+    res.status(writable.status).json({ message: writable.message });
+    return;
+  }
+
+  const payload = writable.job?.payload && typeof writable.job.payload === "object" ? writable.job.payload : {};
+  const sceneIndexList = Array.isArray(req.body?.scene_indexes)
+    ? req.body.scene_indexes.map((item) => normalizePositiveInteger(item)).filter((item) => Boolean(item))
+    : [];
+  const sceneIndexSet = new Set(sceneIndexList);
+
+  const allScenes = listGenerationScenes(runId, { include_deleted: false });
+  const targetScenes = allScenes
+    .filter((scene) => scene.text_status === "ready")
+    .filter((scene) => sceneIndexSet.size === 0 || sceneIndexSet.has(scene.scene_index))
+    .filter((scene) => scene.image_status === "pending" || scene.image_status === "failed" || scene.image_status === "skipped");
+
+  if (targetScenes.length === 0) {
+    res.status(400).json({ message: "没有可生成图片的 scene" });
+    return;
+  }
+
+  const now = nowIso();
+  db.prepare(
+    `
+    UPDATE generation_jobs
+    SET status = 'running',
+        review_status = '',
+        flow_stage = 'images_generating',
+        error_message = '',
+        exit_code = NULL,
+        ended_at = NULL,
+        updated_at = ?
+    WHERE run_id = ?
+  `,
+  ).run(now, runId);
+
+  const attemptsBySceneIndex = new Map();
+  for (const scene of targetScenes) {
+    const attemptRow = createGenerationSceneImageAttempt({
+      runId,
+      sceneIndex: scene.scene_index,
+      provider: "atomic_cli_batch",
+      model: String(req.body?.image_model || payload.image_model || "").trim(),
+      imagePrompt: scene.image_prompt,
+    });
+    attemptsBySceneIndex.set(scene.scene_index, Number(attemptRow?.attempt_no || 1));
+    setGenerationSceneImageRunning(runId, scene.scene_index);
+  }
+
+  const startedAtMs = Date.now();
+
+  try {
+    const atomicResult = await runStoryGeneratorAtomicCommand("generate-images", {
+      target_date: writable.job?.target_date || now.slice(0, 10),
+      images_dir: resolveGenerationRunImagesDir(runId),
+      base_url: String(req.body?.base_url || payload.base_url || "").trim() || undefined,
+      image_model: String(req.body?.image_model || payload.image_model || "").trim() || undefined,
+      image_size: String(req.body?.image_size || payload.image_size || "").trim() || undefined,
+      watermark: req.body?.watermark !== undefined ? normalizeBoolean(req.body?.watermark) : normalizeBoolean(payload.watermark),
+      concurrency: normalizePositiveInteger(req.body?.concurrency) || normalizePositiveInteger(payload.concurrency) || 3,
+      timeout_sec: normalizePositiveNumber(req.body?.timeout_sec) || normalizePositiveNumber(payload.timeout_sec) || 120,
+      poll_seconds: normalizePositiveNumber(req.body?.poll_seconds) || normalizePositiveNumber(payload.poll_seconds) || 2.5,
+      poll_attempts: normalizePositiveInteger(req.body?.poll_attempts) || normalizePositiveInteger(payload.poll_attempts) || 40,
+      scenes: targetScenes.map((scene) => ({
+        scene_index: scene.scene_index,
+        scene_id: scene.scene_id || scene.scene_index,
+        title: scene.title,
+        description: scene.description,
+        story_text: scene.story_text,
+        image_prompt: scene.image_prompt,
+        mood: scene.mood,
+        characters: scene.characters,
+        grid_rows: scene.grid_rows,
+        grid_cols: scene.grid_cols,
+        time_limit_sec: scene.time_limit_sec,
+      })),
+    });
+
+    const resultRows = Array.isArray(atomicResult?.results) ? atomicResult.results : [];
+    const resultBySceneIndex = new Map();
+    for (const item of resultRows) {
+      const sceneIndex = normalizePositiveInteger(item.scene_index);
+      if (sceneIndex) {
+        resultBySceneIndex.set(sceneIndex, item);
+      }
+    }
+
+    for (const scene of targetScenes) {
+      const result = resultBySceneIndex.get(scene.scene_index) || null;
+      const imageStatus = normalizeGenerationSceneImageStatus(result?.status || "failed");
+      const imagePath = String(result?.image_path || "").trim();
+      const imageUrl = String(result?.image_url || "").trim() || resolveStoryAssetUrlFromFsPath(imagePath);
+      const errorMessage = imageStatus === "success"
+        ? ""
+        : String(result?.error_message || "image generation failed").trim();
+      const attemptNo = Number(attemptsBySceneIndex.get(scene.scene_index) || 1);
+
+      finalizeGenerationSceneImageAttempt({
+        runId,
+        sceneIndex: scene.scene_index,
+        attemptNo,
+        status: imageStatus === "success" ? "succeeded" : "failed",
+        imageUrl,
+        imagePath,
+        errorMessage,
+        latencyMs: Date.now() - startedAtMs,
+      });
+
+      setGenerationSceneImageResult({
+        runId,
+        sceneIndex: scene.scene_index,
+        status: imageStatus,
+        imageUrl,
+        imagePath,
+        errorMessage,
+      });
+    }
+
+    const latestJob = refreshGenerationRunState(runId) || getGenerationJobByRunId(runId);
+    const latestScenes = listGenerationScenes(runId, { include_deleted: true });
+
+    res.json({
+      ok: true,
+      run_id: runId,
+      job: latestJob,
+      scenes: latestScenes,
+      counts: summarizeGenerationScenes(latestScenes),
+      processed: targetScenes.length,
+    });
+  } catch (error) {
+    const errorMessage = asMessage(error, "批量生成图片失败");
+    for (const scene of targetScenes) {
+      const attemptNo = Number(attemptsBySceneIndex.get(scene.scene_index) || 1);
+      finalizeGenerationSceneImageAttempt({
+        runId,
+        sceneIndex: scene.scene_index,
+        attemptNo,
+        status: "failed",
+        imageUrl: "",
+        imagePath: "",
+        errorMessage,
+        latencyMs: Date.now() - startedAtMs,
+      });
+      setGenerationSceneImageResult({
+        runId,
+        sceneIndex: scene.scene_index,
+        status: "failed",
+        imageUrl: "",
+        imagePath: "",
+        errorMessage,
+      });
+    }
+
+    refreshGenerationRunState(runId);
+    res.status(500).json({ message: errorMessage });
+  }
+});
+
+app.patch("/api/runs/:runId/scenes/:sceneIndex", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  const sceneIndex = normalizePositiveInteger(req.params.sceneIndex);
+  if (!runId || !sceneIndex) {
+    res.status(400).json({ message: "run_id 或 scene_index 不合法" });
+    return;
+  }
+
+  const writable = ensureGenerationRunWritable(runId);
+  if (writable.status !== 200) {
+    res.status(writable.status).json({ message: writable.message });
+    return;
+  }
+
+  const scene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: false });
+  if (!scene) {
+    res.status(404).json({ message: "scene 不存在" });
+    return;
+  }
+
+  const nextTitle = req.body?.title !== undefined ? String(req.body.title || "").trim().slice(0, 500) : null;
+  const nextDescription = req.body?.description !== undefined ? String(req.body.description || "").trim().slice(0, 2000) : null;
+  const nextStoryText = req.body?.story_text !== undefined ? String(req.body.story_text || "").trim().slice(0, 20000) : null;
+  const nextPrompt = req.body?.image_prompt !== undefined ? String(req.body.image_prompt || "").trim().slice(0, 12000) : null;
+  const hasSelected = req.body?.selected !== undefined;
+  const nextSelected = hasSelected ? normalizeBoolean(req.body?.selected) : null;
+  const nextRows = req.body?.grid_rows !== undefined ? normalizeIntegerInRange(req.body?.grid_rows, 2, 20) : null;
+  const nextCols = req.body?.grid_cols !== undefined ? normalizeIntegerInRange(req.body?.grid_cols, 2, 20) : null;
+  const nextTimeLimit = req.body?.time_limit_sec !== undefined ? normalizeIntegerInRange(req.body?.time_limit_sec, 30, 3600) : null;
+
+  if ((req.body?.grid_rows !== undefined && !nextRows)
+    || (req.body?.grid_cols !== undefined && !nextCols)
+    || (req.body?.time_limit_sec !== undefined && !nextTimeLimit)) {
+    res.status(400).json({ message: "rows/cols/time_limit_sec 参数非法" });
+    return;
+  }
+
+  const changedPrompt = nextPrompt !== null && nextPrompt !== scene.image_prompt;
+  const hasUpdate = nextTitle !== null
+    || nextDescription !== null
+    || nextStoryText !== null
+    || nextPrompt !== null
+    || hasSelected
+    || nextRows !== null
+    || nextCols !== null
+    || nextTimeLimit !== null;
+
+  if (!hasUpdate) {
+    res.status(400).json({ message: "没有可更新字段" });
+    return;
+  }
+
+  const now = nowIso();
+  db.prepare(
+    `
+    UPDATE generation_job_scenes
+    SET title = COALESCE(?, title),
+        description = COALESCE(?, description),
+        story_text = COALESCE(?, story_text),
+        image_prompt = COALESCE(?, image_prompt),
+        selected = CASE WHEN ? IS NULL THEN selected ELSE ? END,
+        grid_rows = COALESCE(?, grid_rows),
+        grid_cols = COALESCE(?, grid_cols),
+        time_limit_sec = COALESCE(?, time_limit_sec),
+        image_status = CASE WHEN ? = 1 THEN 'pending' ELSE image_status END,
+        image_url = CASE WHEN ? = 1 THEN '' ELSE image_url END,
+        image_path = CASE WHEN ? = 1 THEN '' ELSE image_path END,
+        error_message = CASE WHEN ? = 1 THEN '' ELSE error_message END,
+        updated_at = ?
+    WHERE run_id = ?
+      AND scene_index = ?
+      AND deleted_at IS NULL
+  `,
+  ).run(
+    nextTitle,
+    nextDescription,
+    nextStoryText,
+    nextPrompt,
+    hasSelected ? 1 : null,
+    hasSelected && nextSelected ? 1 : 0,
+    nextRows,
+    nextCols,
+    nextTimeLimit,
+    changedPrompt ? 1 : 0,
+    changedPrompt ? 1 : 0,
+    changedPrompt ? 1 : 0,
+    changedPrompt ? 1 : 0,
+    now,
+    runId,
+    sceneIndex,
+  );
+
+  if (changedPrompt) {
+    db.prepare(
+      `
+      UPDATE generation_job_scene_image_attempts
+      SET status = CASE
+            WHEN status IN ('queued', 'running') THEN 'cancelled'
+            ELSE status
+          END,
+          error_message = CASE
+            WHEN status IN ('queued', 'running') THEN 'prompt updated before completion'
+            ELSE error_message
+          END,
+          ended_at = CASE WHEN status IN ('queued', 'running') THEN COALESCE(ended_at, ?) ELSE ended_at END,
+          updated_at = ?
+      WHERE run_id = ? AND scene_index = ?
+    `,
+    ).run(now, now, runId, sceneIndex);
+  }
+
+  const latestJob = refreshGenerationRunState(runId) || getGenerationJobByRunId(runId);
+  const latestScene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: true });
+  res.json({
+    ok: true,
+    run_id: runId,
+    job: latestJob,
+    scene: latestScene,
+    counts: summarizeGenerationScenes(listGenerationScenes(runId, { include_deleted: true })),
+  });
+});
+
+app.delete("/api/runs/:runId/scenes/:sceneIndex", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  const sceneIndex = normalizePositiveInteger(req.params.sceneIndex);
+  if (!runId || !sceneIndex) {
+    res.status(400).json({ message: "run_id 或 scene_index 不合法" });
+    return;
+  }
+
+  const writable = ensureGenerationRunWritable(runId);
+  if (writable.status !== 200) {
+    res.status(writable.status).json({ message: writable.message });
+    return;
+  }
+
+  const scene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: true });
+  if (!scene) {
+    res.status(404).json({ message: "scene 不存在" });
+    return;
+  }
+
+  const now = nowIso();
+  db.prepare(
+    `
+    UPDATE generation_job_scenes
+    SET text_status = 'deleted',
+        image_status = 'skipped',
+        selected = 0,
+        deleted_at = COALESCE(deleted_at, ?),
+        updated_at = ?
+    WHERE run_id = ?
+      AND scene_index = ?
+  `,
+  ).run(now, now, runId, sceneIndex);
+
+  db.prepare(
+    `
+    UPDATE generation_job_scene_image_attempts
+    SET status = CASE WHEN status IN ('queued', 'running') THEN 'cancelled' ELSE status END,
+        error_message = CASE
+          WHEN status IN ('queued', 'running') THEN 'scene deleted'
+          ELSE error_message
+        END,
+        ended_at = CASE WHEN status IN ('queued', 'running') THEN COALESCE(ended_at, ?) ELSE ended_at END,
+        updated_at = ?
+    WHERE run_id = ? AND scene_index = ?
+  `,
+  ).run(now, now, runId, sceneIndex);
+
+  const latestJob = refreshGenerationRunState(runId) || getGenerationJobByRunId(runId);
+  res.json({
+    ok: true,
+    run_id: runId,
+    job: latestJob,
+    counts: summarizeGenerationScenes(listGenerationScenes(runId, { include_deleted: true })),
+  });
+});
+
+app.post("/api/runs/:runId/publish", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不合法" });
+    return;
+  }
+
+  const writable = ensureGenerationRunWritable(runId);
+  if (writable.status !== 200) {
+    res.status(writable.status).json({ message: writable.message });
+    return;
+  }
+
+  const job = writable.job;
+  if (!job) {
+    res.status(404).json({ message: "run_id 不存在" });
+    return;
+  }
+
+  const scenes = listGenerationScenes(runId, { include_deleted: false });
+  const selectedScenes = scenes.filter((scene) => scene.selected && scene.image_status === "success");
+  if (selectedScenes.length === 0) {
+    res.status(400).json({ message: "没有可发布关卡，请先选择至少一个成功 scene" });
+    return;
+  }
+
+  try {
+    const summary = readJsonSafe(job.summary_path) || {};
+    const published = publishSelectedGenerationCandidates({
+      runId,
+      job,
+      summary,
+      selectedCandidates: selectedScenes,
+    });
+
+    const now = nowIso();
+    db.prepare(
+      `
+      UPDATE generation_jobs
+      SET status = 'succeeded',
+          review_status = 'published',
+          flow_stage = 'published',
+          published_at = COALESCE(published_at, ?),
+          ended_at = COALESCE(ended_at, ?),
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(now, now, now, runId);
+
+    const latestScenes = listGenerationScenes(runId, { include_deleted: true });
+    res.json({
+      ok: true,
+      run_id: runId,
+      ...published,
+      job: getGenerationJobByRunId(runId),
+      counts: summarizeGenerationScenes(latestScenes),
+      scenes: latestScenes,
+    });
+  } catch (error) {
+    res.status(500).json({ message: asMessage(error, "发布失败") });
+  }
+});
+
 app.get("/api/admin/generation-jobs/:runId/review", requireAuth, requireAdmin, (req, res) => {
   const runId = String(req.params.runId || "").trim();
   if (!runId) {
@@ -892,6 +1843,26 @@ app.get("/api/admin/generation-jobs/:runId/review", requireAuth, requireAdmin, (
     const job = getGenerationJobByRunId(runId);
     if (!job) {
       res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    if (hasGenerationSceneRows(runId)) {
+      const scenes = listGenerationScenes(runId, { include_deleted: false });
+      const sceneCounts = summarizeGenerationScenes(scenes);
+      const candidates = scenes.map((scene) => serializeGenerationSceneAsLegacyCandidate(scene));
+      const counts = summarizeLegacyCandidateCountsFromScenes(sceneCounts);
+
+      res.json({
+        job,
+        candidates,
+        scenes,
+        counts,
+        scene_counts: sceneCounts,
+        publish: {
+          review_status: job.review_status,
+          published_at: job.published_at,
+        },
+      });
       return;
     }
 
@@ -962,6 +1933,42 @@ app.patch("/api/admin/generation-jobs/:runId/candidates/:sceneIndex", requireAut
       return;
     }
 
+    if (hasGenerationSceneRows(runId)) {
+      const scene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: false });
+      if (!scene) {
+        res.status(404).json({ message: "候选关卡不存在" });
+        return;
+      }
+
+      const now = nowIso();
+      db.prepare(
+        `
+        UPDATE generation_job_scenes
+        SET selected = CASE WHEN ? IS NULL THEN selected ELSE ? END,
+            grid_rows = COALESCE(?, grid_rows),
+            grid_cols = COALESCE(?, grid_cols),
+            updated_at = ?
+        WHERE run_id = ? AND scene_index = ?
+      `,
+      ).run(
+        hasSelected ? 1 : null,
+        hasSelected && selectedValue ? 1 : 0,
+        gridRows,
+        gridCols,
+        now,
+        runId,
+        sceneIndex,
+      );
+
+      refreshGenerationRunState(runId);
+      const latestScene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: true });
+      res.json({
+        ok: true,
+        candidate: latestScene ? serializeGenerationSceneAsLegacyCandidate(latestScene) : null,
+      });
+      return;
+    }
+
     const updated = updateGenerationJobCandidate({
       runId,
       sceneIndex,
@@ -986,7 +1993,7 @@ app.post(
   requireAuth,
   requireCsrf,
   requireAdmin,
-  (req, res) => {
+  async (req, res) => {
     const runId = String(req.params.runId || "").trim();
     const sceneIndex = normalizePositiveInteger(req.params.sceneIndex);
     if (!runId || !sceneIndex) {
@@ -1008,6 +2015,149 @@ app.post(
 
       if (job.review_status === "published") {
         res.status(409).json({ message: "该任务已发布，审核页不允许继续重试" });
+        return;
+      }
+
+      if (hasGenerationSceneRows(runId)) {
+        const scene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: false });
+        if (!scene) {
+          res.status(404).json({ message: "候选关卡不存在" });
+          return;
+        }
+
+        if (!scene.image_prompt) {
+          res.status(400).json({ message: "该候选缺少 image_prompt，无法重试" });
+          return;
+        }
+
+        const payload = job.payload && typeof job.payload === "object" ? job.payload : {};
+        const now = nowIso();
+        db.prepare(
+          `
+          UPDATE generation_jobs
+          SET status = 'running',
+              review_status = '',
+              flow_stage = 'images_generating',
+              error_message = '',
+              exit_code = NULL,
+              ended_at = NULL,
+              updated_at = ?
+          WHERE run_id = ?
+        `,
+        ).run(now, runId);
+
+        const attemptRow = createGenerationSceneImageAttempt({
+          runId,
+          sceneIndex,
+          provider: req.authUser?.username || "admin_retry",
+          model: String(payload.image_model || "").trim(),
+          imagePrompt: scene.image_prompt,
+        });
+        const attemptNo = Number(attemptRow?.attempt_no || nextGenerationSceneAttemptNo(runId, sceneIndex));
+        setGenerationSceneImageRunning(runId, sceneIndex);
+        const startedAtMs = Date.now();
+
+        try {
+          const atomicResult = await runStoryGeneratorAtomicCommand("generate-image", {
+            target_date: job.target_date || now.slice(0, 10),
+            images_dir: resolveGenerationRunImagesDir(runId),
+            base_url: String(payload.base_url || "").trim() || undefined,
+            image_model: String(payload.image_model || "").trim() || undefined,
+            image_size: String(payload.image_size || "").trim() || undefined,
+            watermark: normalizeBoolean(payload.watermark),
+            concurrency: 1,
+            timeout_sec: normalizePositiveNumber(payload.timeout_sec) || 120,
+            poll_seconds: normalizePositiveNumber(payload.poll_seconds) || 2.5,
+            poll_attempts: normalizePositiveInteger(payload.poll_attempts) || 40,
+            scene: {
+              scene_index: scene.scene_index,
+              scene_id: scene.scene_id || scene.scene_index,
+              title: scene.title,
+              description: scene.description,
+              story_text: scene.story_text,
+              image_prompt: scene.image_prompt,
+              mood: scene.mood,
+              characters: scene.characters,
+              grid_rows: scene.grid_rows,
+              grid_cols: scene.grid_cols,
+              time_limit_sec: scene.time_limit_sec,
+            },
+          });
+
+          const firstResult = Array.isArray(atomicResult?.results) && atomicResult.results.length > 0
+            ? atomicResult.results[0]
+            : null;
+
+          const imageStatus = normalizeGenerationSceneImageStatus(firstResult?.status || "failed");
+          const imagePath = String(firstResult?.image_path || "").trim();
+          const imageUrl = String(firstResult?.image_url || "").trim() || resolveStoryAssetUrlFromFsPath(imagePath);
+          const errorMessage = imageStatus === "success"
+            ? ""
+            : String(firstResult?.error_message || "retry image generation failed").trim();
+
+          finalizeGenerationSceneImageAttempt({
+            runId,
+            sceneIndex,
+            attemptNo,
+            status: imageStatus === "success" ? "succeeded" : "failed",
+            imageUrl,
+            imagePath,
+            errorMessage,
+            latencyMs: Date.now() - startedAtMs,
+          });
+
+          setGenerationSceneImageResult({
+            runId,
+            sceneIndex,
+            status: imageStatus,
+            imageUrl,
+            imagePath,
+            errorMessage,
+          });
+        } catch (retryError) {
+          const errorMessage = asMessage(retryError, "retry image generation failed");
+          finalizeGenerationSceneImageAttempt({
+            runId,
+            sceneIndex,
+            attemptNo,
+            status: "failed",
+            imageUrl: "",
+            imagePath: "",
+            errorMessage,
+            latencyMs: Date.now() - startedAtMs,
+          });
+          setGenerationSceneImageResult({
+            runId,
+            sceneIndex,
+            status: "failed",
+            imageUrl: "",
+            imagePath: "",
+            errorMessage,
+          });
+        }
+
+        const latestJob = refreshGenerationRunState(runId) || getGenerationJobByRunId(runId);
+        const latestScene = getGenerationSceneByIndex(runId, sceneIndex, { include_deleted: true });
+        const attempts = listGenerationSceneAttempts(runId, sceneIndex);
+        const latestAttempt = attempts.length > 0 ? attempts[attempts.length - 1] : null;
+
+        appendRunEvent(job.event_log_file, {
+          ts: nowIso(),
+          event: "review.retry.completed",
+          run_id: runId,
+          scene_index: sceneIndex,
+          retry_id: Number(latestAttempt?.id || 0),
+          status: String(latestAttempt?.status || ""),
+          error_message: String(latestAttempt?.error_message || ""),
+        });
+
+        res.json({
+          ok: true,
+          retry_id: Number(latestAttempt?.id || 0),
+          retry: serializeGenerationSceneAttemptAsLegacyRetry(latestAttempt),
+          candidate: latestScene ? serializeGenerationSceneAsLegacyCandidate(latestScene) : null,
+          job: latestJob,
+        });
         return;
       }
 
@@ -1081,6 +2231,46 @@ app.post("/api/admin/generation-jobs/:runId/publish-selected", requireAuth, requ
 
     if (job.dry_run) {
       res.status(409).json({ message: "dry_run 任务不支持发布" });
+      return;
+    }
+
+    if (hasGenerationSceneRows(runId)) {
+      const scenes = listGenerationScenes(runId, { include_deleted: false });
+      const selectedCandidates = scenes.filter((item) => item.selected && item.image_status === "success");
+      if (selectedCandidates.length === 0) {
+        res.status(400).json({ message: "没有可发布的关卡，请先勾选至少一个成功关卡" });
+        return;
+      }
+
+      const summary = readJsonSafe(job.summary_path) || {};
+      const published = publishSelectedGenerationCandidates({
+        runId,
+        job,
+        summary,
+        selectedCandidates,
+      });
+
+      const now = nowIso();
+      db.prepare(
+        `
+        UPDATE generation_jobs
+        SET status = 'succeeded',
+            review_status = 'published',
+            flow_stage = 'published',
+            published_at = COALESCE(published_at, ?),
+            ended_at = COALESCE(ended_at, ?),
+            updated_at = ?
+        WHERE run_id = ?
+      `,
+      ).run(now, now, now, runId);
+
+      const latestScenes = listGenerationScenes(runId, { include_deleted: true });
+      res.json({
+        ok: true,
+        run_id: runId,
+        ...published,
+        counts: summarizeLegacyCandidateCountsFromScenes(summarizeGenerationScenes(latestScenes)),
+      });
       return;
     }
 
@@ -3929,15 +5119,848 @@ function normalizeAttempts(value, defaultValue) {
   return parsed;
 }
 
+function normalizeGenerationFlowStage(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return GENERATION_FLOW_STAGES.has(text) ? text : "";
+}
+
+function normalizeGenerationSceneTextStatus(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return GENERATION_SCENE_TEXT_STATUSES.has(text) ? text : "pending";
+}
+
+function normalizeGenerationSceneImageStatus(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "succeeded") {
+    return "success";
+  }
+  return GENERATION_SCENE_IMAGE_STATUSES.has(text) ? text : "pending";
+}
+
+function normalizeGenerationSceneSourceKind(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "legacy" || text === "summary" || text === "review" || text === "manual" || text === "pipeline") {
+    return text;
+  }
+  return "manual";
+}
+
+function normalizeGenerationSceneCharacters(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0)
+    .slice(0, 40);
+}
+
+function resolveGenerationRunImagesDir(runId) {
+  const safeRunId = normalizeRunId(runId) || `run_${randomToken().slice(0, 8)}`;
+  const dir = path.join(STORIES_ROOT_DIR, ".generation_runs", safeRunId, "images");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function runStoryGeneratorAtomicCommand(command, payload, options = {}) {
+  const allowedCommands = new Set(["generate-text", "generate-image", "generate-images"]);
+  const normalizedCommand = String(command || "").trim();
+  if (!allowedCommands.has(normalizedCommand)) {
+    return Promise.reject(new Error(`不支持的原子命令: ${normalizedCommand}`));
+  }
+
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Math.max(1000, Math.floor(Number(options.timeoutMs)))
+    : STORY_GENERATOR_ATOMIC_TIMEOUT_MS;
+  const requestPayload = payload && typeof payload === "object" ? payload : {};
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      STORY_GENERATOR_PYTHON_BIN,
+      ["-m", STORY_GENERATOR_ATOMIC_MODULE, normalizedCommand],
+      {
+        cwd: ROOT_DIR,
+        env: {
+          ...process.env,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    let finished = false;
+
+    const done = (error, result = null) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timeoutTimer);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(result);
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+
+      setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, 800);
+
+      done(new Error(`原子命令超时: ${normalizedCommand} (${timeoutMs}ms)`));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk || "");
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+
+    child.on("error", (error) => {
+      done(new Error(`启动原子命令失败: ${asMessage(error, "spawn failed")}`));
+    });
+
+    child.on("close", (code) => {
+      if (finished) {
+        return;
+      }
+
+      const trimmedStdout = stdout.trim();
+      const trimmedStderr = stderr.trim();
+      const parsedStdout = safeParseJsonObject(trimmedStdout);
+      const stderrPayload = safeParseJsonObject(trimmedStderr);
+
+      if (code === 0) {
+        if (!parsedStdout || parsedStdout.ok !== true || !parsedStdout.result || typeof parsedStdout.result !== "object") {
+          done(new Error(`原子命令输出不合法: ${normalizedCommand}`));
+          return;
+        }
+        done(null, parsedStdout.result);
+        return;
+      }
+
+      const errorMessage = String(parsedStdout.error || stderrPayload.error || trimmedStderr || trimmedStdout || "atomic command failed").trim();
+      done(new Error(`原子命令失败(${normalizedCommand}): ${errorMessage}`));
+    });
+
+    try {
+      child.stdin.write(JSON.stringify(requestPayload));
+      child.stdin.end();
+    } catch (error) {
+      done(new Error(`写入原子命令输入失败: ${asMessage(error, "stdin write failed")}`));
+    }
+  });
+}
+
+function hasGenerationSceneRows(runId) {
+  try {
+    const row = db
+      .prepare(
+        `
+        SELECT 1
+        FROM generation_job_scenes
+        WHERE run_id = ?
+        LIMIT 1
+      `,
+      )
+      .get(runId);
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+function serializeGenerationSceneRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    run_id: String(row.run_id || ""),
+    scene_index: Number(row.scene_index || 0),
+    scene_id: row.scene_id === null || row.scene_id === undefined ? null : Number(row.scene_id),
+    title: String(row.title || ""),
+    description: String(row.description || ""),
+    story_text: String(row.story_text || ""),
+    image_prompt: String(row.image_prompt || ""),
+    mood: String(row.mood || ""),
+    characters: normalizeGenerationSceneCharacters(safeParseJsonArray(row.characters_json)),
+    grid_rows: normalizeIntegerInRange(row.grid_rows, 2, 20) || 6,
+    grid_cols: normalizeIntegerInRange(row.grid_cols, 2, 20) || 4,
+    time_limit_sec: normalizeIntegerInRange(row.time_limit_sec, 30, 3600) || 180,
+    text_status: normalizeGenerationSceneTextStatus(row.text_status),
+    image_status: normalizeGenerationSceneImageStatus(row.image_status),
+    image_url: String(row.image_url || ""),
+    image_path: String(row.image_path || ""),
+    error_message: String(row.error_message || ""),
+    selected: Boolean(row.selected),
+    deleted_at: row.deleted_at || null,
+    source_kind: normalizeGenerationSceneSourceKind(row.source_kind),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
+function listGenerationScenes(runId, options = {}) {
+  const includeDeleted = normalizeBoolean(options.include_deleted);
+  try {
+    const rows = db
+      .prepare(
+        `
+        SELECT run_id, scene_index, scene_id,
+               title, description, story_text,
+               image_prompt, mood, characters_json,
+               grid_rows, grid_cols, time_limit_sec,
+               text_status, image_status,
+               image_url, image_path, error_message,
+               selected, deleted_at, source_kind,
+               created_at, updated_at
+        FROM generation_job_scenes
+        WHERE run_id = ?
+          ${includeDeleted ? "" : "AND deleted_at IS NULL"}
+        ORDER BY scene_index ASC
+      `,
+      )
+      .all(runId);
+
+    return rows
+      .map((row) => serializeGenerationSceneRow(row))
+      .filter((item) => item !== null);
+  } catch {
+    return [];
+  }
+}
+
+function listGenerationSceneAttempts(runId, sceneIndex = null) {
+  try {
+    let rows = [];
+    if (Number.isInteger(sceneIndex) && sceneIndex > 0) {
+      rows = db
+        .prepare(
+          `
+          SELECT id, run_id, scene_index, attempt_no, status,
+                 provider, model, image_prompt,
+                 image_url, image_path, error_message,
+                 latency_ms, created_at, started_at, ended_at, updated_at
+          FROM generation_job_scene_image_attempts
+          WHERE run_id = ? AND scene_index = ?
+          ORDER BY attempt_no ASC
+        `,
+        )
+        .all(runId, sceneIndex);
+    } else {
+      rows = db
+        .prepare(
+          `
+          SELECT id, run_id, scene_index, attempt_no, status,
+                 provider, model, image_prompt,
+                 image_url, image_path, error_message,
+                 latency_ms, created_at, started_at, ended_at, updated_at
+          FROM generation_job_scene_image_attempts
+          WHERE run_id = ?
+          ORDER BY scene_index ASC, attempt_no ASC
+        `,
+        )
+        .all(runId);
+    }
+
+    return rows.map((row) => ({
+      id: Number(row.id || 0),
+      run_id: String(row.run_id || ""),
+      scene_index: Number(row.scene_index || 0),
+      attempt_no: Number(row.attempt_no || 0),
+      status: normalizeGenerationCandidateRetryStatus(row.status),
+      provider: String(row.provider || ""),
+      model: String(row.model || ""),
+      image_prompt: String(row.image_prompt || ""),
+      image_url: String(row.image_url || ""),
+      image_path: String(row.image_path || ""),
+      error_message: String(row.error_message || ""),
+      latency_ms: row.latency_ms === null || row.latency_ms === undefined ? null : Number(row.latency_ms),
+      created_at: row.created_at || null,
+      started_at: row.started_at || null,
+      ended_at: row.ended_at || null,
+      updated_at: row.updated_at || null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function serializeGenerationSceneAttemptAsLegacyRetry(attempt) {
+  if (!attempt) {
+    return null;
+  }
+
+  const statusMap = {
+    queued: "queued",
+    running: "running",
+    succeeded: "succeeded",
+    failed: "failed",
+    cancelled: "cancelled",
+  };
+
+  return {
+    retry_id: Number(attempt.id || 0),
+    run_id: String(attempt.run_id || ""),
+    scene_index: Number(attempt.scene_index || 0),
+    status: statusMap[String(attempt.status || "").toLowerCase()] || "queued",
+    requested_by: String(attempt.provider || "atomic_cli"),
+    attempts: Number(attempt.attempt_no || 0),
+    error_message: String(attempt.error_message || ""),
+    created_at: attempt.created_at || null,
+    started_at: attempt.started_at || null,
+    ended_at: attempt.ended_at || null,
+    updated_at: attempt.updated_at || null,
+  };
+}
+
+function summarizeGenerationScenes(scenes) {
+  const summary = {
+    total: 0,
+    text_ready: 0,
+    text_failed: 0,
+    images_success: 0,
+    images_failed: 0,
+    images_pending: 0,
+    images_running: 0,
+    selected: 0,
+    ready_for_publish: 0,
+    deleted: 0,
+  };
+
+  for (const scene of scenes) {
+    summary.total += 1;
+    if (scene.deleted_at || scene.text_status === "deleted") {
+      summary.deleted += 1;
+      continue;
+    }
+
+    if (scene.text_status === "ready") {
+      summary.text_ready += 1;
+    } else if (scene.text_status === "failed") {
+      summary.text_failed += 1;
+    }
+
+    if (scene.image_status === "success") {
+      summary.images_success += 1;
+    } else if (scene.image_status === "failed" || scene.image_status === "skipped") {
+      summary.images_failed += 1;
+    } else if (scene.image_status === "running" || scene.image_status === "queued") {
+      summary.images_running += 1;
+    } else {
+      summary.images_pending += 1;
+    }
+
+    if (scene.selected) {
+      summary.selected += 1;
+      if (scene.image_status === "success") {
+        summary.ready_for_publish += 1;
+      }
+    }
+  }
+
+  return summary;
+}
+
+function serializeGenerationSceneAsLegacyCandidate(scene) {
+  return {
+    run_id: scene.run_id,
+    scene_index: scene.scene_index,
+    scene_id: scene.scene_id,
+    title: scene.title,
+    description: scene.description,
+    story_text: scene.story_text,
+    image_prompt: scene.image_prompt,
+    mood: scene.mood,
+    characters: scene.characters,
+    grid_rows: scene.grid_rows,
+    grid_cols: scene.grid_cols,
+    time_limit_sec: scene.time_limit_sec,
+    image_status: scene.image_status === "running" || scene.image_status === "queued" ? "pending" : scene.image_status,
+    image_url: scene.image_url,
+    image_path: scene.image_path,
+    error_message: scene.error_message,
+    selected: scene.selected,
+    created_at: scene.created_at,
+    updated_at: scene.updated_at,
+  };
+}
+
+function summarizeLegacyCandidateCountsFromScenes(sceneSummary) {
+  return {
+    total: Number(sceneSummary.total || 0) - Number(sceneSummary.deleted || 0),
+    success: Number(sceneSummary.images_success || 0),
+    failed: Number(sceneSummary.images_failed || 0),
+    pending: Number(sceneSummary.images_pending || 0) + Number(sceneSummary.images_running || 0),
+    selected: Number(sceneSummary.selected || 0),
+    ready_for_publish: Number(sceneSummary.ready_for_publish || 0),
+  };
+}
+
+function refreshGenerationRunState(runId) {
+  const existing = getGenerationJobByRunId(runId);
+  if (!existing) {
+    return null;
+  }
+
+  if (normalizeGenerationReviewStatus(existing.review_status) === "published") {
+    db.prepare(
+      `
+      UPDATE generation_jobs
+      SET status = 'succeeded',
+          flow_stage = 'published',
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(nowIso(), runId);
+    return getGenerationJobByRunId(runId);
+  }
+
+  const scenes = listGenerationScenes(runId, { include_deleted: true });
+  const activeScenes = scenes.filter((scene) => !scene.deleted_at && scene.text_status !== "deleted");
+  const now = nowIso();
+
+  let nextFlowStage = normalizeGenerationFlowStage(existing.flow_stage);
+  let nextStatus = String(existing.status || "running");
+  let nextReviewStatus = normalizeGenerationReviewStatus(existing.review_status);
+  let nextEndedAt = existing.ended_at || null;
+
+  if (activeScenes.length === 0) {
+    nextFlowStage = "text_ready";
+    nextStatus = "running";
+    nextReviewStatus = "";
+    nextEndedAt = null;
+  } else if (activeScenes.some((scene) => scene.text_status === "pending")) {
+    nextFlowStage = "text_generating";
+    nextStatus = "running";
+    nextReviewStatus = "";
+    nextEndedAt = null;
+  } else if (activeScenes.some((scene) => scene.image_status === "running" || scene.image_status === "queued")) {
+    nextFlowStage = "images_generating";
+    nextStatus = "running";
+    nextReviewStatus = "";
+    nextEndedAt = null;
+  } else if (activeScenes.some((scene) => scene.image_status === "pending")) {
+    nextFlowStage = "text_ready";
+    nextStatus = "running";
+    nextReviewStatus = "";
+    nextEndedAt = null;
+  } else {
+    nextFlowStage = "review_ready";
+    nextStatus = "succeeded";
+    nextReviewStatus = "pending_review";
+    nextEndedAt = existing.ended_at || now;
+  }
+
+  db.prepare(
+    `
+    UPDATE generation_jobs
+    SET status = ?,
+        review_status = ?,
+        flow_stage = ?,
+        ended_at = ?,
+        updated_at = ?
+    WHERE run_id = ?
+  `,
+  ).run(nextStatus, nextReviewStatus, nextFlowStage, nextEndedAt, now, runId);
+
+  return getGenerationJobByRunId(runId);
+}
+
+function createOrUpdateAtomicGenerationRun({
+  runId,
+  requestedBy,
+  targetDate,
+  storyFile,
+  payload,
+  logFile,
+  eventLogFile,
+  summaryPath,
+}) {
+  const now = nowIso();
+  const existing = getGenerationJobByRunId(runId);
+
+  const normalizedPayload = payload && typeof payload === "object" ? payload : {};
+  const payloadJson = JSON.stringify(normalizedPayload);
+
+  if (!existing) {
+    db.prepare(
+      `
+      INSERT INTO generation_jobs (
+        run_id, status, review_status, flow_stage,
+        requested_by, target_date, story_file, dry_run,
+        payload_json, log_file, event_log_file, summary_path,
+        published_at, error_message, exit_code,
+        created_at, started_at, ended_at, updated_at
+      ) VALUES (?, 'running', '', 'text_generating', ?, ?, ?, 0, ?, ?, ?, ?, NULL, '', NULL, ?, ?, NULL, ?)
+    `,
+    ).run(
+      runId,
+      requestedBy,
+      targetDate,
+      storyFile || "",
+      payloadJson,
+      logFile,
+      eventLogFile,
+      summaryPath,
+      now,
+      now,
+      now,
+    );
+
+    upsertGenerationJobMetaOnEnqueue({
+      runId,
+      requestedBy,
+      payload: normalizedPayload,
+      createdAt: now,
+    });
+  } else {
+    db.prepare(
+      `
+      UPDATE generation_jobs
+      SET status = 'running',
+          review_status = CASE WHEN review_status = 'published' THEN 'published' ELSE '' END,
+          flow_stage = CASE WHEN review_status = 'published' THEN 'published' ELSE 'text_generating' END,
+          requested_by = COALESCE(NULLIF(?, ''), requested_by),
+          target_date = ?,
+          story_file = ?,
+          payload_json = ?,
+          log_file = ?,
+          event_log_file = ?,
+          summary_path = ?,
+          error_message = '',
+          exit_code = NULL,
+          published_at = CASE WHEN review_status = 'published' THEN published_at ELSE NULL END,
+          started_at = COALESCE(started_at, ?),
+          ended_at = NULL,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(
+      requestedBy,
+      targetDate,
+      storyFile || "",
+      payloadJson,
+      logFile,
+      eventLogFile,
+      summaryPath,
+      now,
+      now,
+      runId,
+    );
+
+    upsertGenerationJobMetaOnEnqueue({
+      runId,
+      requestedBy: requestedBy || existing.requested_by,
+      payload: normalizedPayload,
+      createdAt: existing.created_at || now,
+    });
+  }
+
+  return getGenerationJobByRunId(runId);
+}
+
+function ensureGenerationRunWritable(runId) {
+  const job = getGenerationJobByRunId(runId);
+  if (!job) {
+    return { job: null, message: "run_id 不存在", status: 404 };
+  }
+
+  if (normalizeGenerationReviewStatus(job.review_status) === "published") {
+    const publishedAtHint = job.published_at ? `（${job.published_at}）` : "";
+    return {
+      job,
+      message: `该任务已发布${publishedAtHint}，当前页面只读`,
+      status: 409,
+    };
+  }
+
+  return { job, message: "", status: 200 };
+}
+
+function getGenerationSceneByIndex(runId, sceneIndex, options = {}) {
+  const includeDeleted = normalizeBoolean(options.include_deleted);
+  try {
+    const row = db
+      .prepare(
+        `
+        SELECT run_id, scene_index, scene_id,
+               title, description, story_text,
+               image_prompt, mood, characters_json,
+               grid_rows, grid_cols, time_limit_sec,
+               text_status, image_status,
+               image_url, image_path, error_message,
+               selected, deleted_at, source_kind,
+               created_at, updated_at
+        FROM generation_job_scenes
+        WHERE run_id = ?
+          AND scene_index = ?
+          ${includeDeleted ? "" : "AND deleted_at IS NULL"}
+        LIMIT 1
+      `,
+      )
+      .get(runId, sceneIndex);
+
+    return serializeGenerationSceneRow(row);
+  } catch {
+    return null;
+  }
+}
+
+function replaceGenerationScenes(runId, scenes, sourceKind = "pipeline") {
+  const normalizedSourceKind = normalizeGenerationSceneSourceKind(sourceKind);
+  const now = nowIso();
+
+  const tx = db.transaction((inputScenes) => {
+    db.prepare("DELETE FROM generation_job_scene_image_attempts WHERE run_id = ?").run(runId);
+    db.prepare("DELETE FROM generation_job_scenes WHERE run_id = ?").run(runId);
+
+    const insert = db.prepare(
+      `
+      INSERT INTO generation_job_scenes (
+        run_id,
+        scene_index,
+        scene_id,
+        title,
+        description,
+        story_text,
+        image_prompt,
+        mood,
+        characters_json,
+        grid_rows,
+        grid_cols,
+        time_limit_sec,
+        text_status,
+        image_status,
+        image_url,
+        image_path,
+        error_message,
+        selected,
+        deleted_at,
+        source_kind,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+    `,
+    );
+
+    for (const scene of inputScenes) {
+      const sceneIndex = normalizePositiveInteger(scene.scene_index);
+      if (!sceneIndex) {
+        continue;
+      }
+
+      const textStatus = normalizeGenerationSceneTextStatus(scene.text_status || "ready");
+      const imageStatus = normalizeGenerationSceneImageStatus(scene.image_status || "pending");
+      insert.run(
+        runId,
+        sceneIndex,
+        normalizePositiveInteger(scene.scene_id),
+        String(scene.title || "").trim(),
+        String(scene.description || "").trim(),
+        String(scene.story_text || "").trim(),
+        String(scene.image_prompt || "").trim(),
+        String(scene.mood || "").trim(),
+        JSON.stringify(normalizeGenerationSceneCharacters(scene.characters)),
+        normalizeIntegerInRange(scene.grid_rows, 2, 20) || 6,
+        normalizeIntegerInRange(scene.grid_cols, 2, 20) || 4,
+        normalizeIntegerInRange(scene.time_limit_sec, 30, 3600) || 180,
+        textStatus,
+        imageStatus,
+        String(scene.image_url || "").trim(),
+        String(scene.image_path || "").trim(),
+        String(scene.error_message || "").trim(),
+        normalizeBoolean(scene.selected) ? 1 : 0,
+        normalizedSourceKind,
+        now,
+        now,
+      );
+    }
+  });
+
+  tx(scenes);
+  return listGenerationScenes(runId, { include_deleted: false });
+}
+
+function nextGenerationSceneAttemptNo(runId, sceneIndex) {
+  const row = db
+    .prepare(
+      `
+      SELECT MAX(attempt_no) AS max_attempt_no
+      FROM generation_job_scene_image_attempts
+      WHERE run_id = ? AND scene_index = ?
+    `,
+    )
+    .get(runId, sceneIndex);
+
+  const current = Number(row?.max_attempt_no || 0);
+  return Number.isInteger(current) && current > 0 ? current + 1 : 1;
+}
+
+function createGenerationSceneImageAttempt({
+  runId,
+  sceneIndex,
+  provider,
+  model,
+  imagePrompt,
+}) {
+  const attemptNo = nextGenerationSceneAttemptNo(runId, sceneIndex);
+  const now = nowIso();
+
+  db.prepare(
+    `
+    INSERT INTO generation_job_scene_image_attempts (
+      run_id,
+      scene_index,
+      attempt_no,
+      status,
+      provider,
+      model,
+      image_prompt,
+      error_message,
+      created_at,
+      started_at,
+      updated_at
+    ) VALUES (?, ?, ?, 'running', ?, ?, ?, '', ?, ?, ?)
+  `,
+  ).run(
+    runId,
+    sceneIndex,
+    attemptNo,
+    String(provider || "").trim(),
+    String(model || "").trim(),
+    String(imagePrompt || "").trim(),
+    now,
+    now,
+    now,
+  );
+
+  return db
+    .prepare(
+      `
+      SELECT id, run_id, scene_index, attempt_no, status,
+             provider, model, image_prompt,
+             image_url, image_path, error_message,
+             latency_ms, created_at, started_at, ended_at, updated_at
+      FROM generation_job_scene_image_attempts
+      WHERE run_id = ? AND scene_index = ? AND attempt_no = ?
+      LIMIT 1
+    `,
+    )
+    .get(runId, sceneIndex, attemptNo);
+}
+
+function finalizeGenerationSceneImageAttempt({
+  runId,
+  sceneIndex,
+  attemptNo,
+  status,
+  imageUrl,
+  imagePath,
+  errorMessage,
+  latencyMs,
+}) {
+  const normalizedStatus = normalizeGenerationCandidateRetryStatus(status);
+  const now = nowIso();
+
+  db.prepare(
+    `
+    UPDATE generation_job_scene_image_attempts
+    SET status = ?,
+        image_url = ?,
+        image_path = ?,
+        error_message = ?,
+        latency_ms = ?,
+        ended_at = COALESCE(ended_at, ?),
+        updated_at = ?
+    WHERE run_id = ?
+      AND scene_index = ?
+      AND attempt_no = ?
+  `,
+  ).run(
+    normalizedStatus,
+    String(imageUrl || "").trim(),
+    String(imagePath || "").trim(),
+    String(errorMessage || "").trim(),
+    Number.isFinite(Number(latencyMs)) ? Math.max(0, Math.floor(Number(latencyMs))) : null,
+    now,
+    now,
+    runId,
+    sceneIndex,
+    attemptNo,
+  );
+}
+
+function setGenerationSceneImageRunning(runId, sceneIndex) {
+  db.prepare(
+    `
+    UPDATE generation_job_scenes
+    SET image_status = 'running',
+        error_message = '',
+        updated_at = ?
+    WHERE run_id = ? AND scene_index = ?
+  `,
+  ).run(nowIso(), runId, sceneIndex);
+}
+
+function setGenerationSceneImageResult({ runId, sceneIndex, status, imageUrl, imagePath, errorMessage }) {
+  const normalizedImageStatus = normalizeGenerationSceneImageStatus(status);
+  const now = nowIso();
+  const normalizedPath = String(imagePath || "").trim();
+  const normalizedUrl = String(imageUrl || "").trim();
+  const resolvedImageUrl = normalizedUrl || resolveStoryAssetUrlFromFsPath(normalizedPath);
+
+  db.prepare(
+    `
+    UPDATE generation_job_scenes
+    SET image_status = ?,
+        image_url = ?,
+        image_path = ?,
+        error_message = ?,
+        selected = CASE
+          WHEN ? = 'success' THEN selected
+          ELSE 0
+        END,
+        updated_at = ?
+    WHERE run_id = ? AND scene_index = ?
+  `,
+  ).run(
+    normalizedImageStatus,
+    resolvedImageUrl,
+    normalizedPath,
+    normalizedImageStatus === "success" ? "" : String(errorMessage || "").trim(),
+    normalizedImageStatus,
+    now,
+    runId,
+    sceneIndex,
+  );
+}
+
 function enqueueGenerationJob({ runId, requestedBy, targetDate, storyFile, dryRun, payload, logFile, eventLogFile, summaryPath }) {
   const now = nowIso();
   db.prepare(
     `
     INSERT INTO generation_jobs (
-      run_id, status, review_status, requested_by, target_date, story_file, dry_run,
+      run_id, status, review_status, flow_stage, requested_by, target_date, story_file, dry_run,
       payload_json, log_file, event_log_file, summary_path,
       published_at, error_message, exit_code, created_at, started_at, ended_at, updated_at
-    ) VALUES (?, 'queued', '', ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', NULL, ?, NULL, NULL, ?)
+    ) VALUES (?, 'queued', '', 'text_generating', ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', NULL, ?, NULL, NULL, ?)
   `,
   ).run(
     runId,
@@ -4054,7 +6077,7 @@ function claimGenerationJob() {
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               review_status, payload_json, log_file, event_log_file, summary_path,
+               review_status, flow_stage, payload_json, log_file, event_log_file, summary_path,
                published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
@@ -4074,6 +6097,7 @@ function claimGenerationJob() {
         `
         UPDATE generation_jobs
         SET status = 'running',
+            flow_stage = 'images_generating',
             started_at = COALESCE(started_at, ?),
             error_message = '',
             exit_code = NULL,
@@ -4091,7 +6115,7 @@ function claimGenerationJob() {
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               review_status, payload_json, log_file, event_log_file, summary_path,
+               review_status, flow_stage, payload_json, log_file, event_log_file, summary_path,
                published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
@@ -4118,7 +6142,7 @@ function completeGenerationJobByRunId(runId, {
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               review_status, payload_json, log_file, event_log_file, summary_path,
+               review_status, flow_stage, payload_json, log_file, event_log_file, summary_path,
                published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
@@ -4139,22 +6163,27 @@ function completeGenerationJobByRunId(runId, {
 
       let nextReviewStatus = existingReviewStatus;
       let nextPublishedAt = existing.published_at || null;
+      let nextFlowStage = normalizeGenerationFlowStage(existing.flow_stage) || "text_generating";
 
       if (status !== "succeeded") {
         if (existingReviewStatus !== "published") {
           nextReviewStatus = "";
           nextPublishedAt = null;
         }
+        nextFlowStage = "failed";
       } else if (existingReviewStatus === "published") {
         nextReviewStatus = "published";
         nextPublishedAt = existing.published_at || now;
+        nextFlowStage = "published";
       } else if (reviewMode) {
         const requestedReviewStatus = normalizeGenerationReviewStatus(reviewStatus);
         nextReviewStatus = requestedReviewStatus || "pending_review";
         nextPublishedAt = nextReviewStatus === "published" ? (existing.published_at || now) : null;
+        nextFlowStage = nextReviewStatus === "published" ? "published" : "review_ready";
       } else {
         nextReviewStatus = "";
         nextPublishedAt = null;
+        nextFlowStage = "published";
       }
 
       db.prepare(
@@ -4162,6 +6191,7 @@ function completeGenerationJobByRunId(runId, {
         UPDATE generation_jobs
         SET status = ?,
             review_status = ?,
+            flow_stage = ?,
             exit_code = ?,
             error_message = ?,
             published_at = ?,
@@ -4169,7 +6199,7 @@ function completeGenerationJobByRunId(runId, {
             updated_at = ?
         WHERE run_id = ?
       `,
-      ).run(status, nextReviewStatus, exitCode, errorMessage, nextPublishedAt, now, now, runId);
+      ).run(status, nextReviewStatus, nextFlowStage, exitCode, errorMessage, nextPublishedAt, now, now, runId);
 
       upsertGenerationJobMetaOnComplete({
         runId,
@@ -4187,7 +6217,7 @@ function completeGenerationJobByRunId(runId, {
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               review_status, payload_json, log_file, event_log_file, summary_path,
+               review_status, flow_stage, payload_json, log_file, event_log_file, summary_path,
                published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
@@ -5143,12 +7173,15 @@ function publishSelectedGenerationCandidates({ runId, job, summary, selectedCand
     `
     UPDATE generation_jobs
     SET payload_json = ?,
+        status = 'succeeded',
         review_status = 'published',
+        flow_stage = 'published',
         published_at = COALESCE(published_at, ?),
+        ended_at = COALESCE(ended_at, ?),
         updated_at = ?
     WHERE run_id = ?
   `,
-  ).run(JSON.stringify(nextPayload), now, now, runId);
+  ).run(JSON.stringify(nextPayload), now, now, now, runId);
 
   db.prepare(
     `
@@ -5211,7 +7244,7 @@ function listGenerationJobs(limit = 50) {
     .prepare(
       `
       SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-             review_status, log_file, event_log_file, summary_path,
+             review_status, flow_stage, log_file, event_log_file, summary_path,
              published_at, error_message, exit_code,
              created_at, started_at, ended_at, updated_at
       FROM generation_jobs
@@ -5229,7 +7262,7 @@ function getGenerationJobByRunId(runId) {
     .prepare(
       `
       SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-             review_status, payload_json, log_file, event_log_file, summary_path,
+             review_status, flow_stage, payload_json, log_file, event_log_file, summary_path,
              published_at, error_message, exit_code,
              created_at, started_at, ended_at, updated_at
       FROM generation_jobs
@@ -5248,6 +7281,7 @@ function getGenerationJobByRunId(runId) {
 function serializeGenerationJobRow(row, includePayload = false) {
   const payload = includePayload ? safeParseJsonObject(row.payload_json) : undefined;
   const reviewStatus = normalizeGenerationReviewStatus(row.review_status);
+  const flowStage = normalizeGenerationFlowStage(row.flow_stage);
 
   return {
     id: row.id === null || row.id === undefined ? null : Number(row.id),
@@ -5258,6 +7292,7 @@ function serializeGenerationJobRow(row, includePayload = false) {
     story_file: row.story_file || "",
     dry_run: Boolean(row.dry_run),
     review_status: reviewStatus,
+    flow_stage: flowStage,
     log_file: row.log_file,
     event_log_file: row.event_log_file,
     summary_path: row.summary_path,
@@ -5395,6 +7430,7 @@ function markStaleGenerationJobsAsFailed(database) {
     `
     UPDATE generation_jobs
     SET status = 'failed',
+        flow_stage = 'failed',
         error_message = CASE
           WHEN error_message IS NULL OR length(trim(error_message)) = 0 THEN 'worker interrupted before completion'
           ELSE error_message
