@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Callable
 
@@ -19,6 +20,12 @@ from .story_selector import select_story
 from .story_to_json import story_to_draft
 
 LOGGER = logging.getLogger("story_generator.workflow")
+
+
+def _normalize_run_id(run_id: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(run_id or "").strip())
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-")
+    return cleaned[:80] if cleaned else "run"
 
 
 def _progress_payload(scene: SceneDraft, result: ImageResult, completed: int, total: int) -> dict[str, Any]:
@@ -274,7 +281,7 @@ async def run_pipeline(
         "publish": publish_result,
     }
 
-    summary_path = config.summary_output_dir / f"story_{date_str}.json"
+    summary_path = config.summary_path or (config.summary_output_dir / f"story_{date_str}_{_normalize_run_id(config.run_id)}.json")
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     emit_event("summary.written", run_id=config.run_id, path=str(summary_path))

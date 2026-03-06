@@ -170,6 +170,7 @@ export type AdminBookChaptersResponse = {
 export type AdminGenerationJob = {
   run_id: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  review_status?: "" | "pending_review" | "published";
   requested_by: string;
   target_date: string;
   story_file: string;
@@ -177,6 +178,7 @@ export type AdminGenerationJob = {
   log_file: string;
   event_log_file: string;
   summary_path: string;
+  published_at?: string | null;
   error_message: string;
   exit_code: number | null;
   created_at: string;
@@ -256,6 +258,10 @@ export type AdminGenerationReviewResponse = {
   job: AdminGenerationJobDetail;
   candidates: AdminGenerationCandidate[];
   counts: AdminGenerationCandidateCounts;
+  publish?: {
+    review_status?: "" | "pending_review" | "published";
+    published_at?: string | null;
+  };
 };
 
 export type AdminGenerationPublishResponse = {

@@ -159,11 +159,13 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     () => recentJobs.find((job) => job.status === "running" || job.status === "queued") || null,
     [recentJobs],
   );
-  const hasSucceededJobs = useMemo(
-    () => recentJobs.some((job) => job.status === "succeeded"),
+  const hasReviewJobs = useMemo(
+    () => recentJobs.some((job) => isReviewListJob(job)),
     [recentJobs],
   );
   const reviewReadyCount = useMemo(() => Number(reviewCounts.ready_for_publish || 0), [reviewCounts.ready_for_publish]);
+  const reviewStatus = normalizeReviewStatus(activeJob?.review_status);
+  const reviewLocked = reviewStatus === "published";
 
   const toggleSection = useCallback((key: AdminSectionKey): void => {
     setCollapsedSections((prev) => ({
@@ -513,6 +515,18 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
         if (detail.status === "succeeded") {
           if (isReviewModeJob(detail)) {
+            const reviewStatus = normalizeReviewStatus(detail.review_status);
+            if (reviewStatus === "published") {
+              const storyId = pickStoryId(detail);
+              const publishedAtText = detail.published_at ? `（${formatTime(detail.published_at)}）` : "";
+              setPanelInfo(storyId
+                ? `任务已发布：${storyId}${publishedAtText}`
+                : `任务已发布${publishedAtText}`);
+              setActiveRunId("");
+              await loadRecentJobs();
+              return;
+            }
+
             setPanelInfo(`生成完成，待审核发布：${detail.run_id}`);
             setActiveRunId("");
             await loadGenerationReview(detail.run_id);
@@ -628,7 +642,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       grid_cols?: number;
     },
   ): Promise<void> => {
-    if (!reviewRunId) {
+    if (!reviewRunId || reviewLocked) {
       return;
     }
 
@@ -643,10 +657,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     } finally {
       setReviewUpdatingSceneIndex(null);
     }
-  }, [loadGenerationReview, reviewRunId]);
+  }, [loadGenerationReview, reviewLocked, reviewRunId]);
 
   const handlePublishSelected = useCallback(async (): Promise<void> => {
-    if (!reviewRunId) {
+    if (!reviewRunId || reviewLocked) {
       return;
     }
 
@@ -665,10 +679,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     } finally {
       setReviewPublishing(false);
     }
-  }, [loadGenerationReview, loadRecentJobs, onGenerated, reviewRunId]);
+  }, [loadGenerationReview, loadRecentJobs, onGenerated, reviewLocked, reviewRunId]);
 
   const handleRetryReviewCandidate = useCallback(async (sceneIndex: number): Promise<void> => {
-    if (!reviewRunId) {
+    if (!reviewRunId || reviewLocked) {
       return;
     }
 
@@ -684,7 +698,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     } finally {
       setReviewRetryingSceneIndex(null);
     }
-  }, [loadGenerationReview, reviewRunId]);
+  }, [loadGenerationReview, reviewLocked, reviewRunId]);
 
   const handleOpenGeneratedStory = async (storyId: string): Promise<void> => {
     const targetId = storyId.trim();
@@ -757,7 +771,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
           return job.status === "running" || job.status === "queued";
         }
         if (mode === "review") {
-          return job.status === "succeeded";
+          return isReviewListJob(job);
         }
         return true;
       })
@@ -777,14 +791,15 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       <ul>
         {filteredJobs.map((job) => {
           const progressViewable = job.status === "running" || job.status === "queued";
-          const reviewViewable = job.status === "succeeded";
+          const reviewViewable = isReviewListJob(job);
           const viewing = activeRunId === job.run_id;
           const reviewing = reviewRunId === job.run_id;
+          const reviewStatus = normalizeReviewStatus(job.review_status);
 
           return (
             <li key={job.run_id}>
               <span>{job.run_id}</span>
-              <span className={`level-state ${job.status === "succeeded" ? "done" : "todo"}`}>{job.status}</span>
+              <span className={`level-state ${generationJobStateClass(job)}`}>{formatGenerationJobStateLabel(job)}</span>
               <span>{job.target_date}</span>
               {progressViewable && (
                 <button
@@ -803,7 +818,11 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                   onClick={() => void handleOpenReview(job.run_id)}
                   disabled={reviewing}
                 >
-                  {reviewing ? "审核中" : "审核发布"}
+                  {reviewing
+                    ? "查看中"
+                    : reviewStatus === "published"
+                      ? "查看状态"
+                      : "审核发布"}
                 </button>
               )}
             </li>
@@ -814,7 +833,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   };
 
   const canJumpGenerateStep = Boolean(activeRunId || resumableJob || recentJobs.length > 0);
-  const canJumpReviewStep = Boolean(reviewRunId || hasSucceededJobs);
+  const canJumpReviewStep = Boolean(reviewRunId || hasReviewJobs);
 
   if (!visible) {
     return null;
@@ -1251,6 +1270,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                               <th>字数</th>
                               <th>使用次数</th>
                               <th>预览</th>
+                              <th>操作</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1290,6 +1310,19 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                                 <td>{chapter.char_count}</td>
                                 <td>{chapter.used_count}</td>
                                 <td>{chapter.preview || "-"}</td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="nav-btn"
+                                    disabled={submitting}
+                                    onClick={() => {
+                                      setSelectedChapterId(chapter.id);
+                                      setShowGenerateDialog(true);
+                                    }}
+                                  >
+                                    生成
+                                  </button>
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -1335,10 +1368,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                             <button
                               type="button"
                               className="primary-btn"
-                              disabled={submitting || Boolean(activeRunId)}
+                              disabled={submitting}
                               onClick={() => setShowGenerateDialog(true)}
                             >
-                              {submitting ? "创建中..." : activeRunId ? "任务进行中" : "去生成"}
+                              {submitting ? "创建中..." : "去生成"}
                             </button>
                             {canJumpGenerateStep && (
                               <button
@@ -1376,7 +1409,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                           setPuzzleFlowStep("select");
                           setShowGenerateDialog(true);
                         }}
-                        disabled={!selectedChapter || submitting || Boolean(activeRunId)}
+                        disabled={!selectedChapter || submitting}
                       >
                         {submitting ? "创建中..." : "创建新任务"}
                       </button>
@@ -1392,7 +1425,9 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                       <p className="progress-inline">
                         {progress.message}（{progress.completed}/{progress.total}）
                       </p>
-                      <p className="progress-inline">状态：{activeJob?.status || "queued"}</p>
+                      <p className="progress-inline">
+                        状态：{activeJob ? formatGenerationJobStateLabel(activeJob) : "排队中"}
+                      </p>
                       {activeJob?.log_tail?.length ? (
                         <pre className="admin-log-tail">{activeJob.log_tail.slice(-8).join("\n")}</pre>
                       ) : null}
@@ -1434,10 +1469,14 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                         <button
                           type="button"
                           className="primary-btn"
-                          disabled={reviewLoading || reviewPublishing || reviewReadyCount <= 0}
+                          disabled={reviewLocked || reviewLoading || reviewPublishing || reviewReadyCount <= 0}
                           onClick={() => void handlePublishSelected()}
                         >
-                          {reviewPublishing ? "发布中..." : `发布选中关卡（${reviewReadyCount}）`}
+                          {reviewLocked
+                            ? "已发布"
+                            : reviewPublishing
+                              ? "发布中..."
+                              : `发布选中关卡（${reviewReadyCount}）`}
                         </button>
                       </div>
                     </div>
@@ -1445,6 +1484,11 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                     <p className="progress-inline">
                       候选 {reviewCounts.total} · 成功 {reviewCounts.success} · 失败 {reviewCounts.failed} · 已选 {reviewCounts.selected}
                     </p>
+                    {reviewLocked && (
+                      <p className="progress-inline">
+                        该任务已发布{activeJob?.published_at ? `（${formatTime(activeJob.published_at)}）` : ""}，此处仅展示状态。
+                      </p>
+                    )}
 
                     {reviewCandidates.length === 0 ? (
                       <p className="progress-inline">暂无候选关卡，请先完成生成。</p>
@@ -1487,7 +1531,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                                     <input
                                       type="checkbox"
                                       checked={Boolean(candidate.selected && canSelect)}
-                                      disabled={!canSelect || updating || reviewPublishing}
+                                      disabled={reviewLocked || !canSelect || updating || reviewPublishing}
                                       onChange={(event) => {
                                         void handleUpdateReviewCandidate(candidate.scene_index, {
                                           selected: event.currentTarget.checked,
@@ -1498,7 +1542,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                                   <td>
                                     <select
                                       value={candidate.grid_rows}
-                                      disabled={updating || reviewPublishing}
+                                      disabled={reviewLocked || updating || reviewPublishing}
                                       onChange={(event) => {
                                         void handleUpdateReviewCandidate(candidate.scene_index, {
                                           grid_rows: Number(event.currentTarget.value),
@@ -1515,7 +1559,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                                   <td>
                                     <select
                                       value={candidate.grid_cols}
-                                      disabled={updating || reviewPublishing}
+                                      disabled={reviewLocked || updating || reviewPublishing}
                                       onChange={(event) => {
                                         void handleUpdateReviewCandidate(candidate.scene_index, {
                                           grid_cols: Number(event.currentTarget.value),
@@ -1534,7 +1578,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                                       <button
                                         type="button"
                                         className="nav-btn admin-review-retry-btn"
-                                        disabled={retrying || reviewPublishing || reviewLoading}
+                                        disabled={reviewLocked || retrying || reviewPublishing || reviewLoading}
                                         onClick={() => void handleRetryReviewCandidate(candidate.scene_index)}
                                       >
                                         {retrying ? "重试中..." : "重试出图"}
@@ -1553,7 +1597,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                   </div>
                 ) : (
                   <div className="admin-run-box admin-puzzle-stage">
-                    <p className="progress-inline">第三步：先从下方“可审核任务”里选择一个 succeeded 任务。</p>
+                    <p className="progress-inline">第三步：先从下方“可审核任务”里选择一个待审核任务。</p>
                   </div>
                 )}
 
@@ -1598,7 +1642,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
               <button
                 type="button"
                 className="primary-btn"
-                disabled={!selectedChapter || submitting || Boolean(activeRunId)}
+                disabled={!selectedChapter || submitting}
                 onClick={() => void handleSubmit()}
               >
                 {submitting ? "创建中..." : "开始生成"}
@@ -1613,6 +1657,59 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
     </section>
   );
+}
+
+function normalizeReviewStatus(value: unknown): "" | "pending_review" | "published" {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "pending_review" || text === "published") {
+    return text;
+  }
+  return "";
+}
+
+function isReviewListJob(job: AdminGenerationJob): boolean {
+  const reviewStatus = normalizeReviewStatus(job.review_status);
+  return reviewStatus === "pending_review" || reviewStatus === "published";
+}
+
+function generationJobStateClass(job: AdminGenerationJob): "todo" | "running" | "done" {
+  if (job.status === "running") {
+    return "running";
+  }
+
+  if (job.status === "queued") {
+    return "todo";
+  }
+
+  if (job.status === "succeeded") {
+    return normalizeReviewStatus(job.review_status) === "pending_review" ? "running" : "done";
+  }
+
+  return "todo";
+}
+
+function formatGenerationJobStateLabel(job: AdminGenerationJob): string {
+  if (job.status === "queued") {
+    return "排队中";
+  }
+  if (job.status === "running") {
+    return "生成中";
+  }
+  if (job.status === "failed") {
+    return "失败";
+  }
+  if (job.status === "cancelled") {
+    return "已取消";
+  }
+
+  const reviewStatus = normalizeReviewStatus(job.review_status);
+  if (reviewStatus === "pending_review") {
+    return "待审核";
+  }
+  if (reviewStatus === "published") {
+    return "已发布";
+  }
+  return "已完成";
 }
 
 function extractJobProgress(job: AdminGenerationJobDetail | null): JobProgress {

@@ -66,8 +66,9 @@ class PipelineConfig:
     event_log_max_bytes: int
     event_log_backup_count: int
 
-    dry_run: bool
-    review_mode: bool
+    dry_run: bool = False
+    review_mode: bool = False
+    summary_path: Path | None = None
 
 
 def get_required_api_key(value: str | None = None) -> str:

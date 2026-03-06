@@ -248,6 +248,17 @@ def parse_positive_int(value: Any) -> int | None:
     return number if number > 0 else None
 
 
+def is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized in {"1", "true", "yes", "on"}
+    return False
+
+
 def infer_chapter_id_from_path(path_value: str) -> int | None:
     if not path_value:
         return None
@@ -539,6 +550,7 @@ def complete_job_via_api(
     exit_code: int | None,
     error_message: str,
     story_id: str = "",
+    review_status: str = "",
 ) -> None:
     encoded_run_id = urllib.parse.quote(str(run_id).strip(), safe="")
     post_json(
@@ -548,6 +560,7 @@ def complete_job_via_api(
             "exit_code": exit_code,
             "error_message": error_message,
             "story_id": story_id,
+            "review_status": review_status,
         },
         worker_token=worker_token,
         timeout=timeout,
@@ -606,20 +619,47 @@ def claim_next_job(conn: sqlite3.Connection) -> GenerationJob | None:
         raise
 
 
-def complete_job(conn: sqlite3.Connection, *, job_id: int, status: str, exit_code: int | None, error_message: str) -> None:
+def complete_job(
+    conn: sqlite3.Connection,
+    *,
+    job_id: int,
+    status: str,
+    exit_code: int | None,
+    error_message: str,
+    review_status: str = "",
+) -> None:
     now = now_iso()
-    conn.execute(
-        """
-        UPDATE generation_jobs
-        SET status = ?,
-            exit_code = ?,
-            error_message = ?,
-            ended_at = COALESCE(ended_at, ?),
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (status, exit_code, error_message, now, now, job_id),
-    )
+    published_at = now if review_status == "published" else None
+    try:
+        conn.execute(
+            """
+            UPDATE generation_jobs
+            SET status = ?,
+                review_status = ?,
+                exit_code = ?,
+                error_message = ?,
+                published_at = ?,
+                ended_at = COALESCE(ended_at, ?),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (status, review_status, exit_code, error_message, published_at, now, now, job_id),
+        )
+    except sqlite3.OperationalError as exc:
+        if "review_status" not in str(exc).lower() and "published_at" not in str(exc).lower():
+            raise
+        conn.execute(
+            """
+            UPDATE generation_jobs
+            SET status = ?,
+                exit_code = ?,
+                error_message = ?,
+                ended_at = COALESCE(ended_at, ?),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (status, exit_code, error_message, now, now, job_id),
+        )
     conn.commit()
 
 
@@ -660,6 +700,7 @@ def build_pipeline_command(job: GenerationJob, python_bin: str) -> list[str]:
     append_optional_arg(command, "--output-root", payload.get("output_root"))
     append_optional_arg(command, "--index-file", payload.get("index_file"))
     append_optional_arg(command, "--summary-output-dir", payload.get("summary_output_dir"))
+    append_optional_arg(command, "--summary-path", payload.get("summary_path") or job.summary_path)
     append_optional_arg(command, "--story-id", payload.get("story_id"))
 
     append_optional_number(command, "--candidate-scenes", payload.get("candidate_scenes"))
@@ -675,11 +716,11 @@ def build_pipeline_command(job: GenerationJob, python_bin: str) -> list[str]:
     append_optional_arg(command, "--log-file", payload.get("log_file") or job.log_file)
     append_optional_arg(command, "--event-log-file", payload.get("event_log_file") or job.event_log_file)
 
-    if bool(payload.get("watermark")):
+    if is_truthy(payload.get("watermark")):
         command.append("--watermark")
-    if bool(payload.get("review_mode")):
+    if is_truthy(payload.get("review_mode")):
         command.append("--review-mode")
-    if job.dry_run or bool(payload.get("dry_run")):
+    if job.dry_run or is_truthy(payload.get("dry_run")):
         command.append("--dry-run")
 
     return command
@@ -956,6 +997,7 @@ def run_worker(args: argparse.Namespace) -> int:
                 exit_code, error_message = run_job(job, python_bin=args.python_bin)
                 summary = read_json_file(job.summary_path)
                 completed_story_id = extract_story_id(job, summary)
+                next_review_status = "pending_review" if (not job.dry_run and is_truthy(job.payload.get("review_mode"))) else ""
                 if exit_code == 0:
                     if use_api_mode:
                         complete_job_via_api(
@@ -967,10 +1009,18 @@ def run_worker(args: argparse.Namespace) -> int:
                             exit_code=0,
                             error_message="",
                             story_id=completed_story_id,
+                            review_status=next_review_status,
                         )
                     else:
                         assert conn is not None
-                        complete_job(conn, job_id=job.id, status="succeeded", exit_code=0, error_message="")
+                        complete_job(
+                            conn,
+                            job_id=job.id,
+                            status="succeeded",
+                            exit_code=0,
+                            error_message="",
+                            review_status=next_review_status,
+                        )
 
                     if not args.skip_books_sync:
                         try:
@@ -989,6 +1039,7 @@ def run_worker(args: argparse.Namespace) -> int:
                             exit_code=exit_code,
                             error_message=error_message,
                             story_id=completed_story_id,
+                            review_status="",
                         )
                     else:
                         assert conn is not None
@@ -998,6 +1049,7 @@ def run_worker(args: argparse.Namespace) -> int:
                             status="failed",
                             exit_code=exit_code,
                             error_message=error_message,
+                            review_status="",
                         )
 
                     LOGGER.error("Job failed: run_id=%s exit_code=%s", job.run_id, exit_code)
@@ -1013,6 +1065,7 @@ def run_worker(args: argparse.Namespace) -> int:
                             exit_code=None,
                             error_message=str(error),
                             story_id="",
+                            review_status="",
                         )
                     else:
                         assert conn is not None
@@ -1022,6 +1075,7 @@ def run_worker(args: argparse.Namespace) -> int:
                             status="failed",
                             exit_code=None,
                             error_message=str(error),
+                            review_status="",
                         )
                 except Exception as complete_error:  # noqa: BLE001
                     LOGGER.warning("Mark job failed error: run_id=%s err=%s", job.run_id, complete_error)

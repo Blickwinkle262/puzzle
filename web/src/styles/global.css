@@ -911,6 +911,12 @@ select:hover:not(:focus) {
   background: rgba(120, 88, 20, 0.2);
 }
 
+.level-state.running {
+  color: #9fd8ff;
+  border-color: rgba(120, 190, 255, 0.45);
+  background: rgba(40, 74, 120, 0.28);
+}
+
 .chapter-desc {
   margin-top: 4px;
   color: var(--text-secondary);

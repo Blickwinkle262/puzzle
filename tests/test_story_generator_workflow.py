@@ -103,7 +103,7 @@ class StoryGeneratorWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(summary["generated_scenes"], 2)
             self.assertTrue(summary["dry_run"])
 
-            summary_path = root / "output" / "story_2026-02-27.json"
+            summary_path = root / "output" / "story_2026-02-27_run_test_001.json"
             self.assertTrue(summary_path.exists())
             payload = json.loads(summary_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["generated_scenes"], 2)

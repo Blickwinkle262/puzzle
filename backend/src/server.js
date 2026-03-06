@@ -477,7 +477,7 @@ app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (r
   const reviewMode = req.body?.review_mode === undefined ? true : normalizeBoolean(req.body?.review_mode);
   const logFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.log`);
   const eventLogFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.events.jsonl`);
-  const summaryPath = path.join(STORY_GENERATOR_SUMMARY_DIR, `story_${targetDate}.json`);
+  const summaryPath = path.join(STORY_GENERATOR_SUMMARY_DIR, buildGenerationSummaryFileName(targetDate, runId));
 
   const payload = {
     run_id: runId,
@@ -490,6 +490,7 @@ app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (r
     summary_output_dir: STORY_GENERATOR_SUMMARY_DIR,
     log_file: logFile,
     event_log_file: eventLogFile,
+    summary_path: summaryPath,
     story_id: normalizeShortText(req.body?.story_id) || "",
     image_size: normalizeShortText(req.body?.image_size) || "",
     scene_count: requestedSceneCount || null,
@@ -590,6 +591,7 @@ app.post("/api/internal/generation-jobs/:runId/complete", requireWorkerAuth, (re
 
   const errorMessage = normalizeErrorMessage(req.body?.error_message);
   const storyId = normalizeShortText(req.body?.story_id);
+  const reviewStatus = normalizeGenerationReviewStatus(req.body?.review_status);
 
   try {
     const job = completeGenerationJobByRunId(runId, {
@@ -597,6 +599,7 @@ app.post("/api/internal/generation-jobs/:runId/complete", requireWorkerAuth, (re
       exitCode,
       errorMessage,
       storyId,
+      reviewStatus,
     });
     if (!job) {
       res.status(404).json({ message: "run_id 不存在" });
@@ -902,6 +905,10 @@ app.get("/api/admin/generation-jobs/:runId/review", requireAuth, requireAdmin, (
       job,
       candidates,
       counts,
+      publish: {
+        review_status: job.review_status,
+        published_at: job.published_at,
+      },
     });
   } catch (error) {
     res.status(500).json({ message: asMessage(error, "读取审核数据失败") });
@@ -939,6 +946,22 @@ app.patch("/api/admin/generation-jobs/:runId/candidates/:sceneIndex", requireAut
   }
 
   try {
+    const job = getGenerationJobByRunId(runId);
+    if (!job) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    if (job.status !== "succeeded") {
+      res.status(409).json({ message: "仅支持修改已完成任务的候选配置" });
+      return;
+    }
+
+    if (job.review_status === "published") {
+      res.status(409).json({ message: "该任务已发布，审核页不允许继续修改" });
+      return;
+    }
+
     const updated = updateGenerationJobCandidate({
       runId,
       sceneIndex,
@@ -980,6 +1003,11 @@ app.post(
 
       if (job.status !== "succeeded") {
         res.status(409).json({ message: "仅支持对 succeeded 任务执行重试" });
+        return;
+      }
+
+      if (job.review_status === "published") {
+        res.status(409).json({ message: "该任务已发布，审核页不允许继续重试" });
         return;
       }
 
@@ -1037,6 +1065,17 @@ app.post("/api/admin/generation-jobs/:runId/publish-selected", requireAuth, requ
 
     if (job.status !== "succeeded") {
       res.status(409).json({ message: "仅支持发布 succeeded 状态的任务" });
+      return;
+    }
+
+    if (!isReviewModePayload(job.payload, job.dry_run)) {
+      res.status(409).json({ message: "仅 review_mode 任务支持审核发布" });
+      return;
+    }
+
+    if (job.review_status === "published") {
+      const publishedAtHint = job.published_at ? `（${job.published_at}）` : "";
+      res.status(409).json({ message: `该任务已发布${publishedAtHint}` });
       return;
     }
 
@@ -2608,10 +2647,6 @@ function resolveLevelTimeLimitSec({
     return overrideTimeLimitSec;
   }
 
-  if (legacyTimeLimitSec) {
-    return legacyTimeLimitSec;
-  }
-
   const activePolicy = timerPolicy && typeof timerPolicy === "object"
     ? timerPolicy
     : DEFAULT_TIMER_POLICY;
@@ -2622,8 +2657,14 @@ function resolveLevelTimeLimitSec({
     || activePolicy.difficulty_factor.normal
     || 1;
   const computed = Math.round(base * factor);
+  const computedClamped = clampInt(computed, activePolicy.min_seconds, activePolicy.max_seconds);
 
-  return clampInt(computed, activePolicy.min_seconds, activePolicy.max_seconds);
+  if (legacyTimeLimitSec) {
+    const normalizedLegacy = clampInt(legacyTimeLimitSec, activePolicy.min_seconds, activePolicy.max_seconds);
+    return Math.max(normalizedLegacy, computedClamped);
+  }
+
+  return computedClamped;
 }
 
 function clampInt(value, minValue, maxValue) {
@@ -3652,6 +3693,12 @@ function defaultGenerationRunId() {
   return `admin_${stamp}_${randomToken().slice(0, 8)}`;
 }
 
+function buildGenerationSummaryFileName(targetDate, runId) {
+  const normalizedDate = normalizeTargetDate(targetDate) || nowIso().slice(0, 10);
+  const normalizedRunId = normalizeRunId(runId) || defaultGenerationRunId();
+  return `story_${normalizedDate}_${normalizedRunId}.json`;
+}
+
 function normalizeStoryFile(value) {
   if (typeof value !== "string" || !value.trim()) {
     return "";
@@ -3848,6 +3895,21 @@ function normalizeGenerationJobStatus(value) {
   return allowed.has(text) ? text : "";
 }
 
+function normalizeGenerationReviewStatus(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "pending_review" || text === "published") {
+    return text;
+  }
+  return "";
+}
+
+function isReviewModePayload(payload, dryRun = false) {
+  if (dryRun) {
+    return false;
+  }
+  return normalizeBoolean(payload?.review_mode);
+}
+
 function normalizeErrorMessage(value) {
   if (value === null || value === undefined) {
     return "";
@@ -3872,10 +3934,10 @@ function enqueueGenerationJob({ runId, requestedBy, targetDate, storyFile, dryRu
   db.prepare(
     `
     INSERT INTO generation_jobs (
-      run_id, status, requested_by, target_date, story_file, dry_run,
+      run_id, status, review_status, requested_by, target_date, story_file, dry_run,
       payload_json, log_file, event_log_file, summary_path,
-      error_message, exit_code, created_at, started_at, ended_at, updated_at
-    ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, ?, NULL, NULL, ?)
+      published_at, error_message, exit_code, created_at, started_at, ended_at, updated_at
+    ) VALUES (?, 'queued', '', ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', NULL, ?, NULL, NULL, ?)
   `,
   ).run(
     runId,
@@ -3992,7 +4054,8 @@ function claimGenerationJob() {
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               review_status, payload_json, log_file, event_log_file, summary_path,
+               published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
         WHERE status = 'queued'
@@ -4028,7 +4091,8 @@ function claimGenerationJob() {
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               review_status, payload_json, log_file, event_log_file, summary_path,
+               published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
         WHERE id = ?
@@ -4042,13 +4106,20 @@ function claimGenerationJob() {
   return tx();
 }
 
-function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage, storyId }) {
+function completeGenerationJobByRunId(runId, {
+  status,
+  exitCode,
+  errorMessage,
+  storyId,
+  reviewStatus,
+}) {
   const tx = db.transaction(() => {
     const existing = db
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               review_status, payload_json, log_file, event_log_file, summary_path,
+               published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
         WHERE run_id = ?
@@ -4062,17 +4133,43 @@ function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage, s
 
     if (existing.status === "queued" || existing.status === "running") {
       const now = nowIso();
+      const payload = safeParseJsonObject(existing.payload_json);
+      const reviewMode = isReviewModePayload(payload, Boolean(existing.dry_run));
+      const existingReviewStatus = normalizeGenerationReviewStatus(existing.review_status);
+
+      let nextReviewStatus = existingReviewStatus;
+      let nextPublishedAt = existing.published_at || null;
+
+      if (status !== "succeeded") {
+        if (existingReviewStatus !== "published") {
+          nextReviewStatus = "";
+          nextPublishedAt = null;
+        }
+      } else if (existingReviewStatus === "published") {
+        nextReviewStatus = "published";
+        nextPublishedAt = existing.published_at || now;
+      } else if (reviewMode) {
+        const requestedReviewStatus = normalizeGenerationReviewStatus(reviewStatus);
+        nextReviewStatus = requestedReviewStatus || "pending_review";
+        nextPublishedAt = nextReviewStatus === "published" ? (existing.published_at || now) : null;
+      } else {
+        nextReviewStatus = "";
+        nextPublishedAt = null;
+      }
+
       db.prepare(
         `
         UPDATE generation_jobs
         SET status = ?,
+            review_status = ?,
             exit_code = ?,
             error_message = ?,
+            published_at = ?,
             ended_at = COALESCE(ended_at, ?),
             updated_at = ?
         WHERE run_id = ?
       `,
-      ).run(status, exitCode, errorMessage, now, now, runId);
+      ).run(status, nextReviewStatus, exitCode, errorMessage, nextPublishedAt, now, now, runId);
 
       upsertGenerationJobMetaOnComplete({
         runId,
@@ -4090,7 +4187,8 @@ function completeGenerationJobByRunId(runId, { status, exitCode, errorMessage, s
       .prepare(
         `
         SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-               payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+               review_status, payload_json, log_file, event_log_file, summary_path,
+               published_at, error_message, exit_code,
                created_at, started_at, ended_at, updated_at
         FROM generation_jobs
         WHERE run_id = ?
@@ -4276,9 +4374,9 @@ function syncGenerationJobCandidatesFromSummary(runId, summaryPath) {
 
   const now = nowIso();
   try {
-    const upsert = db.prepare(
+    const insert = db.prepare(
       `
-      INSERT INTO generation_job_level_candidates (
+      INSERT OR IGNORE INTO generation_job_level_candidates (
         run_id,
         scene_index,
         scene_id,
@@ -4299,29 +4397,13 @@ function syncGenerationJobCandidatesFromSummary(runId, summaryPath) {
         created_at,
         updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(run_id, scene_index) DO UPDATE SET
-        scene_id = excluded.scene_id,
-        title = excluded.title,
-        description = excluded.description,
-        story_text = excluded.story_text,
-        image_prompt = excluded.image_prompt,
-        mood = excluded.mood,
-        characters_json = excluded.characters_json,
-        grid_rows = excluded.grid_rows,
-        grid_cols = excluded.grid_cols,
-        time_limit_sec = excluded.time_limit_sec,
-        image_status = excluded.image_status,
-        image_url = excluded.image_url,
-        image_path = excluded.image_path,
-        error_message = excluded.error_message,
-        selected = excluded.selected,
-        updated_at = excluded.updated_at
     `,
     );
 
     const tx = db.transaction((items) => {
+      let inserted = 0;
       for (const item of items) {
-        upsert.run(
+        const result = insert.run(
           runId,
           item.scene_index,
           item.scene_id,
@@ -4342,11 +4424,14 @@ function syncGenerationJobCandidatesFromSummary(runId, summaryPath) {
           now,
           now,
         );
+        inserted += Number(result?.changes || 0);
       }
+
+      return inserted;
     });
 
-    tx(candidates);
-    return { upserted: candidates.length };
+    const inserted = tx(candidates);
+    return { upserted: inserted };
   } catch {
     return { upserted: 0 };
   }
@@ -5051,16 +5136,19 @@ function publishSelectedGenerationCandidates({ runId, job, summary, selectedCand
     ...(job?.payload && typeof job.payload === "object" ? job.payload : {}),
     story_id: storyId,
     review_mode: true,
+    published_at: now,
   };
 
   db.prepare(
     `
     UPDATE generation_jobs
     SET payload_json = ?,
+        review_status = 'published',
+        published_at = COALESCE(published_at, ?),
         updated_at = ?
     WHERE run_id = ?
   `,
-  ).run(JSON.stringify(nextPayload), now, runId);
+  ).run(JSON.stringify(nextPayload), now, now, runId);
 
   db.prepare(
     `
@@ -5083,6 +5171,8 @@ function publishSelectedGenerationCandidates({ runId, job, summary, selectedCand
       story_id: storyId,
       generated_scenes: levels.length,
       review_mode: true,
+      review_status: "published",
+      published_at: now,
       publish: {
         mode: "selected",
         story_id: storyId,
@@ -5121,7 +5211,8 @@ function listGenerationJobs(limit = 50) {
     .prepare(
       `
       SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-             log_file, event_log_file, summary_path, error_message, exit_code,
+             review_status, log_file, event_log_file, summary_path,
+             published_at, error_message, exit_code,
              created_at, started_at, ended_at, updated_at
       FROM generation_jobs
       ORDER BY created_at DESC, id DESC
@@ -5138,7 +5229,8 @@ function getGenerationJobByRunId(runId) {
     .prepare(
       `
       SELECT id, run_id, status, requested_by, target_date, story_file, dry_run,
-             payload_json, log_file, event_log_file, summary_path, error_message, exit_code,
+             review_status, payload_json, log_file, event_log_file, summary_path,
+             published_at, error_message, exit_code,
              created_at, started_at, ended_at, updated_at
       FROM generation_jobs
       WHERE run_id = ?
@@ -5155,6 +5247,7 @@ function getGenerationJobByRunId(runId) {
 
 function serializeGenerationJobRow(row, includePayload = false) {
   const payload = includePayload ? safeParseJsonObject(row.payload_json) : undefined;
+  const reviewStatus = normalizeGenerationReviewStatus(row.review_status);
 
   return {
     id: row.id === null || row.id === undefined ? null : Number(row.id),
@@ -5164,9 +5257,11 @@ function serializeGenerationJobRow(row, includePayload = false) {
     target_date: row.target_date,
     story_file: row.story_file || "",
     dry_run: Boolean(row.dry_run),
+    review_status: reviewStatus,
     log_file: row.log_file,
     event_log_file: row.event_log_file,
     summary_path: row.summary_path,
+    published_at: row.published_at || null,
     error_message: row.error_message || "",
     exit_code: row.exit_code === null || row.exit_code === undefined ? null : Number(row.exit_code),
     created_at: row.created_at,

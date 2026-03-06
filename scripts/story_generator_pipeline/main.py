@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--index-file", default=DEFAULT_INDEX_FILE)
     parser.add_argument("--summary-output-dir", default="scripts/story_generator/output")
+    parser.add_argument("--summary-path", default=None)
     parser.add_argument("--story-id", default=None)
 
     parser.add_argument("--candidate-scenes", type=int, default=15)
@@ -182,6 +183,7 @@ def config_from_args(args: argparse.Namespace) -> PipelineConfig:
         output_root=Path(args.output_root),
         index_file=Path(args.index_file),
         summary_output_dir=Path(args.summary_output_dir),
+        summary_path=Path(args.summary_path) if args.summary_path else None,
         story_id=args.story_id,
         candidate_scenes=args.candidate_scenes,
         min_scenes=args.min_scenes,
