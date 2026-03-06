@@ -1,4 +1,4 @@
-import { CSSProperties, FormEvent, SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   apiChangePassword,
@@ -86,9 +86,19 @@ export function App(): JSX.Element {
   const [sharedCover, setSharedCover] = useState<SharedCoverTransition | null>(null);
   const [hideDetailCover, setHideDetailCover] = useState(false);
   const [activeJumperLevelId, setActiveJumperLevelId] = useState<string>("");
+  const [showMobileJumper, setShowMobileJumper] = useState(false);
+  const [mobileJumperOffset, setMobileJumperOffset] = useState({ x: 0, y: 0 });
 
   const storyCoverRefs = useRef<Record<string, HTMLImageElement | null>>({});
   const storyDetailCoverRef = useRef<HTMLImageElement | null>(null);
+  const mobileJumperDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    baseOffsetX: number;
+    baseOffsetY: number;
+    moved: boolean;
+  } | null>(null);
 
   const applyAuthUser = useCallback((user: UserProfile) => {
     setHasSession(true);
@@ -125,6 +135,8 @@ export function App(): JSX.Element {
     setOpeningStoryId(null);
     setSharedCover(null);
     setHideDetailCover(false);
+    setShowMobileJumper(false);
+    setMobileJumperOffset({ x: 0, y: 0 });
     clearAccountPanels();
   }, [clearAccountPanels]);
 
@@ -632,6 +644,18 @@ export function App(): JSX.Element {
   }, [activeStory, screen]);
 
   useEffect(() => {
+    if (screen !== "story") {
+      setShowMobileJumper(false);
+    }
+  }, [screen, activeStory?.id]);
+
+  useEffect(() => {
+    if (screen !== "story") {
+      setMobileJumperOffset({ x: 0, y: 0 });
+    }
+  }, [screen, activeStory?.id]);
+
+  useEffect(() => {
     if (screen !== "story" || !activeStory || activeStory.levels.length === 0) {
       return;
     }
@@ -1094,7 +1118,7 @@ export function App(): JSX.Element {
                     </div>
                   </button>
 
-                  <div className="stories-book-body" style={{ maxHeight: isOpen ? "3600px" : "0px" }}>
+                  <div className="stories-book-body" style={{ maxHeight: isOpen ? "none" : "0px" }}>
                     <div className="stories-book-curtain" aria-hidden="true">
                       <span className="stories-book-curtain-rod" />
                       <span className="stories-book-curtain-half left">
@@ -1206,6 +1230,89 @@ export function App(): JSX.Element {
     }, 0);
     const storyBestTimeText = formatBestTime(storyBestTimeMs);
     const pendingCount = Math.max(0, storyLevelTotal - completedCount);
+    const activeJumperIndex = Math.max(
+      1,
+      activeStory.levels.findIndex((level) => level.id === activeJumperLevelId) + 1,
+    );
+
+    const renderJumperItems = (keyPrefix: string, closeAfterClick = false): JSX.Element[] => {
+      return activeStory.levels.map((level, index) => {
+        const progress = activeStory.level_progress[level.id];
+        const completed = progress?.status === "completed";
+        const inProgress = progress?.status === "in_progress";
+        const disabled = Boolean(level.asset_missing);
+        const stateClass = completed ? "done" : inProgress ? "current" : "locked";
+        const isLinked = activeJumperLevelId === level.id;
+
+        return (
+          <button
+            key={`${keyPrefix}-${level.id}`}
+            type="button"
+            className={`story-jumper-item ${stateClass}${isLinked ? " is-linked" : ""}`}
+            disabled={disabled}
+            onClick={() => {
+              focusStoryLevel(level.id);
+              if (closeAfterClick) {
+                setShowMobileJumper(false);
+              }
+            }}
+          >
+            <span>{index + 1}</span>
+            <i />
+            <b>{level.title}</b>
+          </button>
+        );
+      });
+    };
+
+    const mobileJumperStyle: CSSProperties = {
+      transform: `translate(${mobileJumperOffset.x}px, ${mobileJumperOffset.y}px)`,
+    };
+
+    const handleMobileJumperPointerDown = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+      mobileJumperDragRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        baseOffsetX: mobileJumperOffset.x,
+        baseOffsetY: mobileJumperOffset.y,
+        moved: false,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    };
+
+    const handleMobileJumperPointerMove = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+      const dragState = mobileJumperDragRef.current;
+      if (!dragState || dragState.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const deltaX = event.clientX - dragState.startX;
+      const deltaY = event.clientY - dragState.startY;
+      if (Math.abs(deltaX) > 6 || Math.abs(deltaY) > 6) {
+        dragState.moved = true;
+      }
+
+      const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 375;
+      const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 667;
+      const nextX = clamp(dragState.baseOffsetX + deltaX, -(viewportWidth - 84), 16);
+      const nextY = clamp(dragState.baseOffsetY + deltaY, -(viewportHeight - 84), 16);
+      setMobileJumperOffset({ x: nextX, y: nextY });
+    };
+
+    const handleMobileJumperPointerUp = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+      const dragState = mobileJumperDragRef.current;
+      if (!dragState || dragState.pointerId !== event.pointerId) {
+        return;
+      }
+
+      mobileJumperDragRef.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+
+      if (!dragState.moved) {
+        setShowMobileJumper((value) => !value);
+      }
+    };
 
     return (
       <div className="hub-shell story-shell story-directory-shell story-enter-shell">
@@ -1342,32 +1449,33 @@ export function App(): JSX.Element {
             <section className="story-jumper-card">
               <p className="story-stats-title">关卡速览</p>
               <div className="story-jumper-list">
-                {activeStory.levels.map((level, index) => {
-                  const progress = activeStory.level_progress[level.id];
-                  const completed = progress?.status === "completed";
-                  const inProgress = progress?.status === "in_progress";
-                  const disabled = Boolean(level.asset_missing);
-                  const stateClass = completed ? "done" : inProgress ? "current" : "locked";
-                  const isLinked = activeJumperLevelId === level.id;
-
-                  return (
-                    <button
-                      key={`jumper-${level.id}`}
-                      type="button"
-                      className={`story-jumper-item ${stateClass}${isLinked ? " is-linked" : ""}`}
-                      disabled={disabled}
-                      onClick={() => focusStoryLevel(level.id)}
-                    >
-                      <span>{index + 1}</span>
-                      <i />
-                      <b>{level.title}</b>
-                    </button>
-                  );
-                })}
+                {renderJumperItems("desktop")}
               </div>
             </section>
           </aside>
         </main>
+
+        <div className={`story-jumper-fab-shell ${showMobileJumper ? "is-open" : ""}`} style={mobileJumperStyle}>
+          <button
+            type="button"
+            className="story-jumper-fab-toggle"
+            onPointerDown={handleMobileJumperPointerDown}
+            onPointerMove={handleMobileJumperPointerMove}
+            onPointerUp={handleMobileJumperPointerUp}
+          >
+            关卡速览 {activeJumperIndex}/{storyLevelTotal}
+          </button>
+
+          {showMobileJumper && (
+            <section className="story-jumper-fab-panel" aria-label="移动端关卡速览">
+              <p className="story-stats-title">关卡速览</p>
+              <div className="story-jumper-list">
+                {renderJumperItems("mobile", true)}
+              </div>
+            </section>
+          )}
+        </div>
+
         {sharedCoverOverlay}
       </div>
     );
@@ -1538,4 +1646,8 @@ function normalizeBookKey(value: unknown): string {
     .replace(/^-|-$/g, "");
 
   return normalized.slice(0, 48);
+}
+
+function clamp(value: number, minValue: number, maxValue: number): number {
+  return Math.max(minValue, Math.min(maxValue, value));
 }
