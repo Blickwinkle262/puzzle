@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  apiCancelRun,
   apiDeleteRunScene,
+  apiDeleteRun,
   apiGenerateRunSceneImage,
   apiGenerateRunSceneImagesBatch,
   apiGenerateRunText,
@@ -137,6 +139,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   const [reviewUpdatingSceneIndex, setReviewUpdatingSceneIndex] = useState<number | null>(null);
   const [reviewRetryingSceneIndex, setReviewRetryingSceneIndex] = useState<number | null>(null);
   const [reviewDeletingSceneIndex, setReviewDeletingSceneIndex] = useState<number | null>(null);
+  const [runCancellingId, setRunCancellingId] = useState("");
+  const [runDeletingId, setRunDeletingId] = useState("");
   const [levelConfigSnapshot, setLevelConfigSnapshot] = useState<AdminLevelConfigResponse | null>(null);
   const [testRunResult, setTestRunResult] = useState<AdminLevelTestRunResponse | null>(null);
   const [levelConfigForm, setLevelConfigForm] = useState<LevelConfigFormState>(defaultLevelConfigForm());
@@ -764,6 +768,84 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     }
   }, [loadGenerationReview, reviewLocked, reviewRunId]);
 
+  const handleCancelRun = useCallback(async (runId: string): Promise<void> => {
+    const targetRunId = runId.trim();
+    if (!targetRunId) {
+      return;
+    }
+
+    const confirmed = window.confirm(`确认取消任务 ${targetRunId} 吗？`);
+    if (!confirmed) {
+      return;
+    }
+
+    setRunCancellingId(targetRunId);
+    setPanelError("");
+    try {
+      await apiCancelRun(targetRunId, "cancelled by admin from panel");
+      setPanelInfo(`任务已取消：${targetRunId}`);
+
+      if (activeRunId === targetRunId) {
+        setActiveRunId("");
+        setActiveJob(null);
+      }
+
+      if (reviewRunId === targetRunId) {
+        await loadGenerationReview(targetRunId);
+      }
+
+      await loadRecentJobs();
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setRunCancellingId("");
+    }
+  }, [activeRunId, loadGenerationReview, loadRecentJobs, reviewRunId]);
+
+  const handleDeleteRun = useCallback(async (runId: string): Promise<void> => {
+    const targetRunId = runId.trim();
+    if (!targetRunId) {
+      return;
+    }
+
+    const targetJob = recentJobs.find((item) => item.run_id === targetRunId) || null;
+    const force = targetJob?.status === "running";
+    const confirmed = window.confirm(
+      force
+        ? `任务 ${targetRunId} 仍在运行，确认强制删除吗？`
+        : `确认删除任务 ${targetRunId} 吗？`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setRunDeletingId(targetRunId);
+    setPanelError("");
+    try {
+      await apiDeleteRun(targetRunId, {
+        force,
+      });
+      setPanelInfo(`任务已删除：${targetRunId}`);
+
+      if (activeRunId === targetRunId) {
+        setActiveRunId("");
+        setActiveJob(null);
+      }
+
+      if (reviewRunId === targetRunId) {
+        setReviewRunId("");
+        setReviewScenes([]);
+        setReviewCounts(defaultSceneCounts());
+      }
+
+      await loadRecentJobs();
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setRunDeletingId("");
+    }
+  }, [activeRunId, loadRecentJobs, recentJobs, reviewRunId]);
+
   const handleOpenGeneratedStory = async (storyId: string): Promise<void> => {
     const targetId = storyId.trim();
     if (!targetId) {
@@ -864,6 +946,18 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
           const viewing = activeRunId === job.run_id;
           const reviewing = reviewRunId === job.run_id;
           const reviewStatus = normalizeReviewStatus(job.review_status);
+          const published = reviewStatus === "published" || flowStage === "published";
+          const cancelling = runCancellingId === job.run_id;
+          const deleting = runDeletingId === job.run_id;
+          const cancellable = !published && (
+            job.status === "queued"
+            || job.status === "running"
+            || flowStage === "text_generating"
+            || flowStage === "text_ready"
+            || flowStage === "images_generating"
+            || flowStage === "review_ready"
+          );
+          const deletable = !published && (job.status === "failed" || job.status === "cancelled" || job.status === "queued");
 
           return (
             <li key={job.run_id}>
@@ -894,6 +988,26 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                       : "编辑发布"}
                 </button>
               )}
+              {cancellable && (
+                <button
+                  type="button"
+                  className="nav-btn"
+                  disabled={cancelling || deleting}
+                  onClick={() => void handleCancelRun(job.run_id)}
+                >
+                  {cancelling ? "取消中" : "取消"}
+                </button>
+              )}
+              {deletable && (
+                <button
+                  type="button"
+                  className="nav-btn"
+                  disabled={cancelling || deleting}
+                  onClick={() => void handleDeleteRun(job.run_id)}
+                >
+                  {deleting ? "删除中" : "删除"}
+                </button>
+              )}
             </li>
           );
         })}
@@ -917,7 +1031,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       {panelInfo && <div className="banner-info">{panelInfo}</div>}
       {resumableJob && !activeRunId && (
         <div className="banner-info admin-running-banner">
-          <span>检测到运行中任务：{resumableJob.run_id}</span>
+          <span>检测到未完成任务：{resumableJob.run_id}（{formatGenerationJobStateLabel(resumableJob)}）</span>
           <button type="button" className="nav-btn" onClick={() => handleViewJobProgress(resumableJob.run_id)}>
             查看进度
           </button>
@@ -1503,7 +1617,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                     </div>
                   ) : resumableJob ? (
                     <div className="admin-puzzle-hint">
-                      <p className="progress-inline">检测到运行中任务：{resumableJob.run_id}</p>
+                      <p className="progress-inline">检测到未完成任务：{resumableJob.run_id}（{formatGenerationJobStateLabel(resumableJob)}）</p>
                       <button type="button" className="nav-btn" onClick={() => handleViewJobProgress(resumableJob.run_id)}>
                         继续查看进度
                       </button>

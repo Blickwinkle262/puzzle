@@ -451,6 +451,27 @@ export function apiPublishRun(runId: string): Promise<AdminGenerationRunMutateRe
   });
 }
 
+export function apiCancelRun(runId: string, reason = "cancelled by admin"): Promise<AdminGenerationRunMutateResponse> {
+  return requestJson<AdminGenerationRunMutateResponse>(`/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+    body: { reason },
+  });
+}
+
+export function apiDeleteRun(
+  runId: string,
+  payload: {
+    force?: boolean;
+    allow_published?: boolean;
+    purge_files?: boolean;
+  } = {},
+): Promise<{ ok: boolean; run_id: string; removed_files: string[] }> {
+  return requestJson<{ ok: boolean; run_id: string; removed_files: string[] }>(`/runs/${encodeURIComponent(runId)}`, {
+    method: "DELETE",
+    body: payload,
+  });
+}
+
 export function apiListAdminUsers(query: AdminUsersQuery = {}): Promise<AdminUsersResponse> {
   const qs = buildQueryString(query);
   return requestJson<AdminUsersResponse>(`/admin/users${qs}`);

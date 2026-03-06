@@ -958,6 +958,8 @@ app.get("/api/runs/:runId", requireAuth, requireAdmin, (req, res) => {
       return;
     }
 
+    materializeGenerationScenesFromLegacy(runId, job);
+
     const scenes = listGenerationScenes(runId, { include_deleted: true });
     const attempts = listGenerationSceneAttempts(runId);
     const attemptsByScene = {};
@@ -1832,6 +1834,64 @@ app.post("/api/runs/:runId/publish", requireAuth, requireCsrf, requireAdmin, (re
   }
 });
 
+app.post("/api/runs/:runId/cancel", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不合法" });
+    return;
+  }
+
+  try {
+    const job = cancelGenerationRun(runId, String(req.body?.reason || "").trim() || "cancelled by admin");
+    if (!job) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      run_id: runId,
+      job,
+      counts: summarizeGenerationScenes(listGenerationScenes(runId, { include_deleted: true })),
+    });
+  } catch (error) {
+    const message = asMessage(error, "取消任务失败");
+    const status = message.includes("不允许") ? 409 : 500;
+    res.status(status).json({ message });
+  }
+});
+
+app.delete("/api/runs/:runId", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  const runId = normalizeRunId(req.params.runId);
+  if (!runId) {
+    res.status(400).json({ message: "run_id 不合法" });
+    return;
+  }
+
+  try {
+    const result = deleteGenerationRun(runId, {
+      force: req.body?.force,
+      allow_published: req.body?.allow_published,
+      purge_files: req.body?.purge_files,
+    });
+
+    if (!result.deleted) {
+      res.status(404).json({ message: "run_id 不存在" });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      run_id: runId,
+      removed_files: result.removed_files,
+    });
+  } catch (error) {
+    const message = asMessage(error, "删除任务失败");
+    const status = message.includes("不允许") || message.includes("请先") ? 409 : 500;
+    res.status(status).json({ message });
+  }
+});
+
 app.get("/api/admin/generation-jobs/:runId/review", requireAuth, requireAdmin, (req, res) => {
   const runId = String(req.params.runId || "").trim();
   if (!runId) {
@@ -1845,6 +1905,8 @@ app.get("/api/admin/generation-jobs/:runId/review", requireAuth, requireAdmin, (
       res.status(404).json({ message: "run_id 不存在" });
       return;
     }
+
+    materializeGenerationScenesFromLegacy(runId, job);
 
     if (hasGenerationSceneRows(runId)) {
       const scenes = listGenerationScenes(runId, { include_deleted: false });
@@ -5796,6 +5858,206 @@ function replaceGenerationScenes(runId, scenes, sourceKind = "pipeline") {
 
   tx(scenes);
   return listGenerationScenes(runId, { include_deleted: false });
+}
+
+function mapLegacyCandidateToSceneRow(candidate) {
+  const imageStatus = normalizeGenerationSceneImageStatus(candidate?.image_status);
+  const title = String(candidate?.title || "").trim();
+  const storyText = String(candidate?.story_text || "").trim();
+  const imagePrompt = String(candidate?.image_prompt || "").trim();
+
+  return {
+    scene_index: normalizePositiveInteger(candidate?.scene_index) || 0,
+    scene_id: normalizePositiveInteger(candidate?.scene_id) || normalizePositiveInteger(candidate?.scene_index) || null,
+    title,
+    description: String(candidate?.description || "").trim(),
+    story_text: storyText,
+    image_prompt: imagePrompt,
+    mood: String(candidate?.mood || "").trim(),
+    characters: normalizeGenerationSceneCharacters(candidate?.characters),
+    grid_rows: normalizeIntegerInRange(candidate?.grid_rows, 2, 20) || 6,
+    grid_cols: normalizeIntegerInRange(candidate?.grid_cols, 2, 20) || 4,
+    time_limit_sec: normalizeIntegerInRange(candidate?.time_limit_sec, 30, 3600) || 180,
+    text_status: (title || storyText || imagePrompt) ? "ready" : "pending",
+    image_status: imageStatus,
+    image_url: String(candidate?.image_url || "").trim(),
+    image_path: String(candidate?.image_path || "").trim(),
+    error_message: String(candidate?.error_message || "").trim(),
+    selected: normalizeBoolean(candidate?.selected) && imageStatus === "success",
+  };
+}
+
+function materializeGenerationScenesFromLegacy(runId, job = null) {
+  if (!runId || hasGenerationSceneRows(runId)) {
+    return { materialized: false, count: 0 };
+  }
+
+  let legacyCandidates = listGenerationJobCandidates(runId);
+  if (legacyCandidates.length === 0 && job && job.status === "succeeded") {
+    syncGenerationJobCandidatesFromSummary(runId, job.summary_path);
+    legacyCandidates = listGenerationJobCandidates(runId);
+  }
+
+  if (legacyCandidates.length === 0) {
+    return { materialized: false, count: 0 };
+  }
+
+  const scenes = legacyCandidates
+    .map((item) => mapLegacyCandidateToSceneRow(item))
+    .filter((item) => Number.isInteger(item.scene_index) && item.scene_index > 0);
+
+  if (scenes.length === 0) {
+    return { materialized: false, count: 0 };
+  }
+
+  replaceGenerationScenes(runId, scenes, "legacy");
+  refreshGenerationRunState(runId);
+
+  return { materialized: true, count: scenes.length };
+}
+
+function cancelGenerationRun(runId, reason = "cancelled by admin") {
+  const tx = db.transaction(() => {
+    const now = nowIso();
+    const job = getGenerationJobByRunId(runId);
+    if (!job) {
+      return null;
+    }
+
+    const flowStage = normalizeGenerationFlowStage(job.flow_stage);
+    const reviewStatus = normalizeGenerationReviewStatus(job.review_status);
+    if (reviewStatus === "published" || flowStage === "published") {
+      throw new Error("已发布任务不允许取消");
+    }
+
+    if (job.status === "cancelled") {
+      return getGenerationJobByRunId(runId);
+    }
+
+    db.prepare(
+      `
+      UPDATE generation_job_scene_image_attempts
+      SET status = CASE WHEN status IN ('queued', 'running') THEN 'cancelled' ELSE status END,
+          error_message = CASE
+            WHEN status IN ('queued', 'running') AND COALESCE(trim(error_message), '') = '' THEN ?
+            ELSE error_message
+          END,
+          ended_at = CASE WHEN status IN ('queued', 'running') THEN COALESCE(ended_at, ?) ELSE ended_at END,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(reason, now, now, runId);
+
+    db.prepare(
+      `
+      UPDATE generation_job_scenes
+      SET image_status = CASE
+            WHEN image_status IN ('queued', 'running') THEN 'skipped'
+            ELSE image_status
+          END,
+          selected = CASE
+            WHEN image_status IN ('queued', 'running') THEN 0
+            ELSE selected
+          END,
+          error_message = CASE
+            WHEN image_status IN ('queued', 'running') THEN ?
+            ELSE error_message
+          END,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(reason, now, runId);
+
+    db.prepare(
+      `
+      UPDATE generation_candidate_image_retries
+      SET status = CASE WHEN status IN ('queued', 'running') THEN 'cancelled' ELSE status END,
+          error_message = CASE
+            WHEN status IN ('queued', 'running') AND COALESCE(trim(error_message), '') = '' THEN ?
+            ELSE error_message
+          END,
+          ended_at = CASE WHEN status IN ('queued', 'running') THEN COALESCE(ended_at, ?) ELSE ended_at END,
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(reason, now, now, runId);
+
+    db.prepare(
+      `
+      UPDATE generation_jobs
+      SET status = 'cancelled',
+          review_status = '',
+          flow_stage = 'failed',
+          error_message = CASE
+            WHEN COALESCE(trim(error_message), '') = '' THEN ?
+            ELSE error_message
+          END,
+          ended_at = COALESCE(ended_at, ?),
+          updated_at = ?
+      WHERE run_id = ?
+    `,
+    ).run(reason, now, now, runId);
+
+    return getGenerationJobByRunId(runId);
+  });
+
+  return tx();
+}
+
+function deleteGenerationRun(runId, options = {}) {
+  const force = normalizeBoolean(options.force);
+  const allowPublished = normalizeBoolean(options.allow_published);
+  const purgeFiles = normalizeBoolean(options.purge_files);
+
+  const tx = db.transaction(() => {
+    const job = getGenerationJobByRunId(runId);
+    if (!job) {
+      return { deleted: false, job: null, removed_files: [] };
+    }
+
+    const reviewStatus = normalizeGenerationReviewStatus(job.review_status);
+    const flowStage = normalizeGenerationFlowStage(job.flow_stage);
+    if ((reviewStatus === "published" || flowStage === "published") && !allowPublished) {
+      throw new Error("已发布任务默认不允许删除，请显式传 allow_published=true");
+    }
+
+    if (job.status === "running" && !force) {
+      throw new Error("运行中任务不允许直接删除，请先取消或传 force=true");
+    }
+
+    db.prepare("DELETE FROM generation_job_scene_image_attempts WHERE run_id = ?").run(runId);
+    db.prepare("DELETE FROM generation_job_scenes WHERE run_id = ?").run(runId);
+    db.prepare("DELETE FROM generation_candidate_image_retries WHERE run_id = ?").run(runId);
+    db.prepare("DELETE FROM generation_job_level_candidates WHERE run_id = ?").run(runId);
+    db.prepare("DELETE FROM generation_job_meta WHERE run_id = ?").run(runId);
+    db.prepare("DELETE FROM generation_jobs WHERE run_id = ?").run(runId);
+
+    const removedFiles = [];
+    if (purgeFiles) {
+      const candidates = [job.log_file, job.event_log_file, job.summary_path]
+        .map((item) => String(item || "").trim())
+        .filter((item) => item.length > 0);
+
+      for (const filePath of candidates) {
+        try {
+          const normalized = path.normalize(filePath);
+          if (!normalized.startsWith(path.normalize(ROOT_DIR))) {
+            continue;
+          }
+          if (fs.existsSync(normalized) && fs.statSync(normalized).isFile()) {
+            fs.rmSync(normalized, { force: true });
+            removedFiles.push(normalized);
+          }
+        } catch {
+          // ignore file purge errors
+        }
+      }
+    }
+
+    return { deleted: true, job, removed_files: removedFiles };
+  });
+
+  return tx();
 }
 
 function nextGenerationSceneAttemptNo(runId, sceneIndex) {
