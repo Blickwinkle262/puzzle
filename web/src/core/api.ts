@@ -2,6 +2,8 @@ import {
   AdminBookChaptersResponse,
   AdminGenerationCreateResponse,
   AdminGenerationCandidate,
+  AdminGenerationRunDetailResponse,
+  AdminGenerationRunMutateResponse,
   AdminGenerationReviewResponse,
   AdminGenerationPublishResponse,
   AdminGenerationRetryImageResponse,
@@ -345,6 +347,108 @@ export function apiRetryAdminGenerationCandidateImage(
       method: "POST",
     },
   );
+}
+
+export function apiListGenerationRuns(): Promise<{ runs: AdminGenerationJob[] }> {
+  return requestJson<{ runs: AdminGenerationJob[] }>("/runs");
+}
+
+export function apiGetGenerationRun(runId: string): Promise<AdminGenerationRunDetailResponse> {
+  return requestJson<AdminGenerationRunDetailResponse>(`/runs/${encodeURIComponent(runId)}`);
+}
+
+export function apiGenerateRunText(
+  runId: string,
+  payload: {
+    chapter_id?: number;
+    story_file?: string;
+    target_date?: string;
+    scene_count?: number;
+    candidate_scenes?: number;
+    min_scenes?: number;
+    max_scenes?: number;
+  },
+): Promise<AdminGenerationRunMutateResponse> {
+  return requestJson<AdminGenerationRunMutateResponse>(`/runs/${encodeURIComponent(runId)}/generate-text`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiGenerateRunSceneImage(
+  runId: string,
+  sceneIndex: number,
+  payload: {
+    image_model?: string;
+    image_size?: string;
+    timeout_sec?: number;
+    poll_seconds?: number;
+    poll_attempts?: number;
+  } = {},
+): Promise<AdminGenerationRunMutateResponse> {
+  return requestJson<AdminGenerationRunMutateResponse>(
+    `/runs/${encodeURIComponent(runId)}/scenes/${encodeURIComponent(String(sceneIndex))}/generate-image`,
+    {
+      method: "POST",
+      body: payload,
+    },
+  );
+}
+
+export function apiGenerateRunSceneImagesBatch(
+  runId: string,
+  payload: {
+    scene_indexes?: number[];
+    concurrency?: number;
+    image_model?: string;
+    image_size?: string;
+    timeout_sec?: number;
+    poll_seconds?: number;
+    poll_attempts?: number;
+  } = {},
+): Promise<AdminGenerationRunMutateResponse> {
+  return requestJson<AdminGenerationRunMutateResponse>(`/runs/${encodeURIComponent(runId)}/scenes/generate-images-batch`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiUpdateRunScene(
+  runId: string,
+  sceneIndex: number,
+  payload: {
+    title?: string;
+    description?: string;
+    story_text?: string;
+    image_prompt?: string;
+    selected?: boolean;
+    grid_rows?: number;
+    grid_cols?: number;
+    time_limit_sec?: number;
+  },
+): Promise<AdminGenerationRunMutateResponse> {
+  return requestJson<AdminGenerationRunMutateResponse>(
+    `/runs/${encodeURIComponent(runId)}/scenes/${encodeURIComponent(String(sceneIndex))}`,
+    {
+      method: "PATCH",
+      body: payload,
+    },
+  );
+}
+
+export function apiDeleteRunScene(runId: string, sceneIndex: number): Promise<AdminGenerationRunMutateResponse> {
+  return requestJson<AdminGenerationRunMutateResponse>(
+    `/runs/${encodeURIComponent(runId)}/scenes/${encodeURIComponent(String(sceneIndex))}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export function apiPublishRun(runId: string): Promise<AdminGenerationRunMutateResponse> {
+  return requestJson<AdminGenerationRunMutateResponse>(`/runs/${encodeURIComponent(runId)}/publish`, {
+    method: "POST",
+  });
 }
 
 export function apiListAdminUsers(query: AdminUsersQuery = {}): Promise<AdminUsersResponse> {

@@ -171,6 +171,7 @@ export type AdminGenerationJob = {
   run_id: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   review_status?: "" | "pending_review" | "published";
+  flow_stage?: "" | "text_generating" | "text_ready" | "images_generating" | "review_ready" | "published" | "failed";
   requested_by: string;
   target_date: string;
   story_file: string;
@@ -213,7 +214,7 @@ export type AdminGenerationCandidate = {
   grid_rows: number;
   grid_cols: number;
   time_limit_sec: number;
-  image_status: "pending" | "success" | "failed" | "skipped";
+  image_status: "pending" | "queued" | "running" | "success" | "failed" | "skipped";
   image_url: string;
   image_path: string;
   error_message: string;
@@ -247,8 +248,8 @@ export type AdminGenerationCandidateRetryTask = {
 
 export type AdminGenerationJobDetail = AdminGenerationJob & {
   payload?: Record<string, unknown>;
-  events: AdminGenerationEvent[];
-  log_tail: string[];
+  events?: AdminGenerationEvent[];
+  log_tail?: string[];
   summary?: Record<string, unknown> | null;
   candidates?: AdminGenerationCandidate[];
   candidate_counts?: AdminGenerationCandidateCounts;
@@ -281,6 +282,88 @@ export type AdminGenerationRetryImageResponse = {
   retry_id: number;
   retry: AdminGenerationCandidateRetryTask;
   candidate: AdminGenerationCandidate | null;
+};
+
+export type AdminGenerationScene = {
+  run_id: string;
+  scene_index: number;
+  scene_id: number | null;
+  title: string;
+  description: string;
+  story_text: string;
+  image_prompt: string;
+  mood: string;
+  characters: string[];
+  grid_rows: number;
+  grid_cols: number;
+  time_limit_sec: number;
+  text_status: "pending" | "ready" | "failed" | "deleted";
+  image_status: "pending" | "queued" | "running" | "success" | "failed" | "skipped";
+  image_url: string;
+  image_path: string;
+  error_message: string;
+  selected: boolean;
+  deleted_at: string | null;
+  source_kind: "legacy" | "summary" | "review" | "manual" | "pipeline";
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type AdminGenerationSceneAttempt = {
+  id: number;
+  run_id: string;
+  scene_index: number;
+  attempt_no: number;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  provider: string;
+  model: string;
+  image_prompt: string;
+  image_url: string;
+  image_path: string;
+  error_message: string;
+  latency_ms: number | null;
+  created_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  updated_at: string | null;
+};
+
+export type AdminGenerationSceneCounts = {
+  total: number;
+  text_ready: number;
+  text_failed: number;
+  images_success: number;
+  images_failed: number;
+  images_pending: number;
+  images_running: number;
+  selected: number;
+  ready_for_publish: number;
+  deleted: number;
+};
+
+export type AdminGenerationRunDetailResponse = {
+  job: AdminGenerationJobDetail;
+  scenes: AdminGenerationScene[];
+  counts: AdminGenerationSceneCounts;
+  attempts_by_scene: Record<string, AdminGenerationSceneAttempt[]>;
+  attempts: AdminGenerationSceneAttempt[];
+};
+
+export type AdminGenerationRunMutateResponse = {
+  ok: boolean;
+  run_id: string;
+  job: AdminGenerationJobDetail;
+  scenes?: AdminGenerationScene[];
+  scene?: AdminGenerationScene | null;
+  counts?: AdminGenerationSceneCounts;
+  attempt?: AdminGenerationSceneAttempt | null;
+  processed?: number;
+  story_id?: string;
+  manifest?: string;
+  cover?: string;
+  level_count?: number;
+  selected_count?: number;
+  published_at?: string;
 };
 
 export type AdminGenerationCreateResponse = {
