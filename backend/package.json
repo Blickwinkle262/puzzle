@@ -7,9 +7,10 @@
     "migrate": "node src/migrate.js",
     "backfill:generation-job-meta": "node src/backfill-generation-job-meta.js",
     "backfill:generation-review-state": "node src/backfill-generation-review-state.js",
+    "backfill:generation-scenes-v2": "node src/backfill-generation-scenes-v2.js",
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/migrate.js && node --check src/backfill-generation-job-meta.js && node --check src/backfill-generation-review-state.js"
+    "check": "node --check src/server.js && node --check src/migrate.js && node --check src/backfill-generation-job-meta.js && node --check src/backfill-generation-review-state.js && node --check src/backfill-generation-scenes-v2.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
