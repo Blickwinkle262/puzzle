@@ -2571,6 +2571,10 @@ summary:focus-visible {
   box-shadow: 0 0 10px rgba(240, 192, 96, 0.55);
 }
 
+.story-jumper-fab-shell {
+  display: none;
+}
+
 @media (min-width: 900px) {
   .story-directory-main {
     margin-top: 14px;
@@ -2606,7 +2610,55 @@ summary:focus-visible {
   }
 
   .story-directory-right {
-    margin-top: 12px;
+    display: none;
+  }
+
+  .story-jumper-fab-shell {
+    display: block;
+    position: fixed;
+    right: 12px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    z-index: 120;
+  }
+
+  .story-jumper-fab-toggle {
+    border: 1px solid rgba(200, 150, 60, 0.42);
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(31, 24, 14, 0.95), rgba(17, 21, 32, 0.96));
+    color: var(--gold-bright);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    padding: 8px 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    touch-action: none;
+    user-select: none;
+  }
+
+  .story-jumper-fab-shell.is-open .story-jumper-fab-toggle {
+    border-color: var(--gold-mid);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.52), 0 0 0 1px rgba(200, 150, 60, 0.16);
+  }
+
+  .story-jumper-fab-panel {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 10px);
+    width: min(86vw, 320px);
+    max-height: min(64vh, 420px);
+    overflow: auto;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(200, 150, 60, 0.24);
+    background: linear-gradient(160deg, rgba(16, 20, 31, 0.97), rgba(11, 15, 24, 0.97));
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.52);
+  }
+
+  .story-jumper-fab-panel .story-jumper-list {
+    margin-top: 8px;
+  }
+
+  .story-jumper-fab-panel .story-jumper-item {
+    padding: 8px;
   }
 
   .story-level-main {
@@ -3305,10 +3357,94 @@ summary:focus-visible {
   gap: 12px;
 }
 
+.admin-puzzle-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.admin-flow-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-flow-step:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.admin-flow-step.active {
+  border-color: rgba(200, 150, 60, 0.55);
+  background: rgba(200, 150, 60, 0.08);
+  color: var(--text-primary);
+}
+
+.admin-flow-index {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.admin-flow-step.active .admin-flow-index {
+  border-color: rgba(200, 150, 60, 0.7);
+  color: var(--gold-mid);
+}
+
+.admin-flow-meta {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.admin-flow-meta strong {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.admin-flow-meta small {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
 .admin-puzzle-main {
   min-width: 0;
   display: grid;
   gap: 10px;
+}
+
+.admin-puzzle-stage-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-puzzle-stage {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-puzzle-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .admin-puzzle-side {
@@ -3352,6 +3488,90 @@ summary:focus-visible {
   margin: 0;
 }
 
+.admin-review-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-review-head h4 {
+  margin: 0;
+}
+
+.admin-review-table {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-void);
+}
+
+.admin-review-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.admin-review-table th,
+.admin-review-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  text-align: left;
+  font-size: var(--text-sm);
+}
+
+.admin-review-table th {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  font-weight: 400;
+}
+
+.admin-review-table td {
+  color: var(--text-secondary);
+}
+
+.admin-review-table tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-review-table tr:hover {
+  background: rgba(200, 150, 60, 0.04);
+}
+
+.admin-review-table select {
+  min-width: 64px;
+}
+
+.admin-review-title {
+  font-weight: 600;
+}
+
+.admin-review-prompt,
+.admin-review-error {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.admin-review-error {
+  color: var(--danger, #b42318);
+}
+
+.admin-review-retry-btn {
+  min-width: 76px;
+  justify-content: center;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 @media (min-width: 1100px) {
   .admin-puzzle-layout {
     grid-template-columns: minmax(0, 1fr) 330px;
@@ -3361,5 +3581,11 @@ summary:focus-visible {
   .admin-puzzle-side {
     position: sticky;
     top: 76px;
+  }
+}
+
+@media (max-width: 920px) {
+  .admin-puzzle-flow {
+    grid-template-columns: 1fr;
   }
 }

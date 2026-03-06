@@ -5,6 +5,9 @@ import {
   apiGrantAdminUserRole,
   apiGetAdminLevelConfig,
   apiGetAdminGenerationJob,
+  apiGetAdminGenerationReview,
+  apiPublishAdminGenerationSelected,
+  apiRetryAdminGenerationCandidateImage,
   apiGetStoryDetail,
   apiListAdminBookChapters,
   apiListAdminGenerationJobs,
@@ -13,6 +16,7 @@ import {
   apiPreviewAdminLevelConfig,
   apiRevokeAdminUserRole,
   apiRunAdminLevelTest,
+  apiUpdateAdminGenerationCandidate,
   apiUpdateAdminLevelConfig,
   ApiError,
 } from "../core/api";
@@ -23,6 +27,8 @@ import {
   AdminLevelConfigResponse,
   AdminLevelDifficulty,
   AdminLevelTestRunResponse,
+  AdminGenerationCandidate,
+  AdminGenerationCandidateCounts,
   AdminGenerationEvent,
   AdminGenerationJob,
   AdminGenerationJobDetail,
@@ -61,6 +67,7 @@ type LevelConfigFormState = {
 };
 
 type AdminSectionKey = "users" | "levelConfig" | "puzzle";
+type PuzzleFlowStep = "select" | "generate" | "review";
 
 const DEFAULT_MIN_CHARS = 500;
 const DEFAULT_MAX_CHARS = 2200;
@@ -71,6 +78,7 @@ const CHAPTER_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
 const CHAPTER_PAGE_SIZE_STORAGE_KEY = "admin_story_generator.chapter_page_size";
 const MANAGED_ROLES: AdminManagedRole[] = ["admin", "editor", "level_designer", "operator"];
 const MANAGED_LEVEL_DIFFICULTIES: AdminLevelDifficulty[] = ["easy", "normal", "hard", "nightmare"];
+const REVIEW_GRID_OPTIONS = Array.from({ length: 19 }, (_, index) => index + 2);
 
 export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory }: AdminStoryGeneratorProps): JSX.Element | null {
   const [books, setBooks] = useState<AdminBookInfo[]>([]);
@@ -119,10 +127,18 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
   const [activeRunId, setActiveRunId] = useState("");
   const [activeJob, setActiveJob] = useState<AdminGenerationJobDetail | null>(null);
+  const [reviewRunId, setReviewRunId] = useState("");
+  const [reviewCandidates, setReviewCandidates] = useState<AdminGenerationCandidate[]>([]);
+  const [reviewCounts, setReviewCounts] = useState<AdminGenerationCandidateCounts>(defaultCandidateCounts);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewPublishing, setReviewPublishing] = useState(false);
+  const [reviewUpdatingSceneIndex, setReviewUpdatingSceneIndex] = useState<number | null>(null);
+  const [reviewRetryingSceneIndex, setReviewRetryingSceneIndex] = useState<number | null>(null);
   const [levelConfigSnapshot, setLevelConfigSnapshot] = useState<AdminLevelConfigResponse | null>(null);
   const [testRunResult, setTestRunResult] = useState<AdminLevelTestRunResponse | null>(null);
   const [levelConfigForm, setLevelConfigForm] = useState<LevelConfigFormState>(defaultLevelConfigForm());
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
+  const [puzzleFlowStep, setPuzzleFlowStep] = useState<PuzzleFlowStep>("select");
   const [collapsedSections, setCollapsedSections] = useState<Record<AdminSectionKey, boolean>>({
     users: true,
     levelConfig: true,
@@ -143,6 +159,11 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     () => recentJobs.find((job) => job.status === "running" || job.status === "queued") || null,
     [recentJobs],
   );
+  const hasSucceededJobs = useMemo(
+    () => recentJobs.some((job) => job.status === "succeeded"),
+    [recentJobs],
+  );
+  const reviewReadyCount = useMemo(() => Number(reviewCounts.ready_for_publish || 0), [reviewCounts.ready_for_publish]);
 
   const toggleSection = useCallback((key: AdminSectionKey): void => {
     setCollapsedSections((prev) => ({
@@ -157,6 +178,26 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setRecentJobs(response.jobs || []);
     } catch {
       // ignore recent jobs errors in panel
+    }
+  }, []);
+
+  const loadGenerationReview = useCallback(async (runId: string): Promise<void> => {
+    const targetRunId = runId.trim();
+    if (!targetRunId) {
+      return;
+    }
+
+    setReviewLoading(true);
+    try {
+      const response = await apiGetAdminGenerationReview(targetRunId);
+      setReviewRunId(targetRunId);
+      setReviewCandidates(response.candidates || []);
+      setReviewCounts(response.counts || defaultCandidateCounts());
+      setActiveJob(response.job || null);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setReviewLoading(false);
     }
   }, []);
 
@@ -471,6 +512,14 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         setActiveJob(detail);
 
         if (detail.status === "succeeded") {
+          if (isReviewModeJob(detail)) {
+            setPanelInfo(`生成完成，待审核发布：${detail.run_id}`);
+            setActiveRunId("");
+            await loadGenerationReview(detail.run_id);
+            await loadRecentJobs();
+            return;
+          }
+
           const storyId = pickStoryId(detail);
           setPanelInfo(storyId ? `生成完成：${storyId}` : "生成完成，已发布到故事首页。");
           setActiveRunId("");
@@ -500,7 +549,36 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [activeRunId, loadRecentJobs, onGenerated, visible]);
+  }, [activeRunId, loadGenerationReview, loadRecentJobs, onGenerated, visible]);
+
+  useEffect(() => {
+    if (!visible || !reviewRunId) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void loadGenerationReview(reviewRunId);
+    }, 4000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [loadGenerationReview, reviewRunId, visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    if (reviewRunId && puzzleFlowStep !== "review") {
+      setPuzzleFlowStep("review");
+      return;
+    }
+
+    if (!reviewRunId && activeRunId && puzzleFlowStep === "select") {
+      setPuzzleFlowStep("generate");
+    }
+  }, [activeRunId, puzzleFlowStep, reviewRunId, visible]);
 
   const handleViewJobProgress = useCallback((runId: string): void => {
     const targetRunId = runId.trim();
@@ -511,13 +589,102 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     setPanelError("");
     setPanelInfo(`正在查看任务进度：${targetRunId}`);
     setShowGenerateDialog(false);
+    setReviewRunId("");
+    setReviewCandidates([]);
+    setReviewCounts(defaultCandidateCounts());
     setActiveJob(null);
     setActiveRunId(targetRunId);
+    setPuzzleFlowStep("generate");
     setCollapsedSections((prev) => ({
       ...prev,
       puzzle: false,
     }));
   }, []);
+
+  const handleOpenReview = useCallback(async (runId: string): Promise<void> => {
+    const targetRunId = runId.trim();
+    if (!targetRunId) {
+      return;
+    }
+
+    setPanelError("");
+    setPanelInfo(`加载审核数据：${targetRunId}`);
+    setShowGenerateDialog(false);
+    setActiveRunId("");
+    setActiveJob(null);
+    setPuzzleFlowStep("review");
+    setCollapsedSections((prev) => ({
+      ...prev,
+      puzzle: false,
+    }));
+    await loadGenerationReview(targetRunId);
+  }, [loadGenerationReview]);
+
+  const handleUpdateReviewCandidate = useCallback(async (
+    sceneIndex: number,
+    payload: {
+      selected?: boolean;
+      grid_rows?: number;
+      grid_cols?: number;
+    },
+  ): Promise<void> => {
+    if (!reviewRunId) {
+      return;
+    }
+
+    setReviewUpdatingSceneIndex(sceneIndex);
+    setPanelError("");
+
+    try {
+      await apiUpdateAdminGenerationCandidate(reviewRunId, sceneIndex, payload);
+      await loadGenerationReview(reviewRunId);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setReviewUpdatingSceneIndex(null);
+    }
+  }, [loadGenerationReview, reviewRunId]);
+
+  const handlePublishSelected = useCallback(async (): Promise<void> => {
+    if (!reviewRunId) {
+      return;
+    }
+
+    setReviewPublishing(true);
+    setPanelError("");
+    setPanelInfo("");
+
+    try {
+      const response = await apiPublishAdminGenerationSelected(reviewRunId);
+      setPanelInfo(`发布完成：${response.story_id}（${response.level_count} 关）`);
+      await loadGenerationReview(reviewRunId);
+      await loadRecentJobs();
+      await onGenerated(response.story_id);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setReviewPublishing(false);
+    }
+  }, [loadGenerationReview, loadRecentJobs, onGenerated, reviewRunId]);
+
+  const handleRetryReviewCandidate = useCallback(async (sceneIndex: number): Promise<void> => {
+    if (!reviewRunId) {
+      return;
+    }
+
+    setReviewRetryingSceneIndex(sceneIndex);
+    setPanelError("");
+
+    try {
+      const response = await apiRetryAdminGenerationCandidateImage(reviewRunId, sceneIndex);
+      setPanelInfo(`已加入重试队列：scene ${sceneIndex}（retry #${response.retry_id}）`);
+      await loadGenerationReview(reviewRunId);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setReviewRetryingSceneIndex(null);
+    }
+  }, [loadGenerationReview, reviewRunId]);
 
   const handleOpenGeneratedStory = async (storyId: string): Promise<void> => {
     const targetId = storyId.trim();
@@ -568,8 +735,12 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         concurrency: 3,
       });
 
+      setReviewRunId("");
+      setReviewCandidates([]);
+      setReviewCounts(defaultCandidateCounts());
       setActiveRunId(response.run_id);
       setActiveJob(null);
+      setPuzzleFlowStep("generate");
       setPanelInfo(`任务已入队：${response.run_id}（目标 ${response.scene_count || requestedSceneCount} 张）`);
       await loadRecentJobs();
     } catch (err) {
@@ -578,6 +749,72 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setSubmitting(false);
     }
   };
+
+  const renderRecentJobs = (mode: "all" | "generate" | "review"): JSX.Element => {
+    const filteredJobs = recentJobs
+      .filter((job) => {
+        if (mode === "generate") {
+          return job.status === "running" || job.status === "queued";
+        }
+        if (mode === "review") {
+          return job.status === "succeeded";
+        }
+        return true;
+      })
+      .slice(0, 8);
+
+    if (filteredJobs.length === 0) {
+      if (mode === "generate") {
+        return <p className="progress-inline">暂无运行中的任务。</p>;
+      }
+      if (mode === "review") {
+        return <p className="progress-inline">暂无可审核任务，请先完成生成。</p>;
+      }
+      return <p className="progress-inline">暂无任务记录。</p>;
+    }
+
+    return (
+      <ul>
+        {filteredJobs.map((job) => {
+          const progressViewable = job.status === "running" || job.status === "queued";
+          const reviewViewable = job.status === "succeeded";
+          const viewing = activeRunId === job.run_id;
+          const reviewing = reviewRunId === job.run_id;
+
+          return (
+            <li key={job.run_id}>
+              <span>{job.run_id}</span>
+              <span className={`level-state ${job.status === "succeeded" ? "done" : "todo"}`}>{job.status}</span>
+              <span>{job.target_date}</span>
+              {progressViewable && (
+                <button
+                  type="button"
+                  className="nav-btn admin-job-view-btn"
+                  onClick={() => handleViewJobProgress(job.run_id)}
+                  disabled={viewing}
+                >
+                  {viewing ? "查看中" : "查看进度"}
+                </button>
+              )}
+              {reviewViewable && (
+                <button
+                  type="button"
+                  className="nav-btn admin-job-view-btn"
+                  onClick={() => void handleOpenReview(job.run_id)}
+                  disabled={reviewing}
+                >
+                  {reviewing ? "审核中" : "审核发布"}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
+
+  const canJumpGenerateStep = Boolean(activeRunId || resumableJob || recentJobs.length > 0);
+  const canJumpReviewStep = Boolean(reviewRunId || hasSucceededJobs);
 
   if (!visible) {
     return null;
@@ -892,231 +1129,440 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
         {!collapsedSections.puzzle && (
           <>
-            <p className="progress-inline">选择章节后，在右侧预览栏点击“去生成”，弹窗填写参数并创建任务。</p>
+            <div className="admin-puzzle-flow" role="tablist" aria-label="谜题生成流程">
+              <button
+                type="button"
+                className={`admin-flow-step ${puzzleFlowStep === "select" ? "active" : ""}`}
+                onClick={() => setPuzzleFlowStep("select")}
+              >
+                <span className="admin-flow-index">1</span>
+                <span className="admin-flow-meta">
+                  <strong>选章节</strong>
+                  <small>筛选并确认章节</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`admin-flow-step ${puzzleFlowStep === "generate" ? "active" : ""}`}
+                onClick={() => setPuzzleFlowStep("generate")}
+                disabled={!canJumpGenerateStep}
+              >
+                <span className="admin-flow-index">2</span>
+                <span className="admin-flow-meta">
+                  <strong>生成任务</strong>
+                  <small>查看进度和日志</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`admin-flow-step ${puzzleFlowStep === "review" ? "active" : ""}`}
+                onClick={() => setPuzzleFlowStep("review")}
+                disabled={!canJumpReviewStep}
+              >
+                <span className="admin-flow-index">3</span>
+                <span className="admin-flow-meta">
+                  <strong>审核发布</strong>
+                  <small>挑选关卡再发布</small>
+                </span>
+              </button>
+            </div>
 
-            <div className="admin-puzzle-layout">
-              <div className="admin-puzzle-main">
-                <div className="admin-filters">
-                  <label className="form-field">
-                    书籍
-                    <select value={bookId} onChange={(event) => setBookId(event.currentTarget.value)}>
-                      <option value="">全部（默认聊斋）</option>
-                      {books.map((book) => (
-                        <option key={book.id} value={book.id}>
-                          {book.title}（{book.chapter_count}章）
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+            {puzzleFlowStep === "select" && (
+              <>
+                <p className="progress-inline">第一步：先选章节，再点击“去生成”创建任务。</p>
 
-                  <label className="form-field">
-                    关键词
-                    <input value={keyword} onChange={(event) => setKeyword(event.currentTarget.value)} placeholder="章节标题关键词" />
-                  </label>
+                <div className="admin-puzzle-layout">
+                  <div className="admin-puzzle-main">
+                    <div className="admin-filters">
+                      <label className="form-field">
+                        书籍
+                        <select value={bookId} onChange={(event) => setBookId(event.currentTarget.value)}>
+                          <option value="">全部（默认聊斋）</option>
+                          {books.map((book) => (
+                            <option key={book.id} value={book.id}>
+                              {book.title}（{book.chapter_count}章）
+                            </option>
+                          ))}
+                        </select>
+                      </label>
 
-                  <label className="form-field">
-                    最小字数
-                    <input value={minCharsInput} onChange={(event) => setMinCharsInput(event.currentTarget.value)} inputMode="numeric" />
-                  </label>
+                      <label className="form-field">
+                        关键词
+                        <input value={keyword} onChange={(event) => setKeyword(event.currentTarget.value)} placeholder="章节标题关键词" />
+                      </label>
 
-                  <label className="form-field">
-                    最大字数
-                    <input value={maxCharsInput} onChange={(event) => setMaxCharsInput(event.currentTarget.value)} inputMode="numeric" />
-                  </label>
+                      <label className="form-field">
+                        最小字数
+                        <input value={minCharsInput} onChange={(event) => setMinCharsInput(event.currentTarget.value)} inputMode="numeric" />
+                      </label>
 
-                  <label className="form-field">
-                    每页条数
-                    <select
-                      value={chapterPageSize}
-                      onChange={(event) => {
-                        const nextPageSize = Number(event.currentTarget.value);
-                        if (!CHAPTER_PAGE_SIZE_OPTIONS.includes(nextPageSize as (typeof CHAPTER_PAGE_SIZE_OPTIONS)[number])) {
-                          return;
-                        }
+                      <label className="form-field">
+                        最大字数
+                        <input value={maxCharsInput} onChange={(event) => setMaxCharsInput(event.currentTarget.value)} inputMode="numeric" />
+                      </label>
 
-                        setChapterPageSize(nextPageSize);
-                        setChapterPage(1);
-                      }}
-                    >
-                      {CHAPTER_PAGE_SIZE_OPTIONS.map((size) => (
-                        <option key={size} value={size}>
-                          {size} 条/页
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      <label className="form-field">
+                        每页条数
+                        <select
+                          value={chapterPageSize}
+                          onChange={(event) => {
+                            const nextPageSize = Number(event.currentTarget.value);
+                            if (!CHAPTER_PAGE_SIZE_OPTIONS.includes(nextPageSize as (typeof CHAPTER_PAGE_SIZE_OPTIONS)[number])) {
+                              return;
+                            }
 
-                  <label className="admin-check">
-                    <input type="checkbox" checked={includeUsed} onChange={(event) => setIncludeUsed(event.currentTarget.checked)} />
-                    显示已生成章节（可重生）
-                  </label>
+                            setChapterPageSize(nextPageSize);
+                            setChapterPage(1);
+                          }}
+                        >
+                          {CHAPTER_PAGE_SIZE_OPTIONS.map((size) => (
+                            <option key={size} value={size}>
+                              {size} 条/页
+                            </option>
+                          ))}
+                        </select>
+                      </label>
 
-                  <div className="inline-actions">
-                    <button type="button" className="nav-btn" onClick={() => void loadChapters()} disabled={loadingChapters}>
-                      {loadingChapters ? "查询中..." : "刷新章节"}
-                    </button>
-                    <button type="button" className="link-btn" onClick={onClose}>
-                      收起面板
-                    </button>
-                  </div>
-                </div>
+                      <label className="admin-check">
+                        <input type="checkbox" checked={includeUsed} onChange={(event) => setIncludeUsed(event.currentTarget.checked)} />
+                        显示已生成章节（可重生）
+                      </label>
 
-                <div className="admin-chapter-table">
-                  {chapters.length === 0 ? (
-                    <div className="progress-inline">没有匹配章节，请调整条件。</div>
-                  ) : (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>选择</th>
-                          <th>书名</th>
-                          <th>章节</th>
-                          <th>字数</th>
-                          <th>使用次数</th>
-                          <th>预览</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {chapters.map((chapter) => (
-                          <tr
-                            key={chapter.id}
-                            className={`${selectedChapterId === chapter.id ? "is-selected" : ""} ${chapter.has_succeeded_story ? "is-generated" : ""}`.trim()}
-                          >
-                            <td>
-                              <input
-                                type="radio"
-                                name="chapter"
-                                checked={selectedChapterId === chapter.id}
-                                onChange={() => setSelectedChapterId(chapter.id)}
-                              />
-                            </td>
-                            <td>{chapter.book_title}</td>
-                            <td>
-                              第{chapter.chapter_index}章 · {chapter.chapter_title}
-                              {chapter.has_succeeded_story && (
-                                <>
-                                  <span className="level-state done" title={chapter.generated_story_id || undefined}>
-                                    已生成（可重生）
-                                  </span>
-                                  {chapter.generated_story_id && (
-                                    <button
-                                      type="button"
-                                      className="link-btn admin-open-story-btn"
-                                      onClick={() => void handleOpenGeneratedStory(chapter.generated_story_id || "")}
-                                    >
-                                      打开故事 {chapter.generated_story_id}
-                                    </button>
+                      <div className="inline-actions">
+                        <button type="button" className="nav-btn" onClick={() => void loadChapters()} disabled={loadingChapters}>
+                          {loadingChapters ? "查询中..." : "刷新章节"}
+                        </button>
+                        <button type="button" className="link-btn" onClick={onClose}>
+                          收起面板
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="admin-chapter-table">
+                      {chapters.length === 0 ? (
+                        <div className="progress-inline">没有匹配章节，请调整条件。</div>
+                      ) : (
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>选择</th>
+                              <th>书名</th>
+                              <th>章节</th>
+                              <th>字数</th>
+                              <th>使用次数</th>
+                              <th>预览</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {chapters.map((chapter) => (
+                              <tr
+                                key={chapter.id}
+                                className={`${selectedChapterId === chapter.id ? "is-selected" : ""} ${chapter.has_succeeded_story ? "is-generated" : ""}`.trim()}
+                              >
+                                <td>
+                                  <input
+                                    type="radio"
+                                    name="chapter"
+                                    checked={selectedChapterId === chapter.id}
+                                    onChange={() => setSelectedChapterId(chapter.id)}
+                                  />
+                                </td>
+                                <td>{chapter.book_title}</td>
+                                <td>
+                                  第{chapter.chapter_index}章 · {chapter.chapter_title}
+                                  {chapter.has_succeeded_story && (
+                                    <>
+                                      <span className="level-state done" title={chapter.generated_story_id || undefined}>
+                                        已生成（可重生）
+                                      </span>
+                                      {chapter.generated_story_id && (
+                                        <button
+                                          type="button"
+                                          className="link-btn admin-open-story-btn"
+                                          onClick={() => void handleOpenGeneratedStory(chapter.generated_story_id || "")}
+                                        >
+                                          打开故事 {chapter.generated_story_id}
+                                        </button>
+                                      )}
+                                    </>
                                   )}
-                                </>
-                              )}
-                            </td>
-                            <td>{chapter.char_count}</td>
-                            <td>{chapter.used_count}</td>
-                            <td>{chapter.preview || "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                                </td>
+                                <td>{chapter.char_count}</td>
+                                <td>{chapter.used_count}</td>
+                                <td>{chapter.preview || "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+
+                    <div className="admin-chapter-pagination">
+                      <button
+                        type="button"
+                        className="nav-btn admin-page-side-btn"
+                        onClick={() => setChapterPage((page) => Math.max(1, page - 1))}
+                        disabled={loadingChapters || chapterPage <= 1}
+                      >
+                        ← 上一页
+                      </button>
+
+                      <div className="admin-page-meta">
+                        第 {chapterPage} / {totalChapterPages} 页 · 每页 {chapterPageSize} 条 · 共 {chapterTotal} 条
+                      </div>
+
+                      <button
+                        type="button"
+                        className="nav-btn admin-page-side-btn"
+                        onClick={() => setChapterPage((page) => Math.min(totalChapterPages, page + 1))}
+                        disabled={loadingChapters || chapterPage >= totalChapterPages}
+                      >
+                        下一页 →
+                      </button>
+                    </div>
+                  </div>
+
+                  <aside className="admin-puzzle-side">
+                    <div className="admin-run-box admin-puzzle-preview">
+                      <h4>章节预览</h4>
+                      {selectedChapter ? (
+                        <>
+                          <p className="progress-inline">
+                            当前选择：第{selectedChapter.chapter_index}章 · {selectedChapter.chapter_title}（{selectedChapter.char_count}字）
+                          </p>
+                          <p className="admin-puzzle-preview-text">{selectedChapter.preview || "暂无章节预览"}</p>
+                          <div className="inline-actions">
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              disabled={submitting || Boolean(activeRunId)}
+                              onClick={() => setShowGenerateDialog(true)}
+                            >
+                              {submitting ? "创建中..." : activeRunId ? "任务进行中" : "去生成"}
+                            </button>
+                            {canJumpGenerateStep && (
+                              <button
+                                type="button"
+                                className="nav-btn"
+                                onClick={() => setPuzzleFlowStep("generate")}
+                              >
+                                查看生成进度
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <p className="progress-inline">请先在左侧选择章节，再发起生成。</p>
+                      )}
+                    </div>
+                  </aside>
+                </div>
+              </>
+            )}
+
+            {puzzleFlowStep === "generate" && (
+              <div className="admin-puzzle-stage-stack">
+                <div className="admin-run-box admin-puzzle-stage">
+                  <div className="admin-review-head">
+                    <h4>第二步：生成任务</h4>
+                    <div className="inline-actions">
+                      <button type="button" className="nav-btn" onClick={() => setPuzzleFlowStep("select")}>
+                        返回选章节
+                      </button>
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={() => {
+                          setPuzzleFlowStep("select");
+                          setShowGenerateDialog(true);
+                        }}
+                        disabled={!selectedChapter || submitting || Boolean(activeRunId)}
+                      >
+                        {submitting ? "创建中..." : "创建新任务"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {activeRunId ? (
+                    <div className="admin-progress">
+                      <h4>任务进度：{activeRunId}</h4>
+                      <div className="admin-progress-bar">
+                        <div style={{ width: `${Math.min(100, Math.max(0, progress.value * 100))}%` }} />
+                      </div>
+                      <p className="progress-inline">
+                        {progress.message}（{progress.completed}/{progress.total}）
+                      </p>
+                      <p className="progress-inline">状态：{activeJob?.status || "queued"}</p>
+                      {activeJob?.log_tail?.length ? (
+                        <pre className="admin-log-tail">{activeJob.log_tail.slice(-8).join("\n")}</pre>
+                      ) : null}
+                    </div>
+                  ) : resumableJob ? (
+                    <div className="admin-puzzle-hint">
+                      <p className="progress-inline">检测到运行中任务：{resumableJob.run_id}</p>
+                      <button type="button" className="nav-btn" onClick={() => handleViewJobProgress(resumableJob.run_id)}>
+                        继续查看进度
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="progress-inline">当前没有运行中的任务。你可以回到第一步创建新任务。</p>
                   )}
                 </div>
 
-                <div className="admin-chapter-pagination">
-                  <button
-                    type="button"
-                    className="nav-btn admin-page-side-btn"
-                    onClick={() => setChapterPage((page) => Math.max(1, page - 1))}
-                    disabled={loadingChapters || chapterPage <= 1}
-                  >
-                    ← 上一页
-                  </button>
-
-                  <div className="admin-page-meta">
-                    第 {chapterPage} / {totalChapterPages} 页 · 每页 {chapterPageSize} 条 · 共 {chapterTotal} 条
-                  </div>
-
-                  <button
-                    type="button"
-                    className="nav-btn admin-page-side-btn"
-                    onClick={() => setChapterPage((page) => Math.min(totalChapterPages, page + 1))}
-                    disabled={loadingChapters || chapterPage >= totalChapterPages}
-                  >
-                    下一页 →
-                  </button>
+                <div className="admin-recent-jobs">
+                  <h4>近期生成任务</h4>
+                  {renderRecentJobs("generate")}
                 </div>
               </div>
+            )}
 
-              <aside className="admin-puzzle-side">
-                <div className="admin-run-box admin-puzzle-preview">
-                  <h4>章节预览</h4>
-                  {selectedChapter ? (
-                    <>
-                      <p className="progress-inline">
-                        当前选择：第{selectedChapter.chapter_index}章 · {selectedChapter.chapter_title}（{selectedChapter.char_count}字）
-                      </p>
-                      <p className="admin-puzzle-preview-text">{selectedChapter.preview || "暂无章节预览"}</p>
+            {puzzleFlowStep === "review" && (
+              <div className="admin-puzzle-stage-stack">
+                {reviewRunId ? (
+                  <div className="admin-run-box admin-review-panel">
+                    <div className="admin-review-head">
+                      <h4>第三步：审核发布（{reviewRunId}）</h4>
                       <div className="inline-actions">
                         <button
                           type="button"
-                          className="primary-btn"
-                          disabled={submitting || Boolean(activeRunId)}
-                          onClick={() => setShowGenerateDialog(true)}
+                          className="nav-btn"
+                          disabled={reviewLoading || reviewPublishing}
+                          onClick={() => void loadGenerationReview(reviewRunId)}
                         >
-                          {submitting ? "创建中..." : activeRunId ? "任务进行中" : "去生成"}
+                          {reviewLoading ? "刷新中..." : "刷新审核"}
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          disabled={reviewLoading || reviewPublishing || reviewReadyCount <= 0}
+                          onClick={() => void handlePublishSelected()}
+                        >
+                          {reviewPublishing ? "发布中..." : `发布选中关卡（${reviewReadyCount}）`}
                         </button>
                       </div>
-                    </>
-                  ) : (
-                    <p className="progress-inline">请先在左侧选择章节，再发起生成。</p>
-                  )}
-                </div>
-
-                {activeRunId && (
-                  <div className="admin-progress">
-                    <h4>任务进度：{activeRunId}</h4>
-                    <div className="admin-progress-bar">
-                      <div style={{ width: `${Math.min(100, Math.max(0, progress.value * 100))}%` }} />
                     </div>
+
                     <p className="progress-inline">
-                      {progress.message}（{progress.completed}/{progress.total}）
+                      候选 {reviewCounts.total} · 成功 {reviewCounts.success} · 失败 {reviewCounts.failed} · 已选 {reviewCounts.selected}
                     </p>
-                    <p className="progress-inline">状态：{activeJob?.status || "queued"}</p>
-                    {activeJob?.log_tail?.length ? (
-                      <pre className="admin-log-tail">{activeJob.log_tail.slice(-8).join("\n")}</pre>
-                    ) : null}
+
+                    {reviewCandidates.length === 0 ? (
+                      <p className="progress-inline">暂无候选关卡，请先完成生成。</p>
+                    ) : (
+                      <div className="admin-review-table">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>关卡</th>
+                              <th>图片状态</th>
+                              <th>发布</th>
+                              <th>rows</th>
+                              <th>cols</th>
+                              <th>操作</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {reviewCandidates.map((candidate) => {
+                              const updating = reviewUpdatingSceneIndex === candidate.scene_index;
+                              const retrying = reviewRetryingSceneIndex === candidate.scene_index;
+                              const canSelect = candidate.image_status === "success";
+                              const canRetry = candidate.image_status === "failed" || candidate.image_status === "skipped";
+
+                              return (
+                                <tr key={`${candidate.run_id}-${candidate.scene_index}`}>
+                                  <td>{candidate.scene_index}</td>
+                                  <td>
+                                    <div className="admin-review-title">{candidate.title || `关卡 ${candidate.scene_index}`}</div>
+                                    {candidate.error_message ? (
+                                      <div className="admin-review-error">{candidate.error_message}</div>
+                                    ) : (
+                                      <div className="admin-review-prompt">{candidate.image_prompt || "-"}</div>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <span className={`level-state ${canSelect ? "done" : "todo"}`}>{candidate.image_status}</span>
+                                  </td>
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(candidate.selected && canSelect)}
+                                      disabled={!canSelect || updating || reviewPublishing}
+                                      onChange={(event) => {
+                                        void handleUpdateReviewCandidate(candidate.scene_index, {
+                                          selected: event.currentTarget.checked,
+                                        });
+                                      }}
+                                    />
+                                  </td>
+                                  <td>
+                                    <select
+                                      value={candidate.grid_rows}
+                                      disabled={updating || reviewPublishing}
+                                      onChange={(event) => {
+                                        void handleUpdateReviewCandidate(candidate.scene_index, {
+                                          grid_rows: Number(event.currentTarget.value),
+                                        });
+                                      }}
+                                    >
+                                      {REVIEW_GRID_OPTIONS.map((value) => (
+                                        <option key={`rows-${candidate.scene_index}-${value}`} value={value}>
+                                          {value}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td>
+                                    <select
+                                      value={candidate.grid_cols}
+                                      disabled={updating || reviewPublishing}
+                                      onChange={(event) => {
+                                        void handleUpdateReviewCandidate(candidate.scene_index, {
+                                          grid_cols: Number(event.currentTarget.value),
+                                        });
+                                      }}
+                                    >
+                                      {REVIEW_GRID_OPTIONS.map((value) => (
+                                        <option key={`cols-${candidate.scene_index}-${value}`} value={value}>
+                                          {value}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td>
+                                    {canRetry ? (
+                                      <button
+                                        type="button"
+                                        className="nav-btn admin-review-retry-btn"
+                                        disabled={retrying || reviewPublishing || reviewLoading}
+                                        onClick={() => void handleRetryReviewCandidate(candidate.scene_index)}
+                                      >
+                                        {retrying ? "重试中..." : "重试出图"}
+                                      </button>
+                                    ) : (
+                                      <span className="progress-inline">-</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="admin-run-box admin-puzzle-stage">
+                    <p className="progress-inline">第三步：先从下方“可审核任务”里选择一个 succeeded 任务。</p>
                   </div>
                 )}
 
-                {recentJobs.length > 0 && (
-                  <div className="admin-recent-jobs">
-                    <h4>最近任务</h4>
-                    <ul>
-                      {recentJobs.slice(0, 8).map((job) => {
-                        const resumable = job.status === "running" || job.status === "queued";
-                        const viewing = activeRunId === job.run_id;
-
-                        return (
-                          <li key={job.run_id}>
-                            <span>{job.run_id}</span>
-                            <span className={`level-state ${job.status === "succeeded" ? "done" : "todo"}`}>{job.status}</span>
-                            <span>{job.target_date}</span>
-                            {resumable && (
-                              <button
-                                type="button"
-                                className="nav-btn admin-job-view-btn"
-                                onClick={() => handleViewJobProgress(job.run_id)}
-                                disabled={viewing}
-                              >
-                                {viewing ? "查看中" : "查看进度"}
-                              </button>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                )}
-              </aside>
-            </div>
+                <div className="admin-recent-jobs">
+                  <h4>可审核任务</h4>
+                  {renderRecentJobs("review")}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1224,6 +1670,35 @@ function pickStoryId(detail: AdminGenerationJobDetail): string {
   }
 
   return "";
+}
+
+function isReviewModeJob(detail: AdminGenerationJobDetail): boolean {
+  const summaryReviewMode = detail.summary && typeof detail.summary === "object"
+    ? (detail.summary as Record<string, unknown>).review_mode
+    : undefined;
+  if (typeof summaryReviewMode === "boolean") {
+    return summaryReviewMode;
+  }
+
+  const payloadReviewMode = detail.payload && typeof detail.payload === "object"
+    ? (detail.payload as Record<string, unknown>).review_mode
+    : undefined;
+  if (typeof payloadReviewMode === "boolean") {
+    return payloadReviewMode;
+  }
+
+  return false;
+}
+
+function defaultCandidateCounts(): AdminGenerationCandidateCounts {
+  return {
+    total: 0,
+    success: 0,
+    failed: 0,
+    pending: 0,
+    selected: 0,
+    ready_for_publish: 0,
+  };
 }
 
 function defaultLevelConfigForm(): LevelConfigFormState {

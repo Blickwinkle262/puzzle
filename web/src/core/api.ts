@@ -1,6 +1,10 @@
 import {
   AdminBookChaptersResponse,
   AdminGenerationCreateResponse,
+  AdminGenerationCandidate,
+  AdminGenerationReviewResponse,
+  AdminGenerationPublishResponse,
+  AdminGenerationRetryImageResponse,
   AdminGenerationJob,
   AdminGenerationJobDetail,
   AdminLevelConfigPatch,
@@ -273,6 +277,7 @@ export type AdminGenerateStoryPayload = {
   timeout_sec?: number;
   poll_seconds?: number;
   poll_attempts?: number;
+  review_mode?: boolean;
 };
 
 export type AdminUsersQuery = {
@@ -300,6 +305,46 @@ export function apiListAdminGenerationJobs(limit = 50): Promise<{ jobs: AdminGen
 
 export function apiGetAdminGenerationJob(runId: string): Promise<AdminGenerationJobDetail> {
   return requestJson<AdminGenerationJobDetail>(`/admin/generate-story/${encodeURIComponent(runId)}`);
+}
+
+export function apiGetAdminGenerationReview(runId: string): Promise<AdminGenerationReviewResponse> {
+  return requestJson<AdminGenerationReviewResponse>(`/admin/generation-jobs/${encodeURIComponent(runId)}/review`);
+}
+
+export function apiUpdateAdminGenerationCandidate(
+  runId: string,
+  sceneIndex: number,
+  payload: {
+    selected?: boolean;
+    grid_rows?: number;
+    grid_cols?: number;
+  },
+): Promise<{ ok: boolean; candidate?: AdminGenerationCandidate }> {
+  return requestJson<{ ok: boolean; candidate?: AdminGenerationCandidate }>(
+    `/admin/generation-jobs/${encodeURIComponent(runId)}/candidates/${encodeURIComponent(String(sceneIndex))}`,
+    {
+      method: "PATCH",
+      body: payload,
+    },
+  );
+}
+
+export function apiPublishAdminGenerationSelected(runId: string): Promise<AdminGenerationPublishResponse> {
+  return requestJson<AdminGenerationPublishResponse>(`/admin/generation-jobs/${encodeURIComponent(runId)}/publish-selected`, {
+    method: "POST",
+  });
+}
+
+export function apiRetryAdminGenerationCandidateImage(
+  runId: string,
+  sceneIndex: number,
+): Promise<AdminGenerationRetryImageResponse> {
+  return requestJson<AdminGenerationRetryImageResponse>(
+    `/admin/generation-jobs/${encodeURIComponent(runId)}/candidates/${encodeURIComponent(String(sceneIndex))}/retry-image`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 export function apiListAdminUsers(query: AdminUsersQuery = {}): Promise<AdminUsersResponse> {

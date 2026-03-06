@@ -198,11 +198,83 @@ export type AdminGenerationEvent = {
   [key: string]: unknown;
 };
 
+export type AdminGenerationCandidate = {
+  run_id: string;
+  scene_index: number;
+  scene_id: number | null;
+  title: string;
+  description: string;
+  story_text: string;
+  image_prompt: string;
+  mood: string;
+  characters: string[];
+  grid_rows: number;
+  grid_cols: number;
+  time_limit_sec: number;
+  image_status: "pending" | "success" | "failed" | "skipped";
+  image_url: string;
+  image_path: string;
+  error_message: string;
+  selected: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type AdminGenerationCandidateCounts = {
+  total: number;
+  success: number;
+  failed: number;
+  pending: number;
+  selected: number;
+  ready_for_publish: number;
+};
+
+export type AdminGenerationCandidateRetryTask = {
+  retry_id: number;
+  run_id: string;
+  scene_index: number;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  requested_by: string;
+  attempts: number;
+  error_message: string;
+  created_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  updated_at: string | null;
+};
+
 export type AdminGenerationJobDetail = AdminGenerationJob & {
   payload?: Record<string, unknown>;
   events: AdminGenerationEvent[];
   log_tail: string[];
   summary?: Record<string, unknown> | null;
+  candidates?: AdminGenerationCandidate[];
+  candidate_counts?: AdminGenerationCandidateCounts;
+};
+
+export type AdminGenerationReviewResponse = {
+  job: AdminGenerationJobDetail;
+  candidates: AdminGenerationCandidate[];
+  counts: AdminGenerationCandidateCounts;
+};
+
+export type AdminGenerationPublishResponse = {
+  ok: boolean;
+  run_id: string;
+  story_id: string;
+  manifest: string;
+  cover: string;
+  level_count: number;
+  selected_count: number;
+  published_at: string;
+  counts: AdminGenerationCandidateCounts;
+};
+
+export type AdminGenerationRetryImageResponse = {
+  ok: boolean;
+  retry_id: number;
+  retry: AdminGenerationCandidateRetryTask;
+  candidate: AdminGenerationCandidate | null;
 };
 
 export type AdminGenerationCreateResponse = {
@@ -211,6 +283,7 @@ export type AdminGenerationCreateResponse = {
   status: "queued";
   target_date: string;
   dry_run: boolean;
+  review_mode?: boolean;
   log_file: string;
   event_log_file: string;
   summary_path: string;
