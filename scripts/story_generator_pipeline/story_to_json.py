@@ -30,11 +30,29 @@ def _parse_json_payload(raw: str) -> Any:
         return json.loads(match.group(0))
 
 
+def _strip_ar_9_16(text: str) -> str:
+    return re.sub(r"\s*--ar\s*9:16\b", "", text, flags=re.IGNORECASE).strip(" ,")
+
+
 def _ensure_ar_9_16(prompt: str) -> str:
-    cleaned = prompt.strip()
-    if "--ar 9:16" in cleaned:
-        return cleaned
+    cleaned = _strip_ar_9_16(prompt.strip())
+    if not cleaned:
+        return "--ar 9:16"
     return f"{cleaned} --ar 9:16".strip()
+
+
+def _merge_prompt_suffix(prompt: str, suffix: str) -> str:
+    base = str(prompt or "").strip()
+    extra = str(suffix or "").strip()
+
+    if extra:
+        if base:
+            if extra.lower() not in base.lower():
+                base = f"{base}, {extra}".strip()
+        else:
+            base = extra
+
+    return _ensure_ar_9_16(base)
 
 
 def _clamp_int(value: Any, minimum: int, maximum: int, fallback: int) -> int:
@@ -154,7 +172,7 @@ async def story_to_draft(
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:  # pragma: no cover - dependency error path
-            raise PipelineError("openai package is required for story_to_draft") from exc
+            raise PipelineError("openai package is required for story_to_draft; install dependencies in the worker python env (e.g. uv sync or pip install openai)") from exc
 
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
@@ -170,9 +188,15 @@ async def story_to_draft(
 
     raw = response.choices[0].message.content.strip()
     payload = _parse_json_payload(raw)
-    return parse_story_draft_payload(
+    draft = parse_story_draft_payload(
         payload,
         source_story=story,
         min_scenes=min_scenes,
         max_scenes=max_scenes,
     )
+
+    prompt_suffix = str(prompts.image_prompt_suffix or "").strip()
+    for scene in draft.scenes:
+        scene.image_prompt = _merge_prompt_suffix(scene.image_prompt, prompt_suffix)
+
+    return draft

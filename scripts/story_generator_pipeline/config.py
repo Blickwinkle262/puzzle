@@ -17,6 +17,10 @@ DEFAULT_LOG_BACKUP_COUNT = 5
 DEFAULT_EVENT_LOG_MAX_BYTES = 20 * 1024 * 1024
 DEFAULT_EVENT_LOG_BACKUP_COUNT = 10
 
+DEFAULT_BASE_URL = "https://aihubmix.com/v1"
+DEFAULT_TEXT_MODEL = "qwen3-next-80b-a3b-instruct"
+DEFAULT_IMAGE_MODEL = "doubao/doubao-seedream-4-5-251128"
+
 
 @dataclass
 class PipelineConfig:

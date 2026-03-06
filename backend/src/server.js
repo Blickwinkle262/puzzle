@@ -71,8 +71,12 @@ const STORY_GENERATOR_PYTHON_BIN = String(
   process.env.STORY_GENERATOR_PYTHON_BIN
     || process.env.STORY_GENERATION_PYTHON_BIN
     || process.env.PYTHON_BIN
-    || "python3",
+    || "",
 ).trim();
+const STORY_GENERATOR_PYTHON_CMD = resolveStoryGeneratorPythonCommand({
+  explicitCmd: process.env.STORY_GENERATOR_PYTHON_CMD || process.env.STORY_GENERATION_PYTHON_CMD || "",
+  explicitBin: STORY_GENERATOR_PYTHON_BIN,
+});
 const STORY_GENERATOR_ATOMIC_MODULE = "scripts.story_generator_pipeline.atomic_cli";
 const parsedAtomicTimeoutMs = Number(
   process.env.STORY_GENERATOR_ATOMIC_TIMEOUT_MS
@@ -82,6 +86,11 @@ const parsedAtomicTimeoutMs = Number(
 const STORY_GENERATOR_ATOMIC_TIMEOUT_MS = Number.isFinite(parsedAtomicTimeoutMs) && parsedAtomicTimeoutMs > 0
   ? Math.floor(parsedAtomicTimeoutMs)
   : 1000 * 60 * 8;
+const LEGACY_GENERATE_STORY_CREATE_ENABLED = normalizeBoolean(
+  process.env.GENERATION_LEGACY_CREATE_ENABLED
+    || process.env.STORY_GENERATOR_LEGACY_CREATE_ENABLED
+    || false,
+);
 const GENERATION_FLOW_STAGES = new Set([
   "",
   "text_generating",
@@ -127,6 +136,12 @@ db.pragma("busy_timeout = 5000");
 initializeSchema(db);
 runMigrations(db);
 
+if (LEGACY_GENERATE_STORY_CREATE_ENABLED) {
+  console.warn(
+    "[generation] legacy POST /api/admin/generate-story is enabled via GENERATION_LEGACY_CREATE_ENABLED=1; this is temporary compatibility mode.",
+  );
+}
+
 const authRateBuckets = new Map();
 
 const app = express();
@@ -135,7 +150,16 @@ app.use(express.json({ limit: "1mb" }));
 app.use(STORY_PUBLIC_PREFIX, express.static(STORIES_ROOT_DIR));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, now: nowIso() });
+  res.json({
+    ok: true,
+    now: nowIso(),
+    story_generator: {
+      atomic_module: STORY_GENERATOR_ATOMIC_MODULE,
+      python_command: STORY_GENERATOR_PYTHON_CMD,
+      python_command_text: STORY_GENERATOR_PYTHON_CMD.join(" "),
+      legacy_create_enabled: LEGACY_GENERATE_STORY_CREATE_ENABLED,
+    },
+  });
 });
 
 app.post("/api/auth/register", (req, res) => {
@@ -436,6 +460,20 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
 });
 
 app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+  if (!LEGACY_GENERATE_STORY_CREATE_ENABLED) {
+    res.status(410).json({
+      message: "旧入口 /api/admin/generate-story 已下线，请改用 /api/runs/:runId/generate-text。",
+      code: "legacy_generate_story_disabled",
+      migration: {
+        since: "2026-03-06",
+        create_run: "POST /api/runs/:runId/generate-text",
+        list_runs: "GET /api/runs",
+        review_run: "GET /api/runs/:runId",
+      },
+    });
+    return;
+  }
+
   const targetDate = normalizeTargetDate(req.body?.target_date);
   if (!targetDate) {
     res.status(400).json({ message: "target_date 必须是 YYYY-MM-DD" });
@@ -5173,6 +5211,92 @@ function normalizeErrorMessage(value) {
   return text.slice(0, 4000);
 }
 
+function splitCommandString(command) {
+  const text = String(command || "").trim();
+  if (!text) {
+    return [];
+  }
+
+  const tokens = [];
+  let current = "";
+  let quote = "";
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (quote) {
+      if (char === quote) {
+        quote = "";
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current) {
+    tokens.push(current);
+  }
+
+  return tokens.filter((item) => item.length > 0);
+}
+
+function parsePythonCommand(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return [];
+  }
+
+  if (raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => String(item || "").trim())
+          .filter((item) => item.length > 0);
+      }
+    } catch {
+      // ignore json parse failure and fallback to split
+    }
+  }
+
+  return splitCommandString(raw);
+}
+
+function resolveStoryGeneratorPythonCommand(options = {}) {
+  const explicitCmd = parsePythonCommand(options.explicitCmd);
+  if (explicitCmd.length > 0) {
+    return explicitCmd;
+  }
+
+  const explicitBin = String(options.explicitBin || "").trim();
+  if (explicitBin) {
+    return [explicitBin];
+  }
+
+  const localVenvPython = path.join(ROOT_DIR, ".venv", "bin", "python");
+  if (fs.existsSync(localVenvPython)) {
+    return [localVenvPython];
+  }
+
+  return ["python3"];
+}
+
 function normalizeAttempts(value, defaultValue) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
@@ -5236,11 +5360,16 @@ function runStoryGeneratorAtomicCommand(command, payload, options = {}) {
     ? Math.max(1000, Math.floor(Number(options.timeoutMs)))
     : STORY_GENERATOR_ATOMIC_TIMEOUT_MS;
   const requestPayload = payload && typeof payload === "object" ? payload : {};
+  const pythonCommand = Array.isArray(STORY_GENERATOR_PYTHON_CMD) && STORY_GENERATOR_PYTHON_CMD.length > 0
+    ? STORY_GENERATOR_PYTHON_CMD
+    : [STORY_GENERATOR_PYTHON_BIN || "python3"];
+  const pythonExec = String(pythonCommand[0] || STORY_GENERATOR_PYTHON_BIN || "python3").trim() || "python3";
+  const pythonArgs = pythonCommand.slice(1);
 
   return new Promise((resolve, reject) => {
     const child = spawn(
-      STORY_GENERATOR_PYTHON_BIN,
-      ["-m", STORY_GENERATOR_ATOMIC_MODULE, normalizedCommand],
+      pythonExec,
+      [...pythonArgs, "-m", STORY_GENERATOR_ATOMIC_MODULE, normalizedCommand],
       {
         cwd: ROOT_DIR,
         env: {
@@ -5294,7 +5423,7 @@ function runStoryGeneratorAtomicCommand(command, payload, options = {}) {
     });
 
     child.on("error", (error) => {
-      done(new Error(`启动原子命令失败: ${asMessage(error, "spawn failed")}`));
+      done(new Error(`启动原子命令失败(${pythonCommand.join(" ")}): ${asMessage(error, "spawn failed")}`));
     });
 
     child.on("close", (code) => {

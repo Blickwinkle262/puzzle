@@ -10,12 +10,15 @@ import os
 from pathlib import Path
 
 from .config import (
+    DEFAULT_BASE_URL,
     DEFAULT_EVENT_LOG_BACKUP_COUNT,
     DEFAULT_EVENT_LOG_FILE,
     DEFAULT_EVENT_LOG_MAX_BYTES,
+    DEFAULT_IMAGE_MODEL,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILE,
     DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_TEXT_MODEL,
     PipelineConfig,
     default_run_id,
     default_target_date,
@@ -25,9 +28,6 @@ from .exceptions import PipelineError
 from .logging_setup import configure_logging, emit_event
 from .workflow import run_pipeline
 
-DEFAULT_BASE_URL = "https://aihubmix.com/v1"
-DEFAULT_TEXT_MODEL = "qwen3-next-80b-a3b-instruct"
-DEFAULT_IMAGE_MODEL = "doubao/doubao-seedream-4-5-251128"
 DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 

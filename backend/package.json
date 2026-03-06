@@ -11,7 +11,8 @@
     "backfill:generation-legacy-unify": "npm run backfill:generation-review-state && npm run backfill:generation-scenes-v2",
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/migrate.js && node --check src/backfill-generation-job-meta.js && node --check src/backfill-generation-review-state.js && node --check src/backfill-generation-scenes-v2.js"
+    "check": "node --check src/server.js && node --check src/migrate.js && node --check src/backfill-generation-job-meta.js && node --check src/backfill-generation-review-state.js && node --check src/backfill-generation-scenes-v2.js && node --check src/upgrade-generation-scene-first.js",
+    "upgrade:generation-scene-first": "node src/upgrade-generation-scene-first.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

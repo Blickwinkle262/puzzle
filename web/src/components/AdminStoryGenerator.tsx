@@ -71,6 +71,22 @@ type LevelConfigFormState = {
 type AdminSectionKey = "users" | "levelConfig" | "puzzle";
 type PuzzleFlowStep = "select" | "generate" | "review";
 
+type ScenePreviewState = {
+  run_id: string;
+  scene_index: number;
+  title: string;
+  image_url: string;
+  image_prompt: string;
+};
+
+type PublishSuccessState = {
+  run_id: string;
+  story_id: string;
+  level_count: number;
+};
+
+const PUZZLE_FLOW_SEQUENCE: PuzzleFlowStep[] = ["select", "generate", "review"];
+
 const DEFAULT_MIN_CHARS = 500;
 const DEFAULT_MAX_CHARS = 2200;
 const DEFAULT_SCENE_COUNT = 12;
@@ -145,6 +161,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   const [testRunResult, setTestRunResult] = useState<AdminLevelTestRunResponse | null>(null);
   const [levelConfigForm, setLevelConfigForm] = useState<LevelConfigFormState>(defaultLevelConfigForm());
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
+  const [scenePreview, setScenePreview] = useState<ScenePreviewState | null>(null);
+  const [publishSuccess, setPublishSuccess] = useState<PublishSuccessState | null>(null);
   const [puzzleFlowStep, setPuzzleFlowStep] = useState<PuzzleFlowStep>("select");
   const [collapsedSections, setCollapsedSections] = useState<Record<AdminSectionKey, boolean>>({
     users: true,
@@ -597,15 +615,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       return;
     }
 
-    if (reviewRunId && puzzleFlowStep !== "review") {
-      setPuzzleFlowStep("review");
-      return;
-    }
-
-    if (!reviewRunId && activeRunId && puzzleFlowStep === "select") {
+    if (activeRunId && puzzleFlowStep === "select") {
       setPuzzleFlowStep("generate");
     }
-  }, [activeRunId, puzzleFlowStep, reviewRunId, visible]);
+  }, [activeRunId, puzzleFlowStep, visible]);
 
   const handleViewJobProgress = useCallback((runId: string): void => {
     const targetRunId = runId.trim();
@@ -616,7 +629,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     setPanelError("");
     setPanelInfo(`正在查看任务进度：${targetRunId}`);
     setShowGenerateDialog(false);
-    setReviewRunId("");
+    setReviewRunId(targetRunId);
     setReviewScenes([]);
     setReviewCounts(defaultSceneCounts());
     setActiveJob(null);
@@ -626,7 +639,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       ...prev,
       puzzle: false,
     }));
-  }, []);
+    void loadGenerationReview(targetRunId);
+  }, [loadGenerationReview]);
 
   const handleOpenReview = useCallback(async (runId: string): Promise<void> => {
     const targetRunId = runId.trim();
@@ -693,6 +707,11 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       await loadRecentJobs();
       if (response.story_id) {
         await onGenerated(response.story_id);
+        setPublishSuccess({
+          run_id: reviewRunId,
+          story_id: response.story_id,
+          level_count: Number(response.level_count || 0),
+        });
       }
     } catch (err) {
       setPanelError(errorMessage(err));
@@ -700,6 +719,25 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setReviewPublishing(false);
     }
   }, [loadGenerationReview, loadRecentJobs, onGenerated, reviewLocked, reviewRunId]);
+
+  const handleOpenPublishedStory = useCallback(async (): Promise<void> => {
+    if (!publishSuccess?.story_id) {
+      return;
+    }
+
+    setPanelError("");
+    try {
+      await onOpenStory(publishSuccess.story_id);
+      setPublishSuccess(null);
+      onClose();
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    }
+  }, [onClose, onOpenStory, publishSuccess]);
+
+  const handleStayAfterPublish = useCallback((): void => {
+    setPublishSuccess(null);
+  }, []);
 
   const handleRetryReviewCandidate = useCallback(async (sceneIndex: number): Promise<void> => {
     if (!reviewRunId || reviewLocked) {
@@ -900,8 +938,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setReviewCounts(defaultSceneCounts());
       setActiveRunId(runId);
       setActiveJob(null);
-      setPuzzleFlowStep("review");
-      setPanelInfo(`文案已生成：${runId}（目标 ${requestedSceneCount} 张）`);
+      setPuzzleFlowStep("generate");
+      setPanelInfo(`文案已生成：${runId}（目标 ${requestedSceneCount} 张），请在第二步确认拆分并触发出图`);
       await loadGenerationReview(runId);
       await loadRecentJobs();
     } catch (err) {
@@ -1015,8 +1053,12 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     );
   };
 
-  const canJumpGenerateStep = Boolean(activeRunId || resumableJob || recentJobs.length > 0);
+  const canJumpGenerateStep = Boolean(activeRunId || reviewRunId || resumableJob || recentJobs.length > 0);
   const canJumpReviewStep = Boolean(reviewRunId || hasReviewJobs);
+  const currentFlowStepIndex = Math.max(0, PUZZLE_FLOW_SEQUENCE.indexOf(puzzleFlowStep));
+  const canGoPrevFlowStep = currentFlowStepIndex > 0;
+  const canGoNextFlowStep = (puzzleFlowStep === "select" && canJumpGenerateStep)
+    || (puzzleFlowStep === "generate" && canJumpReviewStep);
 
   if (!visible) {
     return null;
@@ -1351,8 +1393,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
               >
                 <span className="admin-flow-index">2</span>
                 <span className="admin-flow-meta">
-                  <strong>生成任务</strong>
-                  <small>查看进度和日志</small>
+                  <strong>文案/出图</strong>
+                  <small>查看拆分并判断每张图状态</small>
                 </span>
               </button>
               <button
@@ -1364,8 +1406,40 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 <span className="admin-flow-index">3</span>
                 <span className="admin-flow-meta">
                   <strong>审核发布</strong>
-                  <small>挑选关卡再发布</small>
+                  <small>修改 rows/cols/time 后发布</small>
                 </span>
+              </button>
+            </div>
+
+            <div className="admin-puzzle-flow-nav">
+              <button
+                type="button"
+                className="nav-btn"
+                disabled={!canGoPrevFlowStep}
+                onClick={() => {
+                  if (puzzleFlowStep === "review") {
+                    setPuzzleFlowStep("generate");
+                  } else if (puzzleFlowStep === "generate") {
+                    setPuzzleFlowStep("select");
+                  }
+                }}
+              >
+                ← 上一步
+              </button>
+              <span className="admin-puzzle-flow-status">流程 {currentFlowStepIndex + 1} / {PUZZLE_FLOW_SEQUENCE.length}</span>
+              <button
+                type="button"
+                className="nav-btn"
+                disabled={!canGoNextFlowStep}
+                onClick={() => {
+                  if (puzzleFlowStep === "select" && canJumpGenerateStep) {
+                    setPuzzleFlowStep("generate");
+                  } else if (puzzleFlowStep === "generate" && canJumpReviewStep) {
+                    setPuzzleFlowStep("review");
+                  }
+                }}
+              >
+                下一步 →
               </button>
             </div>
 
@@ -1627,19 +1701,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                   )}
                 </div>
 
-                <div className="admin-recent-jobs">
-                  <h4>近期生成任务</h4>
-                  {renderRecentJobs("generate")}
-                </div>
-              </div>
-            )}
-
-            {puzzleFlowStep === "review" && (
-              <div className="admin-puzzle-stage-stack">
                 {reviewRunId ? (
                   <div className="admin-run-box admin-review-panel">
                     <div className="admin-review-head">
-                      <h4>第二步：文案与图片生成（{reviewRunId}）</h4>
+                      <h4>第二步：LLM 拆分与图片生成（{reviewRunId}）</h4>
                       <div className="inline-actions">
                         <button
                           type="button"
@@ -1660,14 +1725,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                         <button
                           type="button"
                           className="primary-btn"
-                          disabled={reviewLocked || reviewLoading || reviewPublishing || reviewBatchGenerating || reviewReadyCount <= 0}
-                          onClick={() => void handlePublishSelected()}
+                          disabled={reviewScenes.length === 0}
+                          onClick={() => setPuzzleFlowStep("review")}
                         >
-                          {reviewLocked
-                            ? "已发布"
-                            : reviewPublishing
-                              ? "发布中..."
-                              : `发布选中（${reviewReadyCount}）`}
+                          去步骤3审核发布
                         </button>
                       </div>
                     </div>
@@ -1675,140 +1736,31 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                     <p className="progress-inline">
                       Scene {Math.max(0, reviewCounts.total - reviewCounts.deleted)} · 文案就绪 {reviewCounts.text_ready} · 图片成功 {reviewCounts.images_success} · 待处理 {reviewPendingImageCount}
                     </p>
-                    {reviewLocked && (
-                      <p className="progress-inline">
-                        该任务已发布{activeJob?.published_at ? `（${formatTime(activeJob.published_at)}）` : ""}，此处改为只读；如需改 rows/cols/time/test 请到上方「关卡配置」模块。
-                      </p>
-                    )}
 
                     {reviewScenes.length === 0 ? (
                       <p className="progress-inline">暂无 scene，请先完成文案生成。</p>
                     ) : (
                       <div className="admin-review-columns">
                         <div className="admin-review-table">
-                          <h4>文案列表（可编辑）</h4>
+                          <h4>LLM 拆分结果（标题 / 文案 / Prompt）</h4>
                           <table>
                             <thead>
                               <tr>
                                 <th>#</th>
                                 <th>标题 / 文案 / Prompt</th>
-                                <th>发布</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {reviewScenes.map((scene) => {
-                                const updating = reviewUpdatingSceneIndex === scene.scene_index;
-                                const canSelect = scene.image_status === "success";
-
-                                return (
-                                  <tr key={`${scene.run_id}-${scene.scene_index}`}>
-                                    <td>{scene.scene_index}</td>
-                                    <td>
-                                      <input
-                                        className="admin-review-input"
-                                        defaultValue={scene.title}
-                                        disabled={reviewLocked || updating || reviewPublishing || reviewBatchGenerating}
-                                        onBlur={(event) => {
-                                          const value = event.currentTarget.value.trim();
-                                          if (value !== scene.title) {
-                                            void handleUpdateReviewScene(scene.scene_index, { title: value });
-                                          }
-                                        }}
-                                      />
-                                      <textarea
-                                        className="admin-review-textarea"
-                                        defaultValue={scene.story_text}
-                                        disabled={reviewLocked || updating || reviewPublishing || reviewBatchGenerating}
-                                        onBlur={(event) => {
-                                          const value = event.currentTarget.value.trim();
-                                          if (value !== scene.story_text) {
-                                            void handleUpdateReviewScene(scene.scene_index, { story_text: value });
-                                          }
-                                        }}
-                                      />
-                                      <textarea
-                                        className="admin-review-textarea"
-                                        defaultValue={scene.image_prompt}
-                                        disabled={reviewLocked || updating || reviewPublishing || reviewBatchGenerating}
-                                        onBlur={(event) => {
-                                          const value = event.currentTarget.value.trim();
-                                          if (value !== scene.image_prompt) {
-                                            void handleUpdateReviewScene(scene.scene_index, { image_prompt: value });
-                                          }
-                                        }}
-                                      />
-                                      <div className="admin-review-grid-row">
-                                        <label>
-                                          rows
-                                          <select
-                                            value={scene.grid_rows}
-                                            disabled={reviewLocked || updating || reviewPublishing || reviewBatchGenerating}
-                                            onChange={(event) => {
-                                              void handleUpdateReviewScene(scene.scene_index, {
-                                                grid_rows: Number(event.currentTarget.value),
-                                              });
-                                            }}
-                                          >
-                                            {REVIEW_GRID_OPTIONS.map((value) => (
-                                              <option key={`rows-${scene.scene_index}-${value}`} value={value}>
-                                                {value}
-                                              </option>
-                                            ))}
-                                          </select>
-                                        </label>
-                                        <label>
-                                          cols
-                                          <select
-                                            value={scene.grid_cols}
-                                            disabled={reviewLocked || updating || reviewPublishing || reviewBatchGenerating}
-                                            onChange={(event) => {
-                                              void handleUpdateReviewScene(scene.scene_index, {
-                                                grid_cols: Number(event.currentTarget.value),
-                                              });
-                                            }}
-                                          >
-                                            {REVIEW_GRID_OPTIONS.map((value) => (
-                                              <option key={`cols-${scene.scene_index}-${value}`} value={value}>
-                                                {value}
-                                              </option>
-                                            ))}
-                                          </select>
-                                        </label>
-                                        <label>
-                                          time
-                                          <select
-                                            value={scene.time_limit_sec}
-                                            disabled={reviewLocked || updating || reviewPublishing || reviewBatchGenerating}
-                                            onChange={(event) => {
-                                              void handleUpdateReviewScene(scene.scene_index, {
-                                                time_limit_sec: Number(event.currentTarget.value),
-                                              });
-                                            }}
-                                          >
-                                            {REVIEW_TIME_OPTIONS.map((value) => (
-                                              <option key={`time-${scene.scene_index}-${value}`} value={value}>
-                                                {value}s
-                                              </option>
-                                            ))}
-                                          </select>
-                                        </label>
-                                      </div>
-                                    </td>
-                                    <td>
-                                      <input
-                                        type="checkbox"
-                                        checked={Boolean(scene.selected && canSelect)}
-                                        disabled={reviewLocked || !canSelect || updating || reviewPublishing || reviewBatchGenerating}
-                                        onChange={(event) => {
-                                          void handleUpdateReviewScene(scene.scene_index, {
-                                            selected: event.currentTarget.checked,
-                                          });
-                                        }}
-                                      />
-                                    </td>
-                                  </tr>
-                                );
-                              })}
+                              {reviewScenes.map((scene) => (
+                                <tr key={`${scene.run_id}-${scene.scene_index}-split`}>
+                                  <td>{scene.scene_index}</td>
+                                  <td>
+                                    <div className="admin-review-title">{scene.title || `Scene ${scene.scene_index}`}</div>
+                                    <div className="admin-review-prompt">{compactText(scene.story_text || scene.description || "", 180)}</div>
+                                    <div className="admin-review-prompt">{compactText(scene.image_prompt || "", 220)}</div>
+                                  </td>
+                                </tr>
+                              ))}
                             </tbody>
                           </table>
                         </div>
@@ -1845,9 +1797,21 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                                     </td>
                                     <td>
                                       {scene.image_url ? (
-                                        <a className="admin-review-image-link" href={scene.image_url} target="_blank" rel="noreferrer">
-                                          查看图片
-                                        </a>
+                                        <button
+                                          type="button"
+                                          className="link-btn admin-review-image-preview-btn"
+                                          onClick={() => {
+                                            setScenePreview({
+                                              run_id: scene.run_id,
+                                              scene_index: scene.scene_index,
+                                              title: scene.title,
+                                              image_url: scene.image_url,
+                                              image_prompt: scene.image_prompt,
+                                            });
+                                          }}
+                                        >
+                                          预览图片
+                                        </button>
                                       ) : (
                                         <span className="progress-inline">-</span>
                                       )}
@@ -1883,12 +1847,201 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                   </div>
                 ) : (
                   <div className="admin-run-box admin-puzzle-stage">
-                    <p className="progress-inline">第二步：先从下方“可编辑任务”里选择一个 run。</p>
+                    <p className="progress-inline">第二步：先从下方任务里选择一个 run，查看 LLM 拆分与图片状态。</p>
                   </div>
                 )}
 
                 <div className="admin-recent-jobs">
-                  <h4>可编辑任务</h4>
+                  <h4>近期生成任务</h4>
+                  {renderRecentJobs("generate")}
+                </div>
+              </div>
+            )}
+            {puzzleFlowStep === "review" && (
+              <div className="admin-puzzle-stage-stack">
+                {reviewRunId ? (
+                  <div className="admin-run-box admin-review-panel">
+                    <div className="admin-review-head">
+                      <h4>第三步：审核发布（{reviewRunId}）</h4>
+                      <div className="inline-actions">
+                        <button
+                          type="button"
+                          className="nav-btn"
+                          disabled={reviewLoading || reviewPublishing || reviewBatchGenerating}
+                          onClick={() => void loadGenerationReview(reviewRunId)}
+                        >
+                          {reviewLoading ? "刷新中..." : "刷新"}
+                        </button>
+                        <button
+                          type="button"
+                          className="nav-btn"
+                          disabled={reviewLoading || reviewPublishing}
+                          onClick={() => setPuzzleFlowStep("generate")}
+                        >
+                          返回步骤2
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          disabled={reviewLocked || reviewLoading || reviewPublishing || reviewReadyCount <= 0}
+                          onClick={() => void handlePublishSelected()}
+                        >
+                          {reviewLocked
+                            ? "已发布"
+                            : reviewPublishing
+                              ? "发布中..."
+                              : `发布选中（${reviewReadyCount}）`}
+                        </button>
+                      </div>
+                    </div>
+
+                    <p className="progress-inline">
+                      Scene {Math.max(0, reviewCounts.total - reviewCounts.deleted)} · 可发布 {reviewReadyCount} · 待处理图片 {reviewPendingImageCount}
+                    </p>
+                    {reviewPendingImageCount > 0 && (
+                      <p className="progress-inline">仍有图片未完成，请先回到第二步继续出图。</p>
+                    )}
+                    {reviewLocked && (
+                      <p className="progress-inline">
+                        该任务已发布{activeJob?.published_at ? `（${formatTime(activeJob.published_at)}）` : ""}，此处改为只读；如需改 rows/cols/time/test 请到上方「关卡配置」模块。
+                      </p>
+                    )}
+
+                    {reviewScenes.length === 0 ? (
+                      <p className="progress-inline">暂无 scene，请先完成第二步文案与图片生成。</p>
+                    ) : (
+                      <div className="admin-review-table">
+                        <h4>关卡配置（rows / cols / time）</h4>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>场景</th>
+                              <th>缩略图</th>
+                              <th>Rows</th>
+                              <th>Cols</th>
+                              <th>限时</th>
+                              <th>发布</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {reviewScenes.map((scene) => {
+                              const updating = reviewUpdatingSceneIndex === scene.scene_index;
+                              const canSelect = scene.image_status === "success";
+                              return (
+                                <tr key={`${scene.run_id}-${scene.scene_index}-publish`}>
+                                  <td>{scene.scene_index}</td>
+                                  <td>
+                                    <div className="admin-review-title">{scene.title || `Scene ${scene.scene_index}`}</div>
+                                    <div className="admin-review-prompt">图片状态：{scene.image_status}</div>
+                                  </td>
+                                  <td>
+                                    {scene.image_url ? (
+                                      <button
+                                        type="button"
+                                        className="admin-scene-thumb-btn"
+                                        onClick={() => {
+                                          setScenePreview({
+                                            run_id: scene.run_id,
+                                            scene_index: scene.scene_index,
+                                            title: scene.title,
+                                            image_url: scene.image_url,
+                                            image_prompt: scene.image_prompt,
+                                          });
+                                        }}
+                                        aria-label={`预览 scene ${scene.scene_index}`}
+                                      >
+                                        <img className="admin-scene-thumb" src={scene.image_url} alt={scene.title || `scene ${scene.scene_index}`} />
+                                      </button>
+                                    ) : (
+                                      <span className="progress-inline">-</span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <label>
+                                      <select
+                                        value={scene.grid_rows}
+                                        disabled={reviewLocked || updating || reviewPublishing}
+                                        onChange={(event) => {
+                                          void handleUpdateReviewScene(scene.scene_index, {
+                                            grid_rows: Number(event.currentTarget.value),
+                                          });
+                                        }}
+                                      >
+                                        {REVIEW_GRID_OPTIONS.map((value) => (
+                                          <option key={`rows-${scene.scene_index}-${value}`} value={value}>
+                                            {value}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </td>
+                                  <td>
+                                    <label>
+                                      <select
+                                        value={scene.grid_cols}
+                                        disabled={reviewLocked || updating || reviewPublishing}
+                                        onChange={(event) => {
+                                          void handleUpdateReviewScene(scene.scene_index, {
+                                            grid_cols: Number(event.currentTarget.value),
+                                          });
+                                        }}
+                                      >
+                                        {REVIEW_GRID_OPTIONS.map((value) => (
+                                          <option key={`cols-${scene.scene_index}-${value}`} value={value}>
+                                            {value}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </td>
+                                  <td>
+                                    <label>
+                                      <select
+                                        value={scene.time_limit_sec}
+                                        disabled={reviewLocked || updating || reviewPublishing}
+                                        onChange={(event) => {
+                                          void handleUpdateReviewScene(scene.scene_index, {
+                                            time_limit_sec: Number(event.currentTarget.value),
+                                          });
+                                        }}
+                                      >
+                                        {REVIEW_TIME_OPTIONS.map((value) => (
+                                          <option key={`time-${scene.scene_index}-${value}`} value={value}>
+                                            {value}s
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </td>
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(scene.selected && canSelect)}
+                                      disabled={reviewLocked || !canSelect || updating || reviewPublishing}
+                                      onChange={(event) => {
+                                        void handleUpdateReviewScene(scene.scene_index, {
+                                          selected: event.currentTarget.checked,
+                                        });
+                                      }}
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="admin-run-box admin-puzzle-stage">
+                    <p className="progress-inline">第三步：先在第二步选择 run，完成出图后再审核发布。</p>
+                  </div>
+                )}
+
+                <div className="admin-recent-jobs">
+                  <h4>可审核任务</h4>
                   {renderRecentJobs("review")}
                 </div>
               </div>
@@ -1896,6 +2049,42 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
           </>
         )}
       </div>
+
+      {publishSuccess && (
+        <div className="mask" role="dialog" aria-modal="true" onClick={handleStayAfterPublish}>
+          <div className="mask-card admin-publish-success-modal" onClick={(event) => event.stopPropagation()}>
+            <h4>发布成功</h4>
+            <p className="progress-inline">任务：{publishSuccess.run_id}</p>
+            <p className="progress-inline">故事：{publishSuccess.story_id}（{publishSuccess.level_count} 关）</p>
+            <p className="progress-inline">是否返回故事导航并打开该故事？</p>
+            <div className="inline-actions">
+              <button type="button" className="primary-btn" onClick={() => void handleOpenPublishedStory()}>
+                打开故事导航
+              </button>
+              <button type="button" className="nav-btn" onClick={handleStayAfterPublish}>
+                留在当前页
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scenePreview && (
+        <div className="mask" role="dialog" aria-modal="true" onClick={() => setScenePreview(null)}>
+          <div className="mask-card admin-image-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="admin-image-preview-head">
+              <h4>{scenePreview.title || `Scene ${scenePreview.scene_index}`} · 预览</h4>
+              <button type="button" className="nav-btn" onClick={() => setScenePreview(null)}>关闭</button>
+            </div>
+            {scenePreview.image_url ? (
+              <img className="admin-image-preview" src={scenePreview.image_url} alt={scenePreview.title || `scene ${scenePreview.scene_index}`} />
+            ) : (
+              <p className="progress-inline">暂无可预览图片。</p>
+            )}
+            <p className="admin-image-preview-prompt">{compactText(scenePreview.image_prompt, 260)}</p>
+          </div>
+        </div>
+      )}
 
       {showGenerateDialog && (
         <div className="mask" role="dialog" aria-modal="true" onClick={() => setShowGenerateDialog(false)}>
@@ -1943,6 +2132,15 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
     </section>
   );
+}
+
+
+function compactText(value: unknown, limit = 160): string {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
 function normalizeReviewStatus(value: unknown): "" | "pending_review" | "published" {

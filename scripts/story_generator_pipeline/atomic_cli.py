@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import get_required_api_key
+from .config import DEFAULT_BASE_URL, DEFAULT_TEXT_MODEL, get_required_api_key
 from .exceptions import PipelineError
 from .image_generator import generate_images_for_story
 from .models import SceneDraft
@@ -116,8 +116,8 @@ async def run_generate_text(payload: dict[str, Any]) -> dict[str, Any]:
     image_prompt_suffix_file = str(payload.get("image_prompt_suffix_file") or "image_prompt_suffix.txt")
 
     api_key = get_required_api_key(str(payload.get("api_key") or "").strip() or None)
-    base_url = str(payload.get("base_url") or "https://aihubmix.com/v1").strip()
-    text_model = str(payload.get("text_model") or "gpt-4o-mini").strip()
+    base_url = str(payload.get("base_url") or DEFAULT_BASE_URL).strip()
+    text_model = str(payload.get("text_model") or DEFAULT_TEXT_MODEL).strip()
 
     source_story = select_story(
         source_dir=source_dir,
@@ -196,7 +196,7 @@ async def run_generate_images(payload: dict[str, Any], *, batch: bool) -> dict[s
     images_dir.mkdir(parents=True, exist_ok=True)
 
     api_key = get_required_api_key(str(payload.get("api_key") or "").strip() or None)
-    base_url = str(payload.get("base_url") or "https://aihubmix.com/v1").strip()
+    base_url = str(payload.get("base_url") or DEFAULT_BASE_URL).strip()
     image_model = str(payload.get("image_model") or "doubao/doubao-seedream-4-5-251128").strip()
     image_size = str(payload.get("image_size") or "2K").strip()
     watermark = bool(payload.get("watermark"))
