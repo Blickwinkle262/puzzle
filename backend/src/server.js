@@ -31,12 +31,21 @@ import { registerRunLifecycleRoutes } from "./routes/runLifecycleRoutes.js";
 import { registerRunSceneRoutes } from "./routes/runSceneRoutes.js";
 import { createAdminLevelConfigService } from "./services/adminLevelConfigService.js";
 import { createAdminUserService } from "./services/adminUserService.js";
+import { createAuthCommandService } from "./services/authCommandService.js";
+import { createAuthQueryService } from "./services/authQueryService.js";
 import { createAuthSessionService, hashSessionToken, randomToken } from "./services/authSessionService.js";
+import { createPasswordHasherService } from "./services/passwordHasherService.js";
 import { createGenerationLegacySceneService } from "./services/generationLegacySceneService.js";
 import { createGenerationPublishService } from "./services/generationPublishService.js";
 import { createGenerationRunAdminService } from "./services/generationRunAdminService.js";
 import { createGenerationRunStateService } from "./services/generationRunStateService.js";
 import { createGenerationSceneService } from "./services/generationSceneService.js";
+import { createGenerationSceneRepository } from "./services/generationSceneRepository.js";
+import { createGenerationSceneCommandService } from "./services/generationSceneCommandService.js";
+import { createGenerationReviewRepository } from "./services/generationReviewRepository.js";
+import { createGenerationReviewCommandService } from "./services/generationReviewCommandService.js";
+import { createGenerationReviewRetryRepository } from "./services/generationReviewRetryRepository.js";
+import { createGenerationReviewRetryCommandService } from "./services/generationReviewRetryCommandService.js";
 import { createGenerationRuntimeService } from "./services/generationRuntimeService.js";
 import { createPlayerProgressService } from "./services/playerProgressService.js";
 import { createStoryCatalogService } from "./services/storyCatalogService.js";
@@ -77,6 +86,7 @@ import {
 import { createProjectPathResolver, isPathInside } from "./utils/fsSafe.js";
 import { resolveStoryGeneratorPythonCommand } from "./utils/pythonCommand.js";
 import { createStoryAssetUtils, normalizeContentVersion, normalizeLegacyIds } from "./utils/storyAssets.js";
+import { errorResponsePayload, isAppError } from "./utils/appError.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -360,6 +370,100 @@ const {
 });
 
 const {
+  cancelRunningSceneAttemptsForDelete,
+  cancelRunningSceneAttemptsForPromptUpdate,
+  markSceneAsDeleted,
+  runSceneCommandTransaction,
+  updateSceneDraftRow,
+} = createGenerationSceneRepository({
+  db,
+});
+
+const {
+  deleteGenerationSceneDraft,
+  updateGenerationSceneDraft,
+} = createGenerationSceneCommandService({
+  ensureGenerationRunWritable,
+  getGenerationSceneByIndex,
+  normalizeBoolean,
+  normalizeIntegerInRange,
+  nowIso,
+  updateSceneDraftRow,
+  cancelRunningSceneAttemptsForPromptUpdate,
+  markSceneAsDeleted,
+  cancelRunningSceneAttemptsForDelete,
+  runSceneCommandTransaction,
+});
+
+const {
+  markGenerationJobAsPublished,
+  updateSceneCandidateSelectionAndGrid,
+} = createGenerationReviewRepository({
+  db,
+});
+
+const {
+  publishSelectedReviewCandidates,
+  updateReviewCandidateConfig,
+} = createGenerationReviewCommandService({
+  getGenerationJobByRunId,
+  getGenerationSceneByIndex,
+  hasGenerationSceneRows,
+  isReviewModePayload,
+  listGenerationJobCandidates,
+  listGenerationScenes,
+  nowIso,
+  publishSelectedGenerationCandidates,
+  readJsonSafe,
+  refreshGenerationRunState,
+  serializeGenerationSceneAsLegacyCandidate,
+  summarizeGenerationCandidates,
+  summarizeGenerationScenes,
+  summarizeLegacyCandidateCountsFromScenes,
+  syncGenerationJobCandidatesFromSummary,
+  updateGenerationJobCandidate,
+  markGenerationJobAsPublished,
+  updateSceneCandidateSelectionAndGrid,
+});
+
+const {
+  markGenerationJobAsRetryingImages,
+} = createGenerationReviewRetryRepository({
+  db,
+});
+
+const {
+  retryGenerationCandidateImage,
+} = createGenerationReviewRetryCommandService({
+  appendRunEvent,
+  asMessage,
+  createGenerationSceneImageAttempt,
+  enqueueGenerationCandidateImageRetry,
+  finalizeGenerationSceneImageAttempt,
+  getGenerationJobByRunId,
+  getGenerationSceneByIndex,
+  hasGenerationSceneRows,
+  listGenerationJobCandidates,
+  listGenerationSceneAttempts,
+  nextGenerationSceneAttemptNo,
+  normalizeBoolean,
+  normalizeGenerationSceneImageStatus,
+  normalizePositiveInteger,
+  normalizePositiveNumber,
+  nowIso,
+  refreshGenerationRunState,
+  resolveGenerationRunImagesDir,
+  resolveStoryAssetUrlFromFsPath,
+  runStoryGeneratorAtomicCommand,
+  serializeGenerationSceneAsLegacyCandidate,
+  serializeGenerationSceneAttemptAsLegacyRetry,
+  setGenerationSceneImageResult,
+  setGenerationSceneImageRunning,
+  syncGenerationJobCandidatesFromSummary,
+  markGenerationJobAsRetryingImages,
+});
+
+const {
   materializeGenerationScenesFromLegacy,
 } = createGenerationLegacySceneService({
   hasGenerationSceneRows,
@@ -461,6 +565,34 @@ const {
   passwordResetRateLimitCleanupInterval: PASSWORD_RESET_RATE_LIMIT_CLEANUP_INTERVAL,
 });
 
+const {
+  createUserRecord,
+  deleteSessionByToken,
+  resetUserPasswordAndSessions,
+  touchUserLastLogin,
+  updateUserPassword,
+  upgradeGuestUserCredentials,
+} = createAuthCommandService({
+  db,
+});
+
+const {
+  findLoginUserByUsername,
+  findLogoutSession,
+  findUserIdByUsername,
+  findUserPasswordProfileById,
+  isUsernameTaken,
+} = createAuthQueryService({
+  db,
+});
+
+const {
+  hashPassword,
+  verifyPassword,
+} = createPasswordHasherService({
+  rounds: process.env.AUTH_PASSWORD_HASH_ROUNDS,
+});
+
 const app = express();
 app.set("trust proxy", resolveTrustProxySetting());
 app.use(express.json({ limit: "1mb" }));
@@ -506,10 +638,18 @@ registerAuthRoutes(app, {
   consumePasswordResetToken,
   createGuestUsername,
   createSession,
-  db,
+  createUserRecord,
+  deleteSessionByToken,
+  findLoginUserByUsername,
+  findLogoutSession,
+  findUserIdByUsername,
+  findUserPasswordProfileById,
+  isUsernameTaken,
   extractCsrfHeader,
   extractSessionToken,
   hashSessionToken,
+  hashPassword,
+  verifyPassword,
   issuePasswordResetToken,
   normalizePassword,
   normalizeStrongPassword,
@@ -522,9 +662,13 @@ registerAuthRoutes(app, {
   randomToken,
   requireAuth,
   requireCsrf,
+  resetUserPasswordAndSessions,
   rotateSession,
   runProgressMaintenanceForUser,
   setAuthCookies,
+  touchUserLastLogin,
+  updateUserPassword,
+  upgradeGuestUserCredentials,
 });
 
 registerAdminLegacyGenerationRoutes(app, {
@@ -668,40 +812,30 @@ registerRunGenerateImageRoutes(app, {
 });
 
 registerRunSceneRoutes(app, {
-  db,
-  ensureGenerationRunWritable,
+  deleteGenerationSceneDraft,
   getGenerationJobByRunId,
   getGenerationSceneByIndex,
   listGenerationScenes,
-  normalizeBoolean,
-  normalizeIntegerInRange,
   normalizePositiveInteger,
   normalizeRunId,
-  nowIso,
   refreshGenerationRunState,
   requireAdmin,
   requireAuth,
   requireCsrf,
   summarizeGenerationScenes,
+  updateGenerationSceneDraft,
 });
 
 registerGenerationReviewRoutes(app, {
-  asMessage,
-  db,
   getGenerationJobByRunId,
-  getGenerationSceneByIndex,
   hasGenerationSceneRows,
-  isReviewModePayload,
   listGenerationJobCandidates,
   listGenerationScenes,
   materializeGenerationScenesFromLegacy,
   normalizeBoolean,
   normalizeIntegerInRange,
   normalizePositiveInteger,
-  nowIso,
-  publishSelectedGenerationCandidates,
-  readJsonSafe,
-  refreshGenerationRunState,
+  publishSelectedReviewCandidates,
   requireAdmin,
   requireAuth,
   requireCsrf,
@@ -710,39 +844,15 @@ registerGenerationReviewRoutes(app, {
   summarizeGenerationScenes,
   summarizeLegacyCandidateCountsFromScenes,
   syncGenerationJobCandidatesFromSummary,
-  updateGenerationJobCandidate,
+  updateReviewCandidateConfig,
 });
 
 registerGenerationReviewRetryRoutes(app, {
-  appendRunEvent,
-  asMessage,
-  createGenerationSceneImageAttempt,
-  db,
-  enqueueGenerationCandidateImageRetry,
-  finalizeGenerationSceneImageAttempt,
-  getGenerationJobByRunId,
-  getGenerationSceneByIndex,
-  hasGenerationSceneRows,
-  listGenerationJobCandidates,
-  listGenerationSceneAttempts,
-  nextGenerationSceneAttemptNo,
-  normalizeBoolean,
-  normalizeGenerationSceneImageStatus,
   normalizePositiveInteger,
-  normalizePositiveNumber,
-  nowIso,
-  refreshGenerationRunState,
   requireAdmin,
   requireAuth,
   requireCsrf,
-  resolveGenerationRunImagesDir,
-  resolveStoryAssetUrlFromFsPath,
-  runStoryGeneratorAtomicCommand,
-  serializeGenerationSceneAsLegacyCandidate,
-  serializeGenerationSceneAttemptAsLegacyRetry,
-  setGenerationSceneImageResult,
-  setGenerationSceneImageRunning,
-  syncGenerationJobCandidatesFromSummary,
+  retryGenerationCandidateImage,
 });
 
 registerAdminUserRoutes(app, {
@@ -791,6 +901,20 @@ registerPlayerRoutes(app, {
   requireAuth,
   requireCsrf,
   serializeProgressRow,
+});
+
+app.use((error, _req, res, next) => {
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
+
+  const mapped = errorResponsePayload(error);
+  if (!isAppError(error) || mapped.status >= 500) {
+    console.error("[http] unhandled error", error);
+  }
+
+  res.status(mapped.status).json(mapped.payload);
 });
 
 const port = Number(process.env.PORT || 8787);
