@@ -29,6 +29,11 @@ from .logging_setup import configure_logging, emit_event
 from .workflow import run_pipeline
 
 DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+
+
+def project_default_path(relative_path: str) -> str:
+    return str((ROOT_DIR / relative_path).resolve())
 
 
 def get_env(primary: str, *fallbacks: str, default: str = "") -> str:
@@ -43,12 +48,12 @@ def get_env(primary: str, *fallbacks: str, default: str = "") -> str:
 DEFAULT_OUTPUT_ROOT = get_env(
     "STORY_GENERATOR_OUTPUT_ROOT",
     "STORY_GENERATION_OUTPUT_ROOT",
-    default="backend/data/generated/content/stories",
+    default=project_default_path("backend/data/generated/content/stories"),
 )
 DEFAULT_INDEX_FILE = get_env(
     "STORY_GENERATOR_INDEX_FILE",
     "STORY_GENERATION_INDEX_FILE",
-    default=f"{DEFAULT_OUTPUT_ROOT}/index.json",
+    default=str((Path(DEFAULT_OUTPUT_ROOT) / "index.json").resolve()),
 )
 
 
@@ -59,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--text-model", default=DEFAULT_TEXT_MODEL)
     parser.add_argument("--image-model", default=DEFAULT_IMAGE_MODEL)
 
-    parser.add_argument("--source-dir", default="materials/source/liaozhai")
+    parser.add_argument("--source-dir", default=project_default_path("materials/source/liaozhai"))
     parser.add_argument("--story-file", default=None)
     parser.add_argument("--target-date", default=default_target_date().isoformat())
     parser.add_argument("--seed", type=int, default=None)
@@ -67,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--index-file", default=DEFAULT_INDEX_FILE)
-    parser.add_argument("--summary-output-dir", default="scripts/story_generator/output")
+    parser.add_argument("--summary-output-dir", default=project_default_path("scripts/story_generator/output"))
     parser.add_argument("--summary-path", default=None)
     parser.add_argument("--story-id", default=None)
 

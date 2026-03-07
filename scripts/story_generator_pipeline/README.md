@@ -122,7 +122,7 @@ python -m unittest \
 本地运行：
 
 ```bash
-uv run python scripts/story_generator_pipeline/queue_worker.py \
+uv run python -m scripts.story_generator_pipeline.queue_worker \
   --backend-url http://127.0.0.1:8787 \
   --worker-token dev-worker-token \
   --poll-seconds 2

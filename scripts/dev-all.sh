@@ -99,10 +99,13 @@ echo "[info] web started (pid=$WEB_PID)"
 
 WORKER_PID=""
 if command -v uv >/dev/null 2>&1; then
-  uv run python "$ROOT_DIR/scripts/story_generator_pipeline/queue_worker.py" \
-    --backend-url "$STORY_GENERATOR_BACKEND_URL" \
-    --worker-token "$STORY_GENERATOR_WORKER_TOKEN" \
-    --poll-seconds "$STORY_GENERATOR_QUEUE_POLL_SECONDS" &
+  (
+    cd "$ROOT_DIR"
+    exec uv run python -m scripts.story_generator_pipeline.queue_worker \
+      --backend-url "$STORY_GENERATOR_BACKEND_URL" \
+      --worker-token "$STORY_GENERATOR_WORKER_TOKEN" \
+      --poll-seconds "$STORY_GENERATOR_QUEUE_POLL_SECONDS"
+  ) &
   WORKER_PID=$!
   echo "[info] worker started (pid=$WORKER_PID)"
 else
