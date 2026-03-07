@@ -1,4 +1,4 @@
-import bcrypt from "bcryptjs";
+import { AppError } from "../utils/appError.js";
 
 export function registerAuthRoutes(app, deps) {
   const {
@@ -15,9 +15,16 @@ export function registerAuthRoutes(app, deps) {
     consumePasswordResetToken,
     createGuestUsername,
     createSession,
-    db,
+    createUserRecord,
+    deleteSessionByToken,
+    findLoginUserByUsername,
+    findLogoutSession,
+    findUserIdByUsername,
+    findUserPasswordProfileById,
+    isUsernameTaken,
     extractCsrfHeader,
     extractSessionToken,
+    hashPassword,
     hashSessionToken,
     issuePasswordResetToken,
     normalizePassword,
@@ -31,15 +38,23 @@ export function registerAuthRoutes(app, deps) {
     randomToken,
     requireAuth,
     requireCsrf,
+    resetUserPasswordAndSessions,
     rotateSession,
     runProgressMaintenanceForUser,
     setAuthCookies,
+    touchUserLastLogin,
+    updateUserPassword,
+    upgradeGuestUserCredentials,
+    verifyPassword,
   } = deps;
 
-  app.post("/api/auth/register", (req, res) => {
+  const route = (handler) => (req, res, next) => {
+    Promise.resolve().then(() => handler(req, res, next)).catch(next);
+  };
+
+  app.post("/api/auth/register", route(async (req, res) => {
     if (!PUBLIC_REGISTRATION_ENABLED) {
-      res.status(403).json({ message: "当前环境已关闭公开注册，请联系管理员创建账号" });
-      return;
+      throw new AppError(403, "auth_register_disabled", "当前环境已关闭公开注册，请联系管理员创建账号");
     }
 
     if (!passRegisterRateLimit(req, res)) {
@@ -54,13 +69,11 @@ export function registerAuthRoutes(app, deps) {
     }
 
     if (!username) {
-      res.status(400).json({ message: "用户名不能为空" });
-      return;
+      throw new AppError(400, "auth_register_missing_username", "用户名不能为空");
     }
 
     if (!password) {
-      res.status(400).json({ message: "密码至少 10 位，且包含字母、数字和符号" });
-      return;
+      throw new AppError(400, "auth_register_weak_password", "密码至少 10 位，且包含字母、数字和符号");
     }
 
     if (ADMIN_USERNAMES.has(username.toLowerCase())) {
@@ -69,27 +82,19 @@ export function registerAuthRoutes(app, deps) {
         : "";
 
       if (!ADMIN_BOOTSTRAP_TOKEN || bootstrapToken !== ADMIN_BOOTSTRAP_TOKEN) {
-        res.status(403).json({ message: "该用户名受保护，请联系管理员创建账号" });
-        return;
+        throw new AppError(403, "auth_register_protected_username", "该用户名受保护，请联系管理员创建账号");
       }
     }
 
-    const exists = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
+    const exists = isUsernameTaken(username);
     if (exists) {
-      res.status(409).json({ message: "用户名已存在" });
-      return;
+      throw new AppError(409, "auth_register_username_exists", "用户名已存在");
     }
 
-    const passwordHash = bcrypt.hashSync(password, 10);
+    const passwordHash = await hashPassword(password);
     const now = nowIso();
 
-    const result = db
-      .prepare(
-        "INSERT INTO users (username, password_hash, created_at, last_login_at) VALUES (?, ?, ?, ?)",
-      )
-      .run(username, passwordHash, now, now);
-
-    const userId = Number(result.lastInsertRowid);
+    const userId = createUserRecord({ username, passwordHash, now });
     clearAuthRateLimit(req, username);
     const session = createSession(userId);
     runProgressMaintenanceForUser(userId);
@@ -102,9 +107,9 @@ export function registerAuthRoutes(app, deps) {
         is_guest: false,
       }),
     });
-  });
+  }));
 
-  app.post("/api/auth/login", (req, res) => {
+  app.post("/api/auth/login", route(async (req, res) => {
     const username = normalizeUsername(req.body?.username);
     const password = normalizePassword(req.body?.password);
 
@@ -113,35 +118,18 @@ export function registerAuthRoutes(app, deps) {
     }
 
     if (!username || !password) {
-      res.status(400).json({ message: "用户名和密码不能为空" });
-      return;
+      throw new AppError(400, "auth_login_missing_credentials", "用户名和密码不能为空");
     }
 
-    const user = db
-      .prepare(
-        `
-        SELECT
-          u.id,
-          u.username,
-          u.password_hash,
-          u.is_guest,
-          CASE WHEN EXISTS (
-            SELECT 1 FROM user_roles ur
-            WHERE ur.user_id = u.id AND ur.role = 'admin'
-          ) THEN 1 ELSE 0 END AS has_admin_role
-        FROM users u
-        WHERE u.username = ?
-        `,
-      )
-      .get(username);
+    const user = findLoginUserByUsername(username);
 
-    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-      res.status(401).json({ message: "用户名或密码错误" });
-      return;
+    const verified = user ? await verifyPassword(password, user.password_hash) : false;
+    if (!user || !verified) {
+      throw new AppError(401, "auth_login_invalid_credentials", "用户名或密码错误");
     }
 
     const now = nowIso();
-    db.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(now, user.id);
+    touchUserLastLogin({ userId: user.id, now });
 
     clearAuthRateLimit(req, user.username);
     const session = createSession(user.id);
@@ -151,9 +139,9 @@ export function registerAuthRoutes(app, deps) {
     res.json({
       user: buildAuthUserPayload(user),
     });
-  });
+  }));
 
-  app.post("/api/auth/guest-login", (req, res) => {
+  app.post("/api/auth/guest-login", route(async (req, res) => {
     if (!passRegisterRateLimit(req, res)) {
       return;
     }
@@ -163,16 +151,10 @@ export function registerAuthRoutes(app, deps) {
     }
 
     const username = createGuestUsername();
-    const passwordHash = bcrypt.hashSync(randomToken(), 10);
+    const passwordHash = await hashPassword(randomToken());
     const now = nowIso();
 
-    const result = db
-      .prepare(
-        "INSERT INTO users (username, password_hash, is_guest, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)",
-      )
-      .run(username, passwordHash, 1, now, now);
-
-    const userId = Number(result.lastInsertRowid);
+    const userId = createUserRecord({ username, passwordHash, isGuest: true, now });
     clearAuthRateLimit(req, "guest");
     const session = createSession(userId);
     runProgressMaintenanceForUser(userId);
@@ -185,9 +167,9 @@ export function registerAuthRoutes(app, deps) {
         is_guest: true,
       }),
     });
-  });
+  }));
 
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", route((req, res) => {
     pruneExpiredSessions();
 
     const token = extractSessionToken(req);
@@ -198,11 +180,7 @@ export function registerAuthRoutes(app, deps) {
       return;
     }
 
-    const row = db
-      .prepare(
-        "SELECT token, token_hash, csrf_token FROM sessions WHERE (token_hash = ? OR token = ?) AND expires_at > ?",
-      )
-      .get(tokenHash, token, nowIso());
+    const row = findLogoutSession({ tokenHash, token, now: nowIso() });
 
     if (!row) {
       clearAuthCookies(res);
@@ -212,20 +190,18 @@ export function registerAuthRoutes(app, deps) {
 
     const csrfHeader = extractCsrfHeader(req);
     if (!csrfHeader || csrfHeader !== row.csrf_token) {
-      res.status(403).json({ message: "CSRF 校验失败" });
-      return;
+      throw new AppError(403, "auth_logout_csrf_failed", "CSRF 校验失败");
     }
 
-    db.prepare("DELETE FROM sessions WHERE token_hash = ? OR token = ?").run(row.token_hash || tokenHash, row.token || token);
+    deleteSessionByToken({ tokenHash: row.token_hash || tokenHash, token: row.token || token });
     clearAuthCookies(res);
     res.status(204).end();
-  });
+  }));
 
-  app.post("/api/auth/refresh", requireAuth, requireCsrf, (req, res) => {
+  app.post("/api/auth/refresh", requireAuth, requireCsrf, route((req, res) => {
     const rotated = rotateSession(req.authToken);
     if (!rotated) {
-      res.status(401).json({ message: "登录状态已失效" });
-      return;
+      throw new AppError(401, "auth_refresh_invalid_session", "登录状态已失效");
     }
 
     setAuthCookies(res, rotated);
@@ -233,41 +209,37 @@ export function registerAuthRoutes(app, deps) {
       user: buildAuthUserPayload(req.authUser),
       refreshed_at: nowIso(),
     });
-  });
+  }));
 
-  app.post("/api/auth/guest-upgrade", requireAuth, requireCsrf, (req, res) => {
+  app.post("/api/auth/guest-upgrade", requireAuth, requireCsrf, route(async (req, res) => {
     if (!req.authUser.is_guest) {
-      res.status(400).json({ message: "当前账号不是游客模式" });
-      return;
+      throw new AppError(400, "auth_guest_upgrade_not_guest", "当前账号不是游客模式");
     }
 
     const username = normalizeUsername(req.body?.username);
     const password = normalizeStrongPassword(req.body?.password);
 
     if (!username) {
-      res.status(400).json({ message: "用户名不能为空" });
-      return;
+      throw new AppError(400, "auth_guest_upgrade_missing_username", "用户名不能为空");
     }
 
     if (!password) {
-      res.status(400).json({ message: "密码至少 10 位，且包含字母、数字和符号" });
-      return;
+      throw new AppError(400, "auth_guest_upgrade_weak_password", "密码至少 10 位，且包含字母、数字和符号");
     }
 
-    const exists = db.prepare("SELECT id FROM users WHERE username = ? AND id != ?").get(username, req.authUser.id);
+    const exists = isUsernameTaken(username, { excludeUserId: req.authUser.id });
     if (exists) {
-      res.status(409).json({ message: "用户名已存在" });
-      return;
+      throw new AppError(409, "auth_guest_upgrade_username_exists", "用户名已存在");
     }
 
-    const passwordHash = bcrypt.hashSync(password, 10);
+    const passwordHash = await hashPassword(password);
     const now = nowIso();
-    db.prepare("UPDATE users SET username = ?, password_hash = ?, is_guest = 0, last_login_at = ? WHERE id = ?").run(
+    upgradeGuestUserCredentials({
+      userId: req.authUser.id,
       username,
       passwordHash,
       now,
-      req.authUser.id,
-    );
+    });
 
     res.json({
       user: buildAuthUserPayload({
@@ -276,31 +248,29 @@ export function registerAuthRoutes(app, deps) {
         is_guest: false,
       }),
     });
-  });
+  }));
 
-  app.post("/api/auth/change-password", requireAuth, requireCsrf, (req, res) => {
+  app.post("/api/auth/change-password", requireAuth, requireCsrf, route(async (req, res) => {
     const currentPassword = typeof req.body?.current_password === "string" ? req.body.current_password : "";
     const newPassword = normalizeStrongPassword(req.body?.new_password);
 
     if (!currentPassword) {
-      res.status(400).json({ message: "当前密码不能为空" });
-      return;
+      throw new AppError(400, "auth_change_password_missing_current", "当前密码不能为空");
     }
 
     if (!newPassword) {
-      res.status(400).json({ message: "新密码至少 10 位，且包含字母、数字和符号" });
-      return;
+      throw new AppError(400, "auth_change_password_weak_new", "新密码至少 10 位，且包含字母、数字和符号");
     }
 
-    const row = db.prepare("SELECT password_hash, username, is_guest FROM users WHERE id = ?").get(req.authUser.id);
-    if (!row || !bcrypt.compareSync(currentPassword, row.password_hash)) {
-      res.status(401).json({ message: "当前密码错误" });
-      return;
+    const row = findUserPasswordProfileById(req.authUser.id);
+    const verified = row ? await verifyPassword(currentPassword, row.password_hash) : false;
+    if (!row || !verified) {
+      throw new AppError(401, "auth_change_password_invalid_current", "当前密码错误");
     }
 
-    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    const passwordHash = await hashPassword(newPassword);
     const now = nowIso();
-    db.prepare("UPDATE users SET password_hash = ?, last_login_at = ? WHERE id = ?").run(passwordHash, now, req.authUser.id);
+    updateUserPassword({ userId: req.authUser.id, passwordHash, now });
 
     const session = createSession(req.authUser.id);
     setAuthCookies(res, session);
@@ -312,9 +282,9 @@ export function registerAuthRoutes(app, deps) {
         is_guest: Boolean(row.is_guest),
       }),
     });
-  });
+  }));
 
-  app.post("/api/auth/forgot-password", (req, res) => {
+  app.post("/api/auth/forgot-password", route((req, res) => {
     const username = normalizeUsername(req.body?.username);
 
     const safeResponse = {
@@ -338,13 +308,13 @@ export function registerAuthRoutes(app, deps) {
       return;
     }
 
-    const user = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
-    if (!user) {
+    const userId = findUserIdByUsername(username);
+    if (!userId) {
       res.status(200).json(safeResponse);
       return;
     }
 
-    const resetToken = issuePasswordResetToken(user.id, req);
+    const resetToken = issuePasswordResetToken(userId, req);
     if (process.env.NODE_ENV !== "production") {
       res.status(200).json({
         ...safeResponse,
@@ -354,9 +324,9 @@ export function registerAuthRoutes(app, deps) {
     }
 
     res.status(200).json(safeResponse);
-  });
+  }));
 
-  app.post("/api/auth/reset-password", (req, res) => {
+  app.post("/api/auth/reset-password", route(async (req, res) => {
     const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
     const newPassword = normalizeStrongPassword(req.body?.new_password);
 
@@ -367,33 +337,29 @@ export function registerAuthRoutes(app, deps) {
         windowMs: RESET_PASSWORD_RATE_LIMIT_WINDOW_MS,
       })
     ) {
-      res.status(429).json({ message: "重置请求过于频繁，请稍后再试" });
-      return;
+      throw new AppError(429, "auth_reset_password_rate_limited", "重置请求过于频繁，请稍后再试");
     }
 
     if (!token || !newPassword) {
-      res.status(400).json({ message: "重置码不能为空，且新密码至少 10 位并包含字母、数字和符号" });
-      return;
+      throw new AppError(400, "auth_reset_password_invalid_input", "重置码不能为空，且新密码至少 10 位并包含字母、数字和符号");
     }
 
     const resetRow = consumePasswordResetToken(token);
     if (!resetRow) {
-      res.status(400).json({ message: "重置码无效或已过期" });
-      return;
+      throw new AppError(400, "auth_reset_password_invalid_token", "重置码无效或已过期");
     }
 
-    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    const passwordHash = await hashPassword(newPassword);
     const now = nowIso();
-    db.prepare("UPDATE users SET password_hash = ?, last_login_at = ? WHERE id = ?").run(passwordHash, now, resetRow.user_id);
-    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(resetRow.user_id);
+    resetUserPasswordAndSessions({ userId: resetRow.user_id, passwordHash, now });
 
     clearAuthCookies(res);
     res.status(204).end();
-  });
+  }));
 
-  app.get("/api/auth/me", requireAuth, (req, res) => {
+  app.get("/api/auth/me", requireAuth, route((req, res) => {
     res.json({
       user: buildAuthUserPayload(req.authUser),
     });
-  });
+  }));
 }
