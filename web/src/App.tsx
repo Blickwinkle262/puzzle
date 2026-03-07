@@ -18,7 +18,13 @@ import {
 } from "./core/api";
 import { LevelProgress, StoryDetail, StoryListItem, UserProfile } from "./core/types";
 import { AdminStoryGenerator } from "./components/AdminStoryGenerator";
-import { PuzzlePlayer } from "./components/PuzzlePlayer";
+import { useAuthSession } from "./hooks/useAuthSession";
+import { usePlayFlow } from "./hooks/usePlayFlow";
+import { useStoryHub } from "./hooks/useStoryHub";
+import { AuthPage } from "./pages/AuthPage";
+import { PlayPage } from "./pages/PlayPage";
+import { StoriesPage } from "./pages/StoriesPage";
+import { StoryPage } from "./pages/StoryPage";
 
 const OPEN_BOOK_ANIMATION_MS = 380;
 const SHARED_COVER_ANIMATION_MS = 420;
@@ -55,69 +61,83 @@ type StoryBookGroup = {
 };
 
 export function App(): JSX.Element {
-  const [screen, setScreen] = useState<Screen>("auth");
-  const [hasSession, setHasSession] = useState(false);
-  const [userName, setUserName] = useState<string>("");
-  const [stories, setStories] = useState<StoryListItem[]>([]);
-  const [activeStory, setActiveStory] = useState<StoryDetail | null>(null);
-  const [playIndex, setPlayIndex] = useState(0);
-  const [levelSeed, setLevelSeed] = useState(0);
-  const [loadingText, setLoadingText] = useState<string>("正在恢复登录状态...");
-  const [error, setError] = useState<string>("");
-  const [info, setInfo] = useState<string>("");
-  const [isGuest, setIsGuest] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [showAdminGenerator, setShowAdminGenerator] = useState(false);
+  const {
+    applyAuthUser,
+    authMode,
+    clearAccountPanels,
+    currentPasswordInput,
+    error,
+    forgotUsernameInput,
+    hasSession,
+    info,
+    isAdmin,
+    isGuest,
+    loadingText,
+    nextPasswordInput,
+    passwordInput,
+    resetPasswordInput,
+    resetTokenInput,
+    screen,
+    setAuthMode,
+    setCurrentPasswordInput,
+    setError,
+    setForgotUsernameInput,
+    setHasSession,
+    setInfo,
+    setIsAdmin,
+    setIsGuest,
+    setLoadingText,
+    setNextPasswordInput,
+    setPasswordInput,
+    setResetPasswordInput,
+    setResetTokenInput,
+    setScreen,
+    setShowAdminGenerator,
+    setShowChangePassword,
+    setShowGuestUpgrade,
+    setUpgradePasswordInput,
+    setUpgradeUsernameInput,
+    setUserName,
+    setUsernameInput,
+    showAdminGenerator,
+    showChangePassword,
+    showGuestUpgrade,
+    upgradePasswordInput,
+    upgradeUsernameInput,
+    userName,
+    usernameInput,
+  } = useAuthSession();
 
-  const [authMode, setAuthMode] = useState<AuthMode>("login");
-  const [usernameInput, setUsernameInput] = useState("");
-  const [passwordInput, setPasswordInput] = useState("");
-  const [forgotUsernameInput, setForgotUsernameInput] = useState("");
-  const [resetTokenInput, setResetTokenInput] = useState("");
-  const [resetPasswordInput, setResetPasswordInput] = useState("");
-  const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
-  const [upgradeUsernameInput, setUpgradeUsernameInput] = useState("");
-  const [upgradePasswordInput, setUpgradePasswordInput] = useState("");
-  const [showChangePassword, setShowChangePassword] = useState(false);
-  const [currentPasswordInput, setCurrentPasswordInput] = useState("");
-  const [nextPasswordInput, setNextPasswordInput] = useState("");
-  const [selectedBookKey, setSelectedBookKey] = useState("");
-  const [openingStoryId, setOpeningStoryId] = useState<string | null>(null);
-  const [sharedCover, setSharedCover] = useState<SharedCoverTransition | null>(null);
-  const [hideDetailCover, setHideDetailCover] = useState(false);
-  const [activeJumperLevelId, setActiveJumperLevelId] = useState<string>("");
-  const [showMobileJumper, setShowMobileJumper] = useState(false);
-  const [mobileJumperOffset, setMobileJumperOffset] = useState({ x: 0, y: 0 });
+  const {
+    activeStory,
+    hideDetailCover,
+    openingStoryId,
+    selectedBookKey,
+    setActiveStory,
+    setHideDetailCover,
+    setOpeningStoryId,
+    setSelectedBookKey,
+    setSharedCover,
+    setStories,
+    sharedCover,
+    stories,
+    storyCoverRefs,
+    storyDetailCoverRef,
+  } = useStoryHub();
 
-  const storyCoverRefs = useRef<Record<string, HTMLImageElement | null>>({});
-  const storyDetailCoverRef = useRef<HTMLImageElement | null>(null);
-  const mobileJumperDragRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    baseOffsetX: number;
-    baseOffsetY: number;
-    moved: boolean;
-  } | null>(null);
-
-  const applyAuthUser = useCallback((user: UserProfile) => {
-    setHasSession(true);
-    setUserName(user.username);
-    setIsGuest(Boolean(user.is_guest));
-    setIsAdmin(Boolean(user.is_admin));
-    if (!user.is_admin) {
-      setShowAdminGenerator(false);
-    }
-  }, []);
-
-  const clearAccountPanels = useCallback(() => {
-    setShowGuestUpgrade(false);
-    setShowChangePassword(false);
-    setUpgradeUsernameInput("");
-    setUpgradePasswordInput("");
-    setCurrentPasswordInput("");
-    setNextPasswordInput("");
-  }, []);
+  const {
+    activeJumperLevelId,
+    levelSeed,
+    mobileJumperDragRef,
+    mobileJumperOffset,
+    playIndex,
+    setActiveJumperLevelId,
+    setLevelSeed,
+    setMobileJumperOffset,
+    setPlayIndex,
+    setShowMobileJumper,
+    showMobileJumper,
+  } = usePlayFlow();
 
   const clearSession = useCallback(() => {
     setHasSession(false);
@@ -790,106 +810,30 @@ export function App(): JSX.Element {
 
   if (screen === "auth") {
     return (
-      <div className="auth-shell">
-        <div className="auth-stack">
-          <form className="auth-card" onSubmit={handleAuthSubmit}>
-            <h1>拼图故事</h1>
-            <p>登录后可保存关卡进度与故事线完成状态</p>
-
-            <label className="form-field">
-              用户名
-              <input
-                value={usernameInput}
-                onChange={(event) => setUsernameInput(event.currentTarget.value)}
-                placeholder="至少 3 个字符"
-                autoComplete="username"
-              />
-            </label>
-
-            <label className="form-field">
-              密码
-              <input
-                type="password"
-                value={passwordInput}
-                onChange={(event) => setPasswordInput(event.currentTarget.value)}
-                placeholder="至少 6 位"
-                autoComplete={authMode === "login" ? "current-password" : "new-password"}
-              />
-            </label>
-
-            {error && <div className="form-error">{error}</div>}
-            {info && <div className="form-info">{info}</div>}
-
-            <button className="primary-btn" type="submit">
-              {authMode === "login" ? "登录" : "注册并登录"}
-            </button>
-
-            <button
-              type="button"
-              className="link-btn"
-              onClick={() => {
-                setAuthMode((mode) => (mode === "login" ? "register" : "login"));
-                setError("");
-                setInfo("");
-              }}
-            >
-              {authMode === "login" ? "没有账号？去注册" : "已有账号？去登录"}
-            </button>
-
-            <button type="button" className="nav-btn" onClick={() => void handleGuestLogin()}>
-              游客试玩（可稍后升级账号）
-            </button>
-          </form>
-
-          <section className="auth-card auth-subcard">
-            <h2>忘记密码</h2>
-            <p>输入用户名生成重置码，然后设置新密码。</p>
-
-            <label className="form-field">
-              用户名
-              <input
-                value={forgotUsernameInput}
-                onChange={(event) => setForgotUsernameInput(event.currentTarget.value)}
-                placeholder="要找回的用户名"
-                autoComplete="username"
-              />
-            </label>
-
-            <div className="inline-actions">
-              <button type="button" className="nav-btn" onClick={() => void handleForgotPassword()}>
-                生成重置码
-              </button>
-            </div>
-
-            <label className="form-field">
-              重置码
-              <input
-                value={resetTokenInput}
-                onChange={(event) => setResetTokenInput(event.currentTarget.value)}
-                placeholder="输入重置码"
-                autoComplete="off"
-              />
-            </label>
-
-            <label className="form-field">
-              新密码
-              <input
-                type="password"
-                value={resetPasswordInput}
-                onChange={(event) => setResetPasswordInput(event.currentTarget.value)}
-                placeholder="至少 6 位"
-                autoComplete="new-password"
-              />
-            </label>
-
-            <div className="inline-actions">
-              <button type="button" className="primary-btn" onClick={() => void handleResetPassword()}>
-                提交新密码
-              </button>
-            </div>
-          </section>
-        </div>
-      </div>
+      <AuthPage
+        authMode={authMode}
+        error={error}
+        forgotUsernameInput={forgotUsernameInput}
+        info={info}
+        passwordInput={passwordInput}
+        resetPasswordInput={resetPasswordInput}
+        resetTokenInput={resetTokenInput}
+        usernameInput={usernameInput}
+        onForgotPassword={() => void handleForgotPassword()}
+        onForgotUsernameInputChange={setForgotUsernameInput}
+        onGuestLogin={() => void handleGuestLogin()}
+        onPasswordInputChange={setPasswordInput}
+        onResetPassword={() => void handleResetPassword()}
+        onResetPasswordInputChange={setResetPasswordInput}
+        onResetTokenInputChange={setResetTokenInput}
+        onSubmit={handleAuthSubmit}
+        onToggleAuthMode={() => {
+          setAuthMode((mode) => (mode === "login" ? "register" : "login"));
+          setError("");
+          setInfo("");
+        }}
+        onUsernameInputChange={setUsernameInput}
+      />
     );
   }
 
@@ -901,299 +845,75 @@ export function App(): JSX.Element {
     const hideStoriesHero = isAdmin && showAdminGenerator;
 
     return (
-      <div className={`hub-shell stories-shell stories-home-shell role-shell role-${roleKey}`}>
-        <header className="stories-home-nav">
-          <div className="stories-home-brand">故事导航</div>
-          <div className="toolbar-row nav-right">
-            {isGuest ? (
-              <button
-                type="button"
-                className="nav-btn"
-                onClick={() => {
-                  setShowGuestUpgrade((value) => !value);
-                  setShowChangePassword(false);
-                  setError("");
-                  setInfo("");
-                }}
-              >
-                升级账号
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="nav-btn"
-                onClick={() => {
-                  setShowChangePassword((value) => !value);
-                  setShowGuestUpgrade(false);
-                  setError("");
-                  setInfo("");
-                }}
-              >
-                修改密码
-              </button>
-            )}
-            {isAdmin && (
-              <button
-                type="button"
-                className="nav-btn"
-                onClick={() => {
-                  setShowAdminGenerator((value) => !value);
-                  setError("");
-                  setInfo("");
-                }}
-              >
-                {showAdminGenerator ? "收起管理后台" : "管理后台"}
-              </button>
-            )}
-            <button type="button" className="nav-btn" onClick={handleLogout}>
-              退出登录
-            </button>
-          </div>
-        </header>
-
-        {error && <div className="banner-error">{error}</div>}
-        {info && <div className="banner-info">{info}</div>}
-
-        {isAdmin && showAdminGenerator && (
+      <StoriesPage
+        activeBookKey={activeBookGroup?.key || ""}
+        adminGeneratorNode={isAdmin && showAdminGenerator ? (
           <AdminStoryGenerator
             visible={showAdminGenerator}
             onClose={() => setShowAdminGenerator(false)}
             onGenerated={handleAdminGenerated}
             onOpenStory={handleOpenStoryFromAdmin}
           />
-        )}
-
-        {isGuest && showGuestUpgrade && (
-          <section className="account-panel">
-            <h3>游客账号升级</h3>
-            <p>升级后可跨设备登录，并继续当前进度。</p>
-            <label className="form-field">
-              新用户名
-              <input
-                value={upgradeUsernameInput}
-                onChange={(event) => setUpgradeUsernameInput(event.currentTarget.value)}
-                placeholder="至少 3 个字符"
-                autoComplete="username"
-              />
-            </label>
-            <label className="form-field">
-              新密码
-              <input
-                type="password"
-                value={upgradePasswordInput}
-                onChange={(event) => setUpgradePasswordInput(event.currentTarget.value)}
-                placeholder="至少 6 位"
-                autoComplete="new-password"
-              />
-            </label>
-            <div className="inline-actions">
-              <button type="button" className="primary-btn" onClick={() => void handleGuestUpgradeSubmit()}>
-                完成升级
-              </button>
-              <button type="button" className="link-btn" onClick={() => setShowGuestUpgrade(false)}>
-                取消
-              </button>
-            </div>
-          </section>
-        )}
-
-        {!isGuest && showChangePassword && (
-          <section className="account-panel">
-            <h3>修改密码</h3>
-            <p>更新后当前会话会自动轮换，不影响正在玩的关卡。</p>
-            <label className="form-field">
-              当前密码
-              <input
-                type="password"
-                value={currentPasswordInput}
-                onChange={(event) => setCurrentPasswordInput(event.currentTarget.value)}
-                placeholder="输入当前密码"
-                autoComplete="current-password"
-              />
-            </label>
-            <label className="form-field">
-              新密码
-              <input
-                type="password"
-                value={nextPasswordInput}
-                onChange={(event) => setNextPasswordInput(event.currentTarget.value)}
-                placeholder="至少 6 位"
-                autoComplete="new-password"
-              />
-            </label>
-            <div className="inline-actions">
-              <button type="button" className="primary-btn" onClick={() => void handleChangePasswordSubmit()}>
-                更新密码
-              </button>
-              <button type="button" className="link-btn" onClick={() => setShowChangePassword(false)}>
-                取消
-              </button>
-            </div>
-          </section>
-        )}
-
-        {!hideStoriesHero && (
-          <section className="stories-home-hero">
-            <h1>
-              故事<span>导航</span>
-            </h1>
-            <p className="stories-home-sub">
-              欢迎你，{userName || "玩家"}
-              <span className={`role-badge role-badge-${roleKey}`}>{roleLabel}</span>
-            </p>
-            <p className="stories-home-hint">{roleHint}</p>
-            <div className="stories-home-stats">
-              <div className="stories-home-stat">
-                <strong>{totalBookCount}</strong>
-                <span>书目</span>
-              </div>
-              <div className="stories-home-stat">
-                <strong>{totalStoryCount}</strong>
-                <span>故事</span>
-              </div>
-              <div className="stories-home-stat">
-                <strong>{totalLevelCount}</strong>
-                <span>关卡</span>
-              </div>
-              <div className="stories-home-stat">
-                <strong>{totalCompletedCount}</strong>
-                <span>已完成</span>
-              </div>
-            </div>
-          </section>
-        )}
-
-        <div className="stories-home-divider">
-          <span />
-          <b>{hideStoriesHero ? "书目" : "全部书目"}</b>
-          <span />
-        </div>
-
-        {storyBookGroups.length > 0 ? (
-          <main className="stories-home-main">
-            {storyBookGroups.map((group, groupIndex) => {
-              const isOpen = activeBookGroup?.key === group.key;
-              const bookProgressPercent = group.totalLevels > 0 ? Math.round((group.completedLevels / group.totalLevels) * 100) : 0;
-              const coverStory = group.stories.find((story) => Boolean(story.cover)) || group.stories[0] || null;
-
-              return (
-                <section
-                  key={group.key}
-                  className={`stories-book-section ${isOpen ? "open" : ""}`}
-                  style={{ animationDelay: `${0.08 + groupIndex * 0.06}s` }}
-                >
-                  <button
-                    type="button"
-                    className="stories-book-header"
-                    disabled={Boolean(openingStoryId)}
-                    onClick={() =>
-                      setSelectedBookKey((prev) => (prev === group.key ? COLLAPSED_BOOK_KEY : group.key))
-                    }
-                  >
-                    <div className="stories-book-thumb">
-                      {coverStory ? (
-                        <img src={coverOrFallback(coverStory.cover)} alt={group.title} onError={replaceWithFallbackCover} />
-                      ) : (
-                        <span>📖</span>
-                      )}
-                    </div>
-                    <div className="stories-book-info">
-                      <h2>{group.title}</h2>
-                      <p>
-                        故事 {group.stories.length} 本 · 关卡 {group.totalLevels} 关
-                      </p>
-                      <div className="stories-book-progress-row">
-                        <div className="stories-book-progress-bar">
-                          <i style={{ width: `${bookProgressPercent}%` }} />
-                        </div>
-                        <span>
-                          {group.completedLevels} / {group.totalLevels}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="stories-book-toggle" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="6,9 12,15 18,9" />
-                      </svg>
-                    </div>
-                  </button>
-
-                  <div className="stories-book-body" style={{ maxHeight: isOpen ? "none" : "0px" }}>
-                    <div className="stories-book-curtain" aria-hidden="true">
-                      <span className="stories-book-curtain-rod" />
-                      <span className="stories-book-curtain-half left">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                      <span className="stories-book-curtain-half right">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                    </div>
-                    <div className="stories-book-body-inner">
-                      <p className="stories-book-description">
-                        已收录 {group.stories.length} 个故事，支持继续闯关与新故事扩展。
-                      </p>
-
-                      <div className={`stories-story-grid ${openingStoryId ? "has-opening" : ""}`}>
-                        {group.stories.map((story) => {
-                          const completed = Number(story.completed_levels || 0);
-                          const total = Number(story.total_levels || 0);
-                          const progressPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
-                          const statusClass = completed >= total && total > 0 ? "done" : completed > 0 ? "current" : "none";
-
-                          return (
-                            <button
-                              type="button"
-                              key={story.id}
-                              className={`stories-story-card status-${statusClass} ${openingStoryId === story.id ? "is-opening" : ""}`}
-                              disabled={Boolean(openingStoryId)}
-                              onClick={() => void openStory(story)}
-                            >
-                              <div className="stories-story-cover">
-                                <img
-                                  ref={(node) => {
-                                    storyCoverRefs.current[story.id] = node;
-                                  }}
-                                  src={coverOrFallback(story.cover)}
-                                  alt={story.title}
-                                  onError={replaceWithFallbackCover}
-                                />
-                                {statusClass === "current" && <span className="stories-story-badge current">进行中</span>}
-                                {statusClass === "done" && <span className="stories-story-badge done">已完成</span>}
-                              </div>
-                              <div className="stories-story-info">
-                                <h3>{story.title}</h3>
-                                <p>{story.description}</p>
-                                <div className="stories-story-progress-row">
-                                  <span className={completed > 0 ? "has-progress" : ""}>
-                                    完成度 {completed}/{total}
-                                  </span>
-                                  <div className="stories-story-mini-bar">
-                                    <i style={{ width: `${progressPercent}%` }} />
-                                  </div>
-                                </div>
-                                <div className="stories-story-cta">{completed > 0 ? "继续翻开" : "打开这本故事"} →</div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              );
-            })}
-          </main>
-        ) : (
-          <div className="screen-message">暂无可展示的故事内容</div>
-        )}
-
-        {openingStoryId && <div className="opening-note">正在翻开故事...</div>}
-        {sharedCoverOverlay}
-      </div>
+        ) : null}
+        currentPasswordInput={currentPasswordInput}
+        error={error}
+        hideStoriesHero={hideStoriesHero}
+        info={info}
+        isAdmin={isAdmin}
+        isGuest={isGuest}
+        nextPasswordInput={nextPasswordInput}
+        openingStoryId={openingStoryId}
+        roleHint={roleHint}
+        roleKey={roleKey}
+        roleLabel={roleLabel}
+        sharedCoverOverlay={sharedCoverOverlay}
+        showAdminGenerator={showAdminGenerator}
+        showChangePassword={showChangePassword}
+        showGuestUpgrade={showGuestUpgrade}
+        storyBookGroups={storyBookGroups}
+        totalBookCount={totalBookCount}
+        totalCompletedCount={totalCompletedCount}
+        totalLevelCount={totalLevelCount}
+        totalStoryCount={totalStoryCount}
+        upgradePasswordInput={upgradePasswordInput}
+        upgradeUsernameInput={upgradeUsernameInput}
+        userName={userName}
+        onChangePasswordSubmit={() => void handleChangePasswordSubmit()}
+        onCoverError={replaceWithFallbackCover}
+        onCoverOrFallback={coverOrFallback}
+        onCurrentPasswordInputChange={setCurrentPasswordInput}
+        onGuestUpgradeSubmit={() => void handleGuestUpgradeSubmit()}
+        onHideChangePassword={() => setShowChangePassword(false)}
+        onHideGuestUpgrade={() => setShowGuestUpgrade(false)}
+        onLogout={() => void handleLogout()}
+        onNextPasswordInputChange={setNextPasswordInput}
+        onOpenStory={(story) => void openStory(story)}
+        onStoryCoverRefChange={(storyId, node) => {
+          storyCoverRefs.current[storyId] = node;
+        }}
+        onToggleAdminGenerator={() => {
+          setShowAdminGenerator((value) => !value);
+          setError("");
+          setInfo("");
+        }}
+        onToggleBook={(bookKey) => {
+          setSelectedBookKey((prev) => (prev === bookKey ? COLLAPSED_BOOK_KEY : bookKey));
+        }}
+        onToggleChangePassword={() => {
+          setShowChangePassword((value) => !value);
+          setShowGuestUpgrade(false);
+          setError("");
+          setInfo("");
+        }}
+        onToggleGuestUpgrade={() => {
+          setShowGuestUpgrade((value) => !value);
+          setShowChangePassword(false);
+          setError("");
+          setInfo("");
+        }}
+        onUpgradePasswordInputChange={setUpgradePasswordInput}
+        onUpgradeUsernameInputChange={setUpgradeUsernameInput}
+      />
     );
   }
 
@@ -1315,169 +1035,37 @@ export function App(): JSX.Element {
     };
 
     return (
-      <div className="hub-shell story-shell story-directory-shell story-enter-shell">
-        <header className="story-directory-navbar">
-          <div className="story-directory-brand">故事目录</div>
-          <div className="toolbar-row">
-            <button type="button" className="nav-btn" onClick={() => setScreen("stories")}>
-              ← 返回故事导航
-            </button>
-            <button type="button" className="nav-btn" onClick={handleLogout}>
-              退出登录
-            </button>
-          </div>
-        </header>
-
-        {error && <div className="banner-error">{error}</div>}
-
-        <section className="story-directory-hero">
-          <img
-            ref={storyDetailCoverRef}
-            src={coverOrFallback(activeStory.cover)}
-            alt={activeStory.title}
-            className={`story-directory-hero-cover ${hideDetailCover ? "is-hidden" : ""}`}
-            onError={replaceWithFallbackCover}
-          />
-          <div className="story-directory-hero-overlay" />
-          <div className="story-directory-hero-content">
-            <p className="story-directory-eyebrow">聊斋故事线</p>
-            <h1>{activeStory.title}</h1>
-            <p className="story-directory-description">{activeStory.description}</p>
-            <div className="story-directory-progress">
-              <div className="story-directory-progress-row">
-                <span className="progress-inline">故事进度</span>
-                <span className="progress-inline">已完成 {completedCount}/{storyLevelTotal} 关</span>
-              </div>
-              <div className="story-directory-progress-bar">
-                <div style={{ width: `${storyProgressPercent}%` }} />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <main className="story-directory-main">
-          <section className="story-directory-left">
-            <article className="story-intro-card">
-              <p className="story-intro-title">故事简介</p>
-              <p className="story-intro-text">{activeStory.description}</p>
-            </article>
-
-            <details className="story-narration-card" open={overviewParagraphs.length > 0}>
-              <summary>
-                <span>{overviewTitle}</span>
-              </summary>
-              <div className="story-narration-body">
-                {overviewParagraphs.length > 0 ? (
-                  overviewParagraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)
-                ) : (
-                  <p>暂无旁白，直接选择关卡开始挑战。</p>
-                )}
-              </div>
-            </details>
-
-            <div className="story-levels-title">全部关卡</div>
-            <section className="story-level-list">
-              {activeStory.levels.map((level, index) => {
-                const progress = activeStory.level_progress[level.id];
-                const completed = progress?.status === "completed";
-                const inProgress = progress?.status === "in_progress";
-                const disabled = Boolean(level.asset_missing);
-                const stateClass = completed ? "done" : inProgress ? "current" : "locked";
-                const stateLabel = disabled ? "资源缺失" : completed ? "已完成" : inProgress ? "进行中" : "未开始";
-                const bestTimeText = formatBestTime(progress?.best_time_ms);
-                const actionLabel = disabled ? "不可用" : completed ? "重玩" : inProgress ? "继续" : "开始";
-
-                const isLinked = activeJumperLevelId === level.id;
-
-                return (
-                  <article
-                    className={`story-level-card ${stateClass}${isLinked ? " is-focused" : ""}`}
-                    key={level.id}
-                    id={`story-level-${level.id}`}
-                    data-level-id={level.id}
-                  >
-                    <div className="story-level-main">
-                      <div className="story-level-left">
-                        <h3>
-                          {index + 1}. {level.title}
-                        </h3>
-                        <p>{level.description}</p>
-                        <div className="story-level-tags">
-                          <span className="story-level-tag">网格 {level.grid.rows} × {level.grid.cols}</span>
-                          <span className={`story-level-tag story-level-tag-${stateClass}`}>{stateLabel}</span>
-                          {bestTimeText && <span className="story-level-tag">最快 {bestTimeText}</span>}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className={`story-level-action story-level-action-${stateClass}`}
-                        disabled={disabled}
-                        onClick={() => openPlayAtIndex(index, inProgress ? 0 : 1)}
-                      >
-                        {actionLabel}
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </section>
-          </section>
-
-          <aside className="story-directory-right">
-            <section className="story-stats-card">
-              <p className="story-stats-title">游玩统计</p>
-              <div className="story-stats-grid">
-                <div>
-                  <strong>{completedCount}</strong>
-                  <span>已完成</span>
-                </div>
-                <div>
-                  <strong>{pendingCount}</strong>
-                  <span>待挑战</span>
-                </div>
-                <div>
-                  <strong>{storyBestTimeText || "--:--"}</strong>
-                  <span>最佳用时</span>
-                </div>
-                <div>
-                  <strong>{storyProgressPercent}%</strong>
-                  <span>完成率</span>
-                </div>
-              </div>
-            </section>
-
-            <section className="story-jumper-card">
-              <p className="story-stats-title">关卡速览</p>
-              <div className="story-jumper-list">
-                {renderJumperItems("desktop")}
-              </div>
-            </section>
-          </aside>
-        </main>
-
-        <div className={`story-jumper-fab-shell ${showMobileJumper ? "is-open" : ""}`} style={mobileJumperStyle}>
-          <button
-            type="button"
-            className="story-jumper-fab-toggle"
-            onPointerDown={handleMobileJumperPointerDown}
-            onPointerMove={handleMobileJumperPointerMove}
-            onPointerUp={handleMobileJumperPointerUp}
-          >
-            关卡速览 {activeJumperIndex}/{storyLevelTotal}
-          </button>
-
-          {showMobileJumper && (
-            <section className="story-jumper-fab-panel" aria-label="移动端关卡速览">
-              <p className="story-stats-title">关卡速览</p>
-              <div className="story-jumper-list">
-                {renderJumperItems("mobile", true)}
-              </div>
-            </section>
-          )}
-        </div>
-
-        {sharedCoverOverlay}
-      </div>
+      <StoryPage
+        activeJumperIndex={activeJumperIndex}
+        activeJumperLevelId={activeJumperLevelId}
+        activeStory={activeStory}
+        completedCount={completedCount}
+        error={error}
+        hideDetailCover={hideDetailCover}
+        mobileJumperStyle={mobileJumperStyle}
+        overviewParagraphs={overviewParagraphs}
+        overviewTitle={overviewTitle}
+        pendingCount={pendingCount}
+        renderDesktopJumperItems={renderJumperItems("desktop")}
+        renderMobileJumperItems={renderJumperItems("mobile", true)}
+        sharedCoverOverlay={sharedCoverOverlay}
+        showMobileJumper={showMobileJumper}
+        storyBestTimeText={storyBestTimeText}
+        storyLevelTotal={storyLevelTotal}
+        storyProgressPercent={storyProgressPercent}
+        onBackToStories={() => setScreen("stories")}
+        onCoverError={replaceWithFallbackCover}
+        onCoverOrFallback={coverOrFallback}
+        onFormatBestTime={formatBestTime}
+        onLogout={() => void handleLogout()}
+        onMobileJumperPointerDown={handleMobileJumperPointerDown}
+        onMobileJumperPointerMove={handleMobileJumperPointerMove}
+        onMobileJumperPointerUp={handleMobileJumperPointerUp}
+        onOpenPlayAtIndex={openPlayAtIndex}
+        onStoryDetailCoverRefChange={(node) => {
+          storyDetailCoverRef.current = node;
+        }}
+      />
     );
   }
 
@@ -1486,25 +1074,16 @@ export function App(): JSX.Element {
   const allCompleted = completedCount >= totalLevels;
 
   return (
-    <PuzzlePlayer
-      key={`${activeStory.id}-${currentLevel.id}-${levelSeed}`}
-      storyTitle={activeStory.title}
-      storyDescription={activeStory.description}
-      level={currentLevel}
-      levelIndex={playIndex}
-      totalLevels={totalLevels}
-      currentCompleted={Boolean(completedMap[currentLevel.id])}
-      currentBestTimeMs={activeStory.level_progress[currentLevel.id]?.best_time_ms}
-      completedCount={completedCount}
+    <PlayPage
+      activeStory={activeStory}
       allCompleted={allCompleted}
-      canPrev={playIndex > 0}
-      canNext={playIndex < totalLevels - 1}
+      completedCount={completedCount}
+      completedMap={completedMap}
+      currentLevel={currentLevel}
+      levelSeed={levelSeed}
+      playIndex={playIndex}
+      totalLevels={totalLevels}
       onBackToStory={() => setScreen("story")}
-      onRestartLevel={() => {
-        setLevelSeed((value) => value + 1);
-      }}
-      onPrevLevel={() => openPlayAtIndex(playIndex - 1, 1)}
-      onNextLevel={() => openPlayAtIndex(playIndex + 1, 1)}
       onJumpUnfinished={() => {
         const firstUnfinished = activeStory.levels.findIndex((level) => !completedMap[level.id] && !level.asset_missing);
         const fallbackIndex = activeStory.levels.findIndex((level) => !level.asset_missing);
@@ -1520,6 +1099,11 @@ export function App(): JSX.Element {
           best_time_ms: elapsedMs !== null && elapsedMs > 0 ? elapsedMs : undefined,
           content_version: solvedLevel?.content_version,
         });
+      }}
+      onNextLevel={() => openPlayAtIndex(playIndex + 1, 1)}
+      onPrevLevel={() => openPlayAtIndex(playIndex - 1, 1)}
+      onRestartLevel={() => {
+        setLevelSeed((value) => value + 1);
       }}
     />
   );
