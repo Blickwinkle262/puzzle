@@ -1,6 +1,7 @@
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  buildShortestSwapSteps,
   buildExpectedEdges,
   buildHiddenSides,
   buildPieces,
@@ -8,6 +9,7 @@ import {
   groupForPiece,
   isSolved,
   planSwapByDelta,
+  planSwapByTargetCell,
   recomputeLockedEdges,
 } from "../core/puzzle";
 import { Cell, LevelConfig, PieceDef } from "../core/types";
@@ -16,6 +18,7 @@ import { useWindowSize } from "../hooks/useWindowSize";
 
 const CONTINUE_SECONDS = 60;
 const MAX_CONTINUE_COUNT = 5;
+const AUTO_SOLVE_STEP_MS = 220;
 
 type Orientation = "portrait" | "landscape";
 type GamePhase = "intro" | "countdown" | "play" | "complete";
@@ -36,7 +39,7 @@ type PuzzlePlayerProps = {
   onJumpUnfinished: () => void;
   onBackToStory: () => void;
   onRestartLevel: () => void;
-  onLevelSolved: (levelId: string, elapsedMs: number | null) => void;
+  onLevelSolved: (levelId: string, elapsedMs: number | null, countAsCompleted: boolean) => void;
   currentBestTimeMs?: number;
 };
 
@@ -82,6 +85,8 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   const [timedOut, setTimedOut] = useState(false);
   const [continueUsedCount, setContinueUsedCount] = useState(0);
   const [timeExtraSec, setTimeExtraSec] = useState(0);
+  const [autoSolving, setAutoSolving] = useState(false);
+  const [assistedSolveUsed, setAssistedSolveUsed] = useState(false);
   const [phase, setPhase] = useState<GamePhase>("intro");
   const [countdownValue, setCountdownValue] = useState(3);
   const [solvedElapsedMs, setSolvedElapsedMs] = useState<number | null>(null);
@@ -109,6 +114,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
 
   const linkAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewRafRef = useRef<number | null>(null);
+  const autoSolveTimerRef = useRef<number | null>(null);
   const pendingPreviewRef = useRef<{ dx: number; dy: number } | null>(null);
   const solvedReportedRef = useRef(false);
   const levelStartAtMsRef = useRef<number>(Date.now());
@@ -121,6 +127,11 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   });
 
   useEffect(() => {
+    if (autoSolveTimerRef.current !== null) {
+      window.clearTimeout(autoSolveTimerRef.current);
+      autoSolveTimerRef.current = null;
+    }
+
     const initial = createInitialPieceCells({ rows, cols, mode: level.shuffle?.mode, seed: level.shuffle?.seed });
     setPieceCells(initial);
     setLockedEdges(
@@ -137,6 +148,8 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     setTimedOut(false);
     setContinueUsedCount(0);
     setTimeExtraSec(0);
+    setAutoSolving(false);
+    setAssistedSolveUsed(false);
     setPhase("intro");
     setCountdownValue(3);
     setSolvedElapsedMs(null);
@@ -151,6 +164,9 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
 
   useEffect(
     () => () => {
+      if (autoSolveTimerRef.current !== null) {
+        window.clearTimeout(autoSolveTimerRef.current);
+      }
       if (previewRafRef.current !== null) {
         window.cancelAnimationFrame(previewRafRef.current);
       }
@@ -226,11 +242,26 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     }
 
     solvedReportedRef.current = true;
-    const elapsedMs = timedMode ? Math.max(0, Date.now() - levelStartAtMsRef.current) : null;
+    const countAsCompleted = !assistedSolveUsed;
+    const elapsedMs = timedMode && countAsCompleted ? Math.max(0, Date.now() - levelStartAtMsRef.current) : null;
     setSolvedElapsedMs(elapsedMs);
     setPhase("complete");
-    onLevelSolved(level.id, elapsedMs);
-  }, [level.id, onLevelSolved, solved, timedMode]);
+    onLevelSolved(level.id, elapsedMs, countAsCompleted);
+  }, [assistedSolveUsed, level.id, onLevelSolved, solved, timedMode]);
+
+  useEffect(() => {
+    if (!autoSolving) {
+      return;
+    }
+    if (!solved && phase === "play" && !timedOut) {
+      return;
+    }
+    if (autoSolveTimerRef.current !== null) {
+      window.clearTimeout(autoSolveTimerRef.current);
+      autoSolveTimerRef.current = null;
+    }
+    setAutoSolving(false);
+  }, [autoSolving, phase, solved, timedOut]);
 
   const handleContinue60s = (): void => {
     if (!timedMode || solved || continueUsedCount >= MAX_CONTINUE_COUNT) {
@@ -343,7 +374,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   };
 
   const handlePiecePointerDown = (pieceId: number, event: PointerEvent<HTMLButtonElement>) => {
-    if (animating || phase !== "play" || solved || timedOut) {
+    if (animating || autoSolving || phase !== "play" || solved || timedOut) {
       return;
     }
 
@@ -440,6 +471,62 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     applyPlannedSwap(plan, refreshedLocked);
   };
 
+  const handleAutoSolve = (): void => {
+    if (phase !== "play" || animating || autoSolving || solved || timedOut) {
+      return;
+    }
+
+    const steps = buildShortestSwapSteps({ pieceCells, rows, cols });
+    if (steps.length === 0) {
+      return;
+    }
+
+    setAssistedSolveUsed(true);
+    setAutoSolving(true);
+    setSelectedGroupIds(null);
+    setPreviewOffset(null);
+    pendingPreviewRef.current = null;
+    if (previewRafRef.current !== null) {
+      window.cancelAnimationFrame(previewRafRef.current);
+      previewRafRef.current = null;
+    }
+
+    let stepIndex = 0;
+    let simulatedCells = pieceCells;
+    let simulatedLocked = refreshLockedForSelection();
+
+    const runNextStep = () => {
+      if (stepIndex >= steps.length) {
+        setAutoSolving(false);
+        autoSolveTimerRef.current = null;
+        return;
+      }
+
+      const step = steps[stepIndex];
+      const plan = planSwapByTargetCell({
+        firstIds: new Set([step.pieceId]),
+        targetPieceId: step.targetPieceId,
+        pieceCells: simulatedCells,
+        rows,
+        cols,
+        requireFirstWithinBoard: true,
+      });
+
+      if (!plan || !applyPlannedSwap(plan, simulatedLocked)) {
+        setAutoSolving(false);
+        autoSolveTimerRef.current = null;
+        return;
+      }
+
+      stepIndex += 1;
+      simulatedCells = plan.endCells;
+      simulatedLocked = computeFreshLockedEdges(plan.endCells);
+      autoSolveTimerRef.current = window.setTimeout(runNextStep, AUTO_SOLVE_STEP_MS);
+    };
+
+    runNextStep();
+  };
+
   const magnetPreviewCells = useMemo(() => {
     if (!selectedGroupIds || !previewOffset) {
       return [] as Cell[];
@@ -480,6 +567,10 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   }, [level.description, level.story_text]);
 
   const completionTimeText = solvedElapsedMs && solvedElapsedMs > 0 ? formatDurationMs(solvedElapsedMs) : "--:--";
+  const shortestRemainingSteps = useMemo(
+    () => buildShortestSwapSteps({ pieceCells, rows, cols }).length,
+    [pieceCells, rows, cols],
+  );
   const introPreviewAspect =
     imageSize.loaded && imageSize.width > 0 && imageSize.height > 0
       ? `${imageSize.width} / ${imageSize.height}`
@@ -646,6 +737,14 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
             <button type="button" className="jump-btn" onClick={onJumpUnfinished}>
               {allCompleted ? "回到第一关" : "跳到未完成"}
             </button>
+            <button
+              type="button"
+              className="jump-btn"
+              onClick={handleAutoSolve}
+              disabled={autoSolving || animating || solved || timedOut || shortestRemainingSteps === 0}
+            >
+              {autoSolving ? `自动复原中（剩余约 ${shortestRemainingSteps} 步）` : `一键拼成（最短 ${shortestRemainingSteps} 步）`}
+            </button>
             <p className="progress-inline">已完成 {completedCount}/{totalLevels}</p>
             {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
             {timeExtraSec > 0 && <p className="progress-inline">已续时 +{timeExtraSec}s</p>}
@@ -744,9 +843,13 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
                 返回故事列表
               </button>
             )}
+            <button type="button" className="nav-btn" onClick={onBackToStory}>
+              返回故事
+            </button>
             <button type="button" className="link-btn" onClick={onRestartLevel}>
               重新挑战本关
             </button>
+            {assistedSolveUsed && <p className="progress-inline">本次使用一键拼成，不计入通关统计</p>}
           </div>
         </section>
       )}

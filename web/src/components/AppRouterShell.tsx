@@ -398,7 +398,10 @@ export function AppRouterShell(): JSX.Element {
         const target = firstUnfinished >= 0 ? firstUnfinished : fallbackIndex >= 0 ? fallbackIndex : 0;
         openPlayAtIndex(target, 1);
       }}
-      onLevelSolved={(levelId, elapsedMs) => {
+      onLevelSolved={(levelId, elapsedMs, countAsCompleted) => {
+        if (!countAsCompleted) {
+          return;
+        }
         const solvedLevel = activeStory.levels.find((level) => level.id === levelId);
         void submitLevelProgress(levelId, {
           story_id: activeStory.id,

@@ -2,6 +2,11 @@ import { Cell, ExpectedEdge, PieceDef, Side, SwapPlan } from "./types";
 
 const GRID_MODES = new Set(["grid", "grid_shuffle", "shuffle_grid"]);
 
+export type MinimalSwapStep = {
+  pieceId: number;
+  targetPieceId: number;
+};
+
 export function edgeKey(a: number, b: number): string {
   return a < b ? `${a}-${b}` : `${b}-${a}`;
 }
@@ -74,6 +79,66 @@ export function createInitialPieceCells(opts: {
     result[id] = shuffled[id];
   }
   return result;
+}
+
+export function buildShortestSwapSteps(opts: {
+  pieceCells: Record<number, Cell>;
+  rows: number;
+  cols: number;
+}): MinimalSwapStep[] {
+  const { pieceCells, rows, cols } = opts;
+  const total = rows * cols;
+
+  const simulatedPieceCells: Record<number, Cell> = {};
+  const cellToPiece = new Map<string, number>();
+
+  for (let pieceId = 0; pieceId < total; pieceId += 1) {
+    const cell = pieceCells[pieceId];
+    if (!cell || !inside(cell, rows, cols)) {
+      return [];
+    }
+    simulatedPieceCells[pieceId] = { ...cell };
+    cellToPiece.set(cellKey(cell), pieceId);
+  }
+
+  if (cellToPiece.size !== total) {
+    return [];
+  }
+
+  const steps: MinimalSwapStep[] = [];
+
+  for (let pieceId = 0; pieceId < total; pieceId += 1) {
+    const targetCell = {
+      row: Math.floor(pieceId / cols),
+      col: pieceId % cols,
+    };
+    const currentCell = simulatedPieceCells[pieceId];
+    if (!currentCell) {
+      return [];
+    }
+
+    if (currentCell.row === targetCell.row && currentCell.col === targetCell.col) {
+      continue;
+    }
+
+    const targetCellKey = cellKey(targetCell);
+    const targetPieceId = cellToPiece.get(targetCellKey);
+    if (targetPieceId === undefined || targetPieceId === pieceId) {
+      return [];
+    }
+
+    steps.push({
+      pieceId,
+      targetPieceId,
+    });
+
+    simulatedPieceCells[pieceId] = targetCell;
+    simulatedPieceCells[targetPieceId] = currentCell;
+    cellToPiece.set(targetCellKey, pieceId);
+    cellToPiece.set(cellKey(currentCell), targetPieceId);
+  }
+
+  return steps;
 }
 
 export function groupForPiece(pieceId: number, lockedEdges: Set<string>, totalPieces: number): Set<number> {

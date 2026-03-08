@@ -12,7 +12,7 @@ type PlayPageProps = {
   totalLevels: number;
   onBackToStory: () => void;
   onJumpUnfinished: () => void;
-  onLevelSolved: (levelId: string, elapsedMs: number | null) => void;
+  onLevelSolved: (levelId: string, elapsedMs: number | null, countAsCompleted: boolean) => void;
   onNextLevel: () => void;
   onPrevLevel: () => void;
   onRestartLevel: () => void;
