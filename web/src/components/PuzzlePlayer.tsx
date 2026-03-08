@@ -1,7 +1,7 @@
 import { CSSProperties, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  buildShortestSwapSteps,
+  buildShortestSwapPlan,
   buildExpectedEdges,
   buildHiddenSides,
   buildPieces,
@@ -303,11 +303,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     return refreshed;
   };
 
-  const applyPlannedSwap = (plan: ReturnType<typeof planSwapByDelta>, lockBase: Set<string>): boolean => {
-    if (!plan) {
-      return false;
-    }
-
+  const applyEndCellsWithAnimation = (endCells: Record<number, Cell>, lockBase: Set<string>): void => {
     setSelectedGroupIds(null);
     setPreviewOffset(null);
     pendingPreviewRef.current = null;
@@ -317,10 +313,10 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
     }
 
     setAnimating(true);
-    setPieceCells(plan.endCells);
+    setPieceCells(endCells);
 
     window.setTimeout(() => {
-      const nextLocked = computeFreshLockedEdges(plan.endCells);
+      const nextLocked = computeFreshLockedEdges(endCells);
       const newLinks = Math.max(0, nextLocked.size - lockBase.size);
       setLockedEdges(nextLocked);
 
@@ -332,6 +328,14 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
       }
       setAnimating(false);
     }, 190);
+  };
+
+  const applyPlannedSwap = (plan: ReturnType<typeof planSwapByDelta>, lockBase: Set<string>): boolean => {
+    if (!plan) {
+      return false;
+    }
+
+    applyEndCellsWithAnimation(plan.endCells, lockBase);
 
     return true;
   };
@@ -395,6 +399,10 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   };
 
   const handlePiecePointerMove = (event: PointerEvent<HTMLButtonElement>) => {
+    if (autoSolving) {
+      return;
+    }
+
     const drag = dragRef.current;
     if (!drag.active || drag.pointerId !== event.pointerId) {
       return;
@@ -413,6 +421,10 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   };
 
   const handlePiecePointerUp = (event: PointerEvent<HTMLButtonElement>) => {
+    if (autoSolving) {
+      return;
+    }
+
     const drag = dragRef.current;
     if (!drag.active || drag.pointerId !== event.pointerId) {
       return;
@@ -476,8 +488,8 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
       return;
     }
 
-    const steps = buildShortestSwapSteps({ pieceCells, rows, cols });
-    if (steps.length === 0) {
+    const plan = buildShortestSwapPlan({ pieceCells, rows, cols });
+    if (plan.steps.length === 0 || plan.rounds.length === 0) {
       return;
     }
 
@@ -490,41 +502,62 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
       window.cancelAnimationFrame(previewRafRef.current);
       previewRafRef.current = null;
     }
+    dragRef.current = {
+      active: false,
+      pointerId: null,
+      startX: 0,
+      startY: 0,
+      moved: false,
+    };
 
-    let stepIndex = 0;
+    let roundIndex = 0;
     let simulatedCells = pieceCells;
     let simulatedLocked = refreshLockedForSelection();
 
-    const runNextStep = () => {
-      if (stepIndex >= steps.length) {
+    const runNextRound = () => {
+      if (roundIndex >= plan.rounds.length) {
         setAutoSolving(false);
         autoSolveTimerRef.current = null;
         return;
       }
 
-      const step = steps[stepIndex];
-      const plan = planSwapByTargetCell({
-        firstIds: new Set([step.pieceId]),
-        targetPieceId: step.targetPieceId,
-        pieceCells: simulatedCells,
-        rows,
-        cols,
-        requireFirstWithinBoard: true,
-      });
+      const roundSteps = plan.rounds[roundIndex];
+      let roundEndCells = simulatedCells;
 
-      if (!plan || !applyPlannedSwap(plan, simulatedLocked)) {
+      for (const step of roundSteps) {
+        const roundPlan = planSwapByTargetCell({
+          firstIds: new Set([step.pieceId]),
+          targetPieceId: step.targetPieceId,
+          pieceCells: roundEndCells,
+          rows,
+          cols,
+          requireFirstWithinBoard: true,
+        });
+
+        if (!roundPlan) {
+          setAutoSolving(false);
+          autoSolveTimerRef.current = null;
+          return;
+        }
+
+        roundEndCells = roundPlan.endCells;
+      }
+
+      if (roundEndCells === simulatedCells) {
         setAutoSolving(false);
         autoSolveTimerRef.current = null;
         return;
       }
 
-      stepIndex += 1;
-      simulatedCells = plan.endCells;
-      simulatedLocked = computeFreshLockedEdges(plan.endCells);
-      autoSolveTimerRef.current = window.setTimeout(runNextStep, AUTO_SOLVE_STEP_MS);
+      applyEndCellsWithAnimation(roundEndCells, simulatedLocked);
+
+      roundIndex += 1;
+      simulatedCells = roundEndCells;
+      simulatedLocked = computeFreshLockedEdges(roundEndCells);
+      autoSolveTimerRef.current = window.setTimeout(runNextRound, AUTO_SOLVE_STEP_MS);
     };
 
-    runNextStep();
+    runNextRound();
   };
 
   const magnetPreviewCells = useMemo(() => {
@@ -567,10 +600,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
   }, [level.description, level.story_text]);
 
   const completionTimeText = solvedElapsedMs && solvedElapsedMs > 0 ? formatDurationMs(solvedElapsedMs) : "--:--";
-  const shortestRemainingSteps = useMemo(
-    () => buildShortestSwapSteps({ pieceCells, rows, cols }).length,
-    [pieceCells, rows, cols],
-  );
+  const shortestRemainingSteps = useMemo(() => buildShortestSwapPlan({ pieceCells, rows, cols }).steps.length, [pieceCells, rows, cols]);
   const introPreviewAspect =
     imageSize.loaded && imageSize.width > 0 && imageSize.height > 0
       ? `${imageSize.width} / ${imageSize.height}`
@@ -920,6 +950,8 @@ function tileStyle(opts: {
     backgroundImage: `url(${sourceImage})`,
     backgroundSize: `${boardWidth}px ${boardHeight}px`,
     backgroundPosition: `${-piece.correctCol * tileWidth}px ${-piece.correctRow * tileHeight}px`,
+    backgroundOrigin: "border-box",
+    backgroundClip: "border-box",
     opacity: previewOffset ? 0.82 : 1,
     transition: previewOffset ? "none" : undefined,
     borderTop: hidden.has("top") ? "none" : `${borderWidth}px solid ${borderColor}`,
