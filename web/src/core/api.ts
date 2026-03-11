@@ -42,7 +42,6 @@ export type AuthRefreshResponse = {
 
 export type ForgotPasswordResponse = {
   message: string;
-  reset_token?: string;
 };
 
 export type StoriesResponse = {
@@ -199,10 +198,13 @@ export function apiChangePassword(currentPassword: string, newPassword: string):
   });
 }
 
-export function apiForgotPassword(username: string): Promise<ForgotPasswordResponse> {
+export function apiForgotPassword(username: string, newPassword: string): Promise<ForgotPasswordResponse> {
   return requestJson<ForgotPasswordResponse>("/auth/forgot-password", {
     method: "POST",
-    body: { username },
+    body: {
+      username,
+      new_password: newPassword,
+    },
   });
 }
 
@@ -494,6 +496,15 @@ export function apiGrantAdminUserRole(
 export function apiRevokeAdminUserRole(userId: number, role: AdminManagedRole): Promise<{ ok: boolean }> {
   return requestJson<{ ok: boolean }>(`/admin/users/${encodeURIComponent(String(userId))}/roles/${encodeURIComponent(role)}`, {
     method: "DELETE",
+  });
+}
+
+export function apiApproveAdminUserPasswordReset(userId: number, note?: string): Promise<{ ok: boolean; request_id: number }> {
+  return requestJson<{ ok: boolean; request_id: number }>(`/admin/users/${encodeURIComponent(String(userId))}/password-reset/approve`, {
+    method: "POST",
+    body: {
+      note,
+    },
   });
 }
 

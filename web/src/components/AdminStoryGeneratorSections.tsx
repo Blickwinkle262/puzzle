@@ -69,10 +69,12 @@ type AdminUserPermissionsSectionProps = {
   collapsed: boolean;
   loadingUsers: boolean;
   managedRoles: AdminManagedRole[];
+  passwordResetSubmittingUserId: string;
   roleSubmittingKey: string;
   userKeyword: string;
   formatDurationMs: (value: number) => string;
   formatTime: (value: string | null | undefined) => string;
+  onApprovePasswordReset: (user: AdminUserSummary) => void;
   onRefreshUsers: () => void;
   onRoleToggle: (user: AdminUserSummary, role: AdminManagedRole) => void;
   onToggleSection: () => void;
@@ -84,10 +86,12 @@ export function AdminUserPermissionsSection({
   collapsed,
   loadingUsers,
   managedRoles,
+  passwordResetSubmittingUserId,
   roleSubmittingKey,
   userKeyword,
   formatDurationMs,
   formatTime,
+  onApprovePasswordReset,
   onRefreshUsers,
   onRoleToggle,
   onToggleSection,
@@ -144,7 +148,17 @@ export function AdminUserPermissionsSection({
                               <span key={`${user.id}-${role}`} className="level-state done">{role}</span>
                             ))
                             : <span className="level-state todo">无角色</span>}
+                          {user.pending_password_reset_count > 0 ? (
+                            <span className="level-state pending">
+                              待审批改密 {user.pending_password_reset_count}
+                            </span>
+                          ) : null}
                         </div>
+                        {user.pending_password_reset_count > 0 && (
+                          <div className="progress-inline">
+                            最近申请：{formatTime(user.last_password_reset_requested_at)}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <div className="admin-user-best-time-cell">
@@ -160,6 +174,16 @@ export function AdminUserPermissionsSection({
                       </td>
                       <td>
                         <div className="admin-role-actions">
+                          {user.pending_password_reset_count > 0 ? (
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              disabled={Boolean(roleSubmittingKey) || Boolean(passwordResetSubmittingUserId)}
+                              onClick={() => onApprovePasswordReset(user)}
+                            >
+                              {passwordResetSubmittingUserId === String(user.id) ? "审批中..." : "审批改密"}
+                            </button>
+                          ) : null}
                           {managedRoles.map((role) => {
                             const hasRole = user.roles.includes(role);
                             const actionKey = `${user.id}:${role}:${hasRole ? "revoke" : "grant"}`;

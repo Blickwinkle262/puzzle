@@ -55,9 +55,11 @@ export function useAdminStoryGeneratorCoordinator({
   const {
     adminUsers,
     loadingUsers,
+    passwordResetSubmittingUserId,
     roleSubmittingKey,
     setAdminUsers,
     setLoadingUsers,
+    setPasswordResetSubmittingUserId,
     setRoleSubmittingKey,
     setUserKeyword,
     userKeyword,
@@ -179,12 +181,14 @@ export function useAdminStoryGeneratorCoordinator({
   });
 
   const {
+    handleApprovePasswordReset,
     handleRoleToggle,
     loadAdminUsers,
   } = useAdminUsersCoordinator({
     userKeyword,
     setAdminUsers,
     setLoadingUsers,
+    setPasswordResetSubmittingUserId,
     setRoleSubmittingKey,
     setPanelError,
     setPanelInfo,
@@ -425,11 +429,13 @@ export function useAdminStoryGeneratorCoordinator({
   const usersState = {
     adminUsers,
     loadingUsers,
+    passwordResetSubmittingUserId,
     roleSubmittingKey,
     userKeyword,
   };
 
   const usersActions = {
+    handleApprovePasswordReset,
     handleRoleToggle,
     loadAdminUsers,
     setUserKeyword,

@@ -40,7 +40,33 @@ export function createAuthCommandService(options = {}) {
     tx();
   }
 
+  function createPasswordResetApprovalRequest({ userId, requestedByUsername, passwordHash, requestedIp = "", now }) {
+    const tx = db.transaction(() => {
+      db.prepare("DELETE FROM password_reset_requests WHERE user_id = ? AND status = 'pending'").run(userId);
+
+      const result = db
+        .prepare(
+          `
+          INSERT INTO password_reset_requests (
+            user_id,
+            requested_by_username,
+            requested_password_hash,
+            status,
+            requested_at,
+            requested_ip
+          ) VALUES (?, ?, ?, 'pending', ?, ?)
+        `,
+        )
+        .run(userId, String(requestedByUsername || ""), String(passwordHash || ""), now, String(requestedIp || ""));
+
+      return Number(result.lastInsertRowid || 0);
+    });
+
+    return tx();
+  }
+
   return {
+    createPasswordResetApprovalRequest,
     createUserRecord,
     deleteSessionByToken,
     resetUserPasswordAndSessions,

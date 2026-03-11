@@ -91,7 +91,53 @@ export function buildShortestSwapSteps(opts: {
   rows: number;
   cols: number;
 }): MinimalSwapStep[] {
-  return buildShortestSwapPlan(opts).steps;
+  const { pieceCells, rows, cols } = opts;
+  const total = rows * cols;
+  const current: Record<number, Cell> = {};
+  const cellToPiece = new Map<string, number>();
+
+  for (let pieceId = 0; pieceId < total; pieceId += 1) {
+    const cell = pieceCells[pieceId];
+    if (!cell || !inside(cell, rows, cols)) {
+      return [];
+    }
+    current[pieceId] = { ...cell };
+    cellToPiece.set(cellKey(cell), pieceId);
+  }
+
+  if (cellToPiece.size !== total) {
+    return [];
+  }
+
+  const steps: MinimalSwapStep[] = [];
+
+  for (let pieceId = 0; pieceId < total; pieceId += 1) {
+    const targetCell: Cell = {
+      row: Math.floor(pieceId / cols),
+      col: pieceId % cols,
+    };
+    const pieceCell = current[pieceId];
+    if (pieceCell.row === targetCell.row && pieceCell.col === targetCell.col) {
+      continue;
+    }
+
+    const targetPieceId = cellToPiece.get(cellKey(targetCell));
+    if (targetPieceId === undefined || targetPieceId === pieceId) {
+      return [];
+    }
+
+    steps.push({
+      pieceId,
+      targetPieceId,
+    });
+
+    current[pieceId] = targetCell;
+    current[targetPieceId] = pieceCell;
+    cellToPiece.set(cellKey(targetCell), pieceId);
+    cellToPiece.set(cellKey(pieceCell), targetPieceId);
+  }
+
+  return steps;
 }
 
 export function buildShortestSwapPlan(opts: {
@@ -99,89 +145,9 @@ export function buildShortestSwapPlan(opts: {
   rows: number;
   cols: number;
 }): MinimalSwapPlan {
-  const { pieceCells, rows, cols } = opts;
-  const total = rows * cols;
-  const cellToPiece = new Map<string, number>();
-
-  for (let pieceId = 0; pieceId < total; pieceId += 1) {
-    const cell = pieceCells[pieceId];
-    if (!cell || !inside(cell, rows, cols)) {
-      return {
-        steps: [],
-        rounds: [],
-      };
-    }
-    cellToPiece.set(cellKey(cell), pieceId);
-  }
-
-  if (cellToPiece.size !== total) {
-    return {
-      steps: [],
-      rounds: [],
-    };
-  }
-
-  const visited = new Set<number>();
-  const cycleStepsList: MinimalSwapStep[][] = [];
-
-  for (let pieceId = 0; pieceId < total; pieceId += 1) {
-    if (visited.has(pieceId)) {
-      continue;
-    }
-
-    const cycle: number[] = [];
-    let cursor = pieceId;
-
-    while (!visited.has(cursor)) {
-      visited.add(cursor);
-      cycle.push(cursor);
-
-      const targetCell = {
-        row: Math.floor(cursor / cols),
-        col: cursor % cols,
-      };
-      const nextPieceId = cellToPiece.get(cellKey(targetCell));
-      if (nextPieceId === undefined) {
-        return {
-          steps: [],
-          rounds: [],
-        };
-      }
-      cursor = nextPieceId;
-    }
-
-    if (cycle.length <= 1) {
-      continue;
-    }
-
-    const pivot = cycle[0];
-    const cycleSteps = cycle.slice(1).map((targetPieceId) => ({
-      pieceId: pivot,
-      targetPieceId,
-    }));
-    cycleStepsList.push(cycleSteps);
-  }
-
-  const steps = cycleStepsList.flat();
-  const maxRoundLength = cycleStepsList.reduce((maxValue, cycleSteps) => Math.max(maxValue, cycleSteps.length), 0);
-  const rounds: MinimalSwapStep[][] = [];
-
-  for (let roundIndex = 0; roundIndex < maxRoundLength; roundIndex += 1) {
-    const round: MinimalSwapStep[] = [];
-    for (const cycleSteps of cycleStepsList) {
-      if (cycleSteps[roundIndex]) {
-        round.push(cycleSteps[roundIndex]);
-      }
-    }
-    if (round.length > 0) {
-      rounds.push(round);
-    }
-  }
-
-  return {
-    steps,
-    rounds,
-  };
+  const steps = buildShortestSwapSteps(opts);
+  const rounds = steps.map((step) => [step]);
+  return { steps, rounds };
 }
 
 export function groupForPiece(pieceId: number, lockedEdges: Set<string>, totalPieces: number): Set<number> {

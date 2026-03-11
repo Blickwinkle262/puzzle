@@ -5,6 +5,7 @@ export type {
 } from "./api";
 
 export {
+  apiApproveAdminUserPasswordReset,
   apiCancelRun,
   apiDeleteRun,
   apiDeleteRunScene,

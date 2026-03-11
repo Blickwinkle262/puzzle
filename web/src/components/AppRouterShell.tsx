@@ -47,7 +47,6 @@ export function AppRouterShell(): JSX.Element {
     handleGuestUpgradeSubmit,
     handleLogout,
     handleOpenStoryFromAdmin,
-    handleResetPassword,
     hideDetailCover,
     info,
     isAdmin,
@@ -63,7 +62,6 @@ export function AppRouterShell(): JSX.Element {
     passwordInput,
     playIndex,
     resetPasswordInput,
-    resetTokenInput,
     replaceWithFallbackCover,
     roleHint,
     roleKey,
@@ -79,7 +77,6 @@ export function AppRouterShell(): JSX.Element {
     setNextPasswordInput,
     setPasswordInput,
     setResetPasswordInput,
-    setResetTokenInput,
     setScreen,
     setSelectedBookKey,
     setShowAdminGenerator,
@@ -125,15 +122,12 @@ export function AppRouterShell(): JSX.Element {
         info={info}
         passwordInput={passwordInput}
         resetPasswordInput={resetPasswordInput}
-        resetTokenInput={resetTokenInput}
         usernameInput={usernameInput}
         onForgotPassword={() => void handleForgotPassword()}
         onForgotUsernameInputChange={setForgotUsernameInput}
         onGuestLogin={() => void handleGuestLogin()}
         onPasswordInputChange={setPasswordInput}
-        onResetPassword={() => void handleResetPassword()}
         onResetPasswordInputChange={setResetPasswordInput}
-        onResetTokenInputChange={setResetTokenInput}
         onSubmit={handleAuthSubmit}
         onToggleAuthMode={() => {
           setAuthMode((mode) => (mode === "login" ? "register" : "login"));

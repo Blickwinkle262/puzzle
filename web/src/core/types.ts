@@ -400,6 +400,8 @@ export type AdminUserSummary = {
   best_time_level_count: number;
   fastest_level_time_ms: number | null;
   completed_level_count: number;
+  pending_password_reset_count: number;
+  last_password_reset_requested_at: string | null;
   is_admin: boolean;
 };
 

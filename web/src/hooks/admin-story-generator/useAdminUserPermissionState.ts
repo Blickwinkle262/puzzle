@@ -7,13 +7,16 @@ export function useAdminUserPermissionState() {
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [userKeyword, setUserKeyword] = useState("");
   const [roleSubmittingKey, setRoleSubmittingKey] = useState("");
+  const [passwordResetSubmittingUserId, setPasswordResetSubmittingUserId] = useState("");
 
   return {
     adminUsers,
     loadingUsers,
+    passwordResetSubmittingUserId,
     roleSubmittingKey,
     setAdminUsers,
     setLoadingUsers,
+    setPasswordResetSubmittingUserId,
     setRoleSubmittingKey,
     setUserKeyword,
     userKeyword,

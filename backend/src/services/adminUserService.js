@@ -118,6 +118,8 @@ export function createAdminUserService(options = {}) {
       best_time_level_count: normalizeNonNegativeInteger(user?.best_time_level_count, 0),
       fastest_level_time_ms: normalizePositiveInteger(user?.fastest_level_time_ms) || null,
       completed_level_count: normalizeNonNegativeInteger(user?.completed_level_count, 0),
+      pending_password_reset_count: normalizeNonNegativeInteger(user?.pending_password_reset_count, 0),
+      last_password_reset_requested_at: user?.last_password_reset_requested_at || null,
       is_admin: isAdminUser({
         id: userId,
         username,

@@ -13,6 +13,7 @@ export function registerAuthRoutes(app, deps) {
     clearAuthCookies,
     clearAuthRateLimit,
     consumePasswordResetToken,
+    createPasswordResetApprovalRequest,
     createGuestUsername,
     createSession,
     createUserRecord,
@@ -26,7 +27,6 @@ export function registerAuthRoutes(app, deps) {
     extractSessionToken,
     hashPassword,
     hashSessionToken,
-    issuePasswordResetToken,
     normalizePassword,
     normalizeStrongPassword,
     normalizeUsername,
@@ -52,6 +52,9 @@ export function registerAuthRoutes(app, deps) {
     Promise.resolve().then(() => handler(req, res, next)).catch(next);
   };
 
+  const isPasswordSameAsUsername = (password, username) =>
+    String(password || "").trim().toLowerCase() === String(username || "").trim().toLowerCase();
+
   app.post("/api/auth/register", route(async (req, res) => {
     if (!PUBLIC_REGISTRATION_ENABLED) {
       throw new AppError(403, "auth_register_disabled", "当前环境已关闭公开注册，请联系管理员创建账号");
@@ -73,7 +76,11 @@ export function registerAuthRoutes(app, deps) {
     }
 
     if (!password) {
-      throw new AppError(400, "auth_register_weak_password", "密码至少 10 位，且包含字母、数字和符号");
+      throw new AppError(400, "auth_register_weak_password", "密码至少 6 位");
+    }
+
+    if (isPasswordSameAsUsername(password, username)) {
+      throw new AppError(400, "auth_register_password_same_as_username", "密码不能与用户名相同");
     }
 
     if (ADMIN_USERNAMES.has(username.toLowerCase())) {
@@ -224,7 +231,11 @@ export function registerAuthRoutes(app, deps) {
     }
 
     if (!password) {
-      throw new AppError(400, "auth_guest_upgrade_weak_password", "密码至少 10 位，且包含字母、数字和符号");
+      throw new AppError(400, "auth_guest_upgrade_weak_password", "密码至少 6 位");
+    }
+
+    if (isPasswordSameAsUsername(password, username)) {
+      throw new AppError(400, "auth_guest_upgrade_password_same_as_username", "密码不能与用户名相同");
     }
 
     const exists = isUsernameTaken(username, { excludeUserId: req.authUser.id });
@@ -259,13 +270,17 @@ export function registerAuthRoutes(app, deps) {
     }
 
     if (!newPassword) {
-      throw new AppError(400, "auth_change_password_weak_new", "新密码至少 10 位，且包含字母、数字和符号");
+      throw new AppError(400, "auth_change_password_weak_new", "新密码至少 6 位");
     }
 
     const row = findUserPasswordProfileById(req.authUser.id);
     const verified = row ? await verifyPassword(currentPassword, row.password_hash) : false;
     if (!row || !verified) {
       throw new AppError(401, "auth_change_password_invalid_current", "当前密码错误");
+    }
+
+    if (isPasswordSameAsUsername(newPassword, row.username)) {
+      throw new AppError(400, "auth_change_password_same_as_username", "新密码不能与用户名相同");
     }
 
     const passwordHash = await hashPassword(newPassword);
@@ -284,16 +299,24 @@ export function registerAuthRoutes(app, deps) {
     });
   }));
 
-  app.post("/api/auth/forgot-password", route((req, res) => {
+  app.post("/api/auth/forgot-password", route(async (req, res) => {
     const username = normalizeUsername(req.body?.username);
+    const newPassword = normalizeStrongPassword(req.body?.new_password);
 
     const safeResponse = {
-      message: "如果账号存在，重置方式已生成",
+      message: "如果账号存在，重置申请已提交，请联系管理员审批",
     };
 
     if (!username) {
-      res.status(200).json(safeResponse);
-      return;
+      throw new AppError(400, "auth_forgot_password_missing_username", "用户名不能为空");
+    }
+
+    if (!newPassword) {
+      throw new AppError(400, "auth_forgot_password_weak_new", "新密码至少 6 位");
+    }
+
+    if (isPasswordSameAsUsername(newPassword, username)) {
+      throw new AppError(400, "auth_forgot_password_same_as_username", "新密码不能与用户名相同");
     }
 
     if (
@@ -314,14 +337,15 @@ export function registerAuthRoutes(app, deps) {
       return;
     }
 
-    const resetToken = issuePasswordResetToken(userId, req);
-    if (process.env.NODE_ENV !== "production") {
-      res.status(200).json({
-        ...safeResponse,
-        reset_token: resetToken,
-      });
-      return;
-    }
+    const passwordHash = await hashPassword(newPassword);
+    const now = nowIso();
+    createPasswordResetApprovalRequest({
+      userId,
+      requestedByUsername: username,
+      passwordHash,
+      requestedIp: String(req.ip || req.socket?.remoteAddress || "").trim(),
+      now,
+    });
 
     res.status(200).json(safeResponse);
   }));
@@ -341,12 +365,21 @@ export function registerAuthRoutes(app, deps) {
     }
 
     if (!token || !newPassword) {
-      throw new AppError(400, "auth_reset_password_invalid_input", "重置码不能为空，且新密码至少 10 位并包含字母、数字和符号");
+      throw new AppError(400, "auth_reset_password_invalid_input", "重置码不能为空，且新密码至少 6 位");
     }
 
     const resetRow = consumePasswordResetToken(token);
     if (!resetRow) {
       throw new AppError(400, "auth_reset_password_invalid_token", "重置码无效或已过期");
+    }
+
+    const userPasswordProfile = findUserPasswordProfileById(resetRow.user_id);
+    if (!userPasswordProfile || !userPasswordProfile.username) {
+      throw new AppError(400, "auth_reset_password_invalid_token", "重置码无效或已过期");
+    }
+
+    if (isPasswordSameAsUsername(newPassword, userPasswordProfile.username)) {
+      throw new AppError(400, "auth_reset_password_same_as_username", "新密码不能与用户名相同");
     }
 
     const passwordHash = await hashPassword(newPassword);

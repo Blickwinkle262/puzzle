@@ -7,7 +7,6 @@ import {
   apiGuestLogin,
   apiGuestUpgrade,
   apiRefreshSession,
-  apiResetPassword,
   apiGetStoryDetail,
   apiListStories,
   apiLogin,
@@ -71,7 +70,6 @@ export function useAppCoordinator() {
     nextPasswordInput,
     passwordInput,
     resetPasswordInput,
-    resetTokenInput,
     screen,
     setAuthMode,
     setCurrentPasswordInput,
@@ -85,7 +83,6 @@ export function useAppCoordinator() {
     setNextPasswordInput,
     setPasswordInput,
     setResetPasswordInput,
-    setResetTokenInput,
     setScreen,
     setShowAdminGenerator,
     setShowChangePassword,
@@ -328,6 +325,12 @@ export function useAppCoordinator() {
       await enterStoriesHub(response.user);
       setPasswordInput("");
     } catch (err) {
+      if (err instanceof ApiError && authMode === "register" && err.status === 403) {
+        setAuthMode("login");
+        setError("当前环境未开放注册，已切换到登录模式");
+        setInfo("如需开放注册，请在后端环境变量中设置 PUBLIC_REGISTRATION_ENABLED=true");
+        return;
+      }
       setError(errorMessage(err));
     } finally {
       setLoadingText("");
@@ -404,49 +407,21 @@ export function useAppCoordinator() {
 
   const handleForgotPassword = async (): Promise<void> => {
     const username = forgotUsernameInput.trim();
-    if (!username) {
-      setError("请输入要找回的用户名");
-      return;
-    }
-
-    setLoadingText("正在生成重置码...");
-    setError("");
-    setInfo("");
-
-    try {
-      const response = await apiForgotPassword(username);
-      if (response.reset_token) {
-        setResetTokenInput(response.reset_token);
-        setInfo(`${response.message}（开发环境重置码：${response.reset_token}）`);
-      } else {
-        setInfo(response.message);
-      }
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setLoadingText("");
-    }
-  };
-
-  const handleResetPassword = async (): Promise<void> => {
-    const token = resetTokenInput.trim();
     const password = resetPasswordInput.trim();
-    if (!token || !password) {
-      setError("请输入重置码和新密码");
+    if (!username || !password) {
+      setError("请输入用户名和新密码");
       return;
     }
 
-    setLoadingText("正在重置密码...");
+    setLoadingText("正在提交改密申请...");
     setError("");
     setInfo("");
 
     try {
-      await apiResetPassword(token, password);
-      setAuthMode("login");
+      const response = await apiForgotPassword(username, password);
       setPasswordInput("");
-      setResetTokenInput("");
       setResetPasswordInput("");
-      setInfo("密码重置成功，请用新密码登录。");
+      setInfo(response.message);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -814,7 +789,6 @@ export function useAppCoordinator() {
     handleGuestUpgradeSubmit,
     handleLogout,
     handleOpenStoryFromAdmin,
-    handleResetPassword,
     hideDetailCover,
     info,
     isAdmin,
@@ -830,7 +804,6 @@ export function useAppCoordinator() {
     passwordInput,
     playIndex,
     resetPasswordInput,
-    resetTokenInput,
     replaceWithFallbackCover,
     roleHint,
     roleKey,
@@ -846,7 +819,6 @@ export function useAppCoordinator() {
     setNextPasswordInput,
     setPasswordInput,
     setResetPasswordInput,
-    setResetTokenInput,
     setScreen,
     setSelectedBookKey,
     setShowAdminGenerator,

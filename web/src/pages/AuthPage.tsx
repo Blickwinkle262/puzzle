@@ -9,15 +9,12 @@ type AuthPageProps = {
   info: string;
   passwordInput: string;
   resetPasswordInput: string;
-  resetTokenInput: string;
   usernameInput: string;
   onForgotPassword: () => void;
   onForgotUsernameInputChange: (value: string) => void;
   onGuestLogin: () => void;
   onPasswordInputChange: (value: string) => void;
-  onResetPassword: () => void;
   onResetPasswordInputChange: (value: string) => void;
-  onResetTokenInputChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onToggleAuthMode: () => void;
   onUsernameInputChange: (value: string) => void;
@@ -30,15 +27,12 @@ export function AuthPage({
   info,
   passwordInput,
   resetPasswordInput,
-  resetTokenInput,
   usernameInput,
   onForgotPassword,
   onForgotUsernameInputChange,
   onGuestLogin,
   onPasswordInputChange,
-  onResetPassword,
   onResetPasswordInputChange,
-  onResetTokenInputChange,
   onSubmit,
   onToggleAuthMode,
   onUsernameInputChange,
@@ -89,7 +83,7 @@ export function AuthPage({
 
         <section className="auth-card auth-subcard">
           <h2>忘记密码</h2>
-          <p>输入用户名生成重置码，然后设置新密码。</p>
+          <p>输入用户名和新密码，提交管理员审批。</p>
 
           <label className="form-field">
             用户名
@@ -98,22 +92,6 @@ export function AuthPage({
               onChange={(event) => onForgotUsernameInputChange(event.currentTarget.value)}
               placeholder="要找回的用户名"
               autoComplete="username"
-            />
-          </label>
-
-          <div className="inline-actions">
-            <button type="button" className="nav-btn" onClick={onForgotPassword}>
-              生成重置码
-            </button>
-          </div>
-
-          <label className="form-field">
-            重置码
-            <input
-              value={resetTokenInput}
-              onChange={(event) => onResetTokenInputChange(event.currentTarget.value)}
-              placeholder="输入重置码"
-              autoComplete="off"
             />
           </label>
 
@@ -129,8 +107,8 @@ export function AuthPage({
           </label>
 
           <div className="inline-actions">
-            <button type="button" className="primary-btn" onClick={onResetPassword}>
-              提交新密码
+            <button type="button" className="primary-btn" onClick={onForgotPassword}>
+              提交改密申请
             </button>
           </div>
         </section>

@@ -72,7 +72,7 @@ export function resolvePublicRegistrationEnabled(env = process.env) {
   const rawValue = env.PUBLIC_REGISTRATION_ENABLED;
 
   if (rawValue === undefined || rawValue === null || rawValue === "") {
-    return resolveNodeEnv(env) !== "production";
+    return true;
   }
 
   if (isTrueValue(rawValue)) {

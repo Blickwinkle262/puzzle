@@ -773,7 +773,7 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
               onClick={handleAutoSolve}
               disabled={autoSolving || animating || solved || timedOut || shortestRemainingSteps === 0}
             >
-              {autoSolving ? `自动复原中（剩余约 ${shortestRemainingSteps} 步）` : `一键拼成（最短 ${shortestRemainingSteps} 步）`}
+              {autoSolving ? `自动复原中（剩余约 ${shortestRemainingSteps} 步）` : `一键拼成（约 ${shortestRemainingSteps} 步）`}
             </button>
             <p className="progress-inline">已完成 {completedCount}/{totalLevels}</p>
             {bestTimeText && <p className="progress-inline">个人最快 {bestTimeText}</p>}
@@ -939,17 +939,22 @@ function tileStyle(opts: {
 
   const borderColor = selected ? "#47e06a" : "rgba(255,255,255,0.9)";
   const borderWidth = 1;
+  const seamCover = 1;
+  const coverLeft = hidden.has("left") ? seamCover : 0;
+  const coverRight = hidden.has("right") ? seamCover : 0;
+  const coverTop = hidden.has("top") ? seamCover : 0;
+  const coverBottom = hidden.has("bottom") ? seamCover : 0;
 
   const previewDx = previewOffset?.dx ?? 0;
   const previewDy = previewOffset?.dy ?? 0;
 
   return {
-    width: tileWidth,
-    height: tileHeight,
-    transform: `translate(${cell.col * tileWidth + previewDx}px, ${cell.row * tileHeight + previewDy}px)`,
+    width: tileWidth + coverLeft + coverRight,
+    height: tileHeight + coverTop + coverBottom,
+    transform: `translate(${cell.col * tileWidth - coverLeft + previewDx}px, ${cell.row * tileHeight - coverTop + previewDy}px)`,
     backgroundImage: `url(${sourceImage})`,
     backgroundSize: `${boardWidth}px ${boardHeight}px`,
-    backgroundPosition: `${-piece.correctCol * tileWidth}px ${-piece.correctRow * tileHeight}px`,
+    backgroundPosition: `${-piece.correctCol * tileWidth - coverLeft}px ${-piece.correctRow * tileHeight - coverTop}px`,
     backgroundOrigin: "border-box",
     backgroundClip: "border-box",
     opacity: previewOffset ? 0.82 : 1,

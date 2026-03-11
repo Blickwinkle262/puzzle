@@ -91,18 +91,9 @@ export function normalizePassword(value) {
 
 export function normalizeStrongPassword(value) {
   const normalized = normalizePassword(value);
-  if (!normalized || normalized.length < 10) {
+  if (!normalized) {
     return "";
   }
-
-  const hasLetter = /[A-Za-z]/.test(normalized);
-  const hasNumber = /\d/.test(normalized);
-  const hasSymbol = /[^A-Za-z0-9]/.test(normalized);
-
-  if (!hasLetter || !hasNumber || !hasSymbol) {
-    return "";
-  }
-
   return normalized;
 }
 

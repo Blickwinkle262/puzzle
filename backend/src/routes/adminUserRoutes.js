@@ -13,6 +13,7 @@ export function registerAdminUserRoutes(app, deps) {
     requireAdmin,
     requireAuth,
     requireCsrf,
+    resetUserPasswordAndSessions,
     serializeAdminUser,
   } = deps;
 
@@ -57,7 +58,9 @@ export function registerAdminUserRoutes(app, deps) {
             u.last_login_at,
             COALESCE(stats.best_time_level_count, 0) AS best_time_level_count,
             stats.fastest_level_time_ms AS fastest_level_time_ms,
-            COALESCE(stats.completed_level_count, 0) AS completed_level_count
+            COALESCE(stats.completed_level_count, 0) AS completed_level_count,
+            COALESCE(reset_stats.pending_password_reset_count, 0) AS pending_password_reset_count,
+            reset_stats.last_password_reset_requested_at AS last_password_reset_requested_at
           FROM users u
           LEFT JOIN (
             SELECT
@@ -68,6 +71,15 @@ export function registerAdminUserRoutes(app, deps) {
             FROM user_level_progress
             GROUP BY user_id
           ) AS stats ON stats.user_id = u.id
+          LEFT JOIN (
+            SELECT
+              user_id,
+              COUNT(1) AS pending_password_reset_count,
+              MAX(requested_at) AS last_password_reset_requested_at
+            FROM password_reset_requests
+            WHERE status = 'pending'
+            GROUP BY user_id
+          ) AS reset_stats ON reset_stats.user_id = u.id
           WHERE ${whereClause}
           ORDER BY u.id DESC
           LIMIT ?
@@ -143,6 +155,97 @@ export function registerAdminUserRoutes(app, deps) {
       });
     } catch (error) {
       res.status(500).json({ message: asMessage(error, "授予角色失败") });
+    }
+  });
+
+  app.post("/api/admin/users/:id/password-reset/approve", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+    const userId = normalizePositiveInteger(req.params.id);
+    if (!userId) {
+      res.status(400).json({ message: "用户 id 不合法" });
+      return;
+    }
+
+    const note = normalizeShortText(req.body?.note);
+
+    try {
+      const targetUser = db
+        .prepare("SELECT id, username, is_guest, created_at, last_login_at FROM users WHERE id = ?")
+        .get(userId);
+      if (!targetUser) {
+        res.status(404).json({ message: "用户不存在" });
+        return;
+      }
+
+      const requestRow = db
+        .prepare(
+          `
+          SELECT id, requested_password_hash, requested_by_username, requested_at
+          FROM password_reset_requests
+          WHERE user_id = ? AND status = 'pending'
+          ORDER BY requested_at DESC, id DESC
+          LIMIT 1
+        `,
+        )
+        .get(userId);
+
+      if (!requestRow) {
+        res.status(404).json({ message: "该用户暂无待审批的密码重置申请" });
+        return;
+      }
+
+      const requestedPasswordHash = String(requestRow.requested_password_hash || "").trim();
+      if (!requestedPasswordHash) {
+        res.status(500).json({ message: "审批申请数据异常，请让用户重新提交" });
+        return;
+      }
+
+      const now = nowIso();
+      const tx = db.transaction(() => {
+        resetUserPasswordAndSessions({
+          userId,
+          passwordHash: requestedPasswordHash,
+          now,
+        });
+
+        db.prepare(
+          `
+          UPDATE password_reset_requests
+          SET status = 'approved', reviewed_at = ?, reviewed_by_user_id = ?, review_note = ?
+          WHERE id = ?
+        `,
+        ).run(now, req.authUser.id, note || "", requestRow.id);
+      });
+
+      tx();
+
+      appendAdminAuditLog({
+        actorUserId: req.authUser.id,
+        actorUsername: req.authUser.username,
+        action: "user.password_reset.approve",
+        targetType: "user",
+        targetId: String(userId),
+        before: {
+          request_id: Number(requestRow.id),
+          status: "pending",
+          requested_by_username: String(requestRow.requested_by_username || ""),
+          requested_at: requestRow.requested_at || null,
+        },
+        after: {
+          request_id: Number(requestRow.id),
+          status: "approved",
+          approved_at: now,
+        },
+        meta: {
+          note: note || "",
+        },
+      });
+
+      res.json({
+        ok: true,
+        request_id: Number(requestRow.id),
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "审批密码重置失败") });
     }
   });
 

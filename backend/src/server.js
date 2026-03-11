@@ -566,6 +566,7 @@ const {
 });
 
 const {
+  createPasswordResetApprovalRequest,
   createUserRecord,
   deleteSessionByToken,
   resetUserPasswordAndSessions,
@@ -636,6 +637,7 @@ registerAuthRoutes(app, {
   clearAuthCookies,
   clearAuthRateLimit,
   consumePasswordResetToken,
+  createPasswordResetApprovalRequest,
   createGuestUsername,
   createSession,
   createUserRecord,
@@ -869,6 +871,7 @@ registerAdminUserRoutes(app, {
   requireAdmin,
   requireAuth,
   requireCsrf,
+  resetUserPasswordAndSessions,
   serializeAdminUser,
 });
 
@@ -990,12 +993,30 @@ function initializeSchema(database) {
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS password_reset_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      requested_by_username TEXT NOT NULL,
+      requested_password_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+      request_note TEXT,
+      requested_at TEXT NOT NULL,
+      requested_ip TEXT,
+      reviewed_at TEXT,
+      reviewed_by_user_id INTEGER,
+      review_note TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_progress_user_story ON user_level_progress(user_id, story_id);
     CREATE INDEX IF NOT EXISTS idx_generation_jobs_status_created ON generation_jobs(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_generation_jobs_created ON generation_jobs(created_at);
     CREATE INDEX IF NOT EXISTS idx_password_reset_user_id ON password_reset_tokens(user_id);
     CREATE INDEX IF NOT EXISTS idx_password_reset_expires_at ON password_reset_tokens(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_password_reset_requests_user_status ON password_reset_requests(user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status_requested ON password_reset_requests(status, requested_at);
   `);
 
   ensureSessionColumns(database);

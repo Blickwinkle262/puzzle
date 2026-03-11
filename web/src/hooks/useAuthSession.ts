@@ -20,7 +20,6 @@ export function useAuthSession() {
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [forgotUsernameInput, setForgotUsernameInput] = useState("");
-  const [resetTokenInput, setResetTokenInput] = useState("");
   const [resetPasswordInput, setResetPasswordInput] = useState("");
   const [showGuestUpgrade, setShowGuestUpgrade] = useState(false);
   const [upgradeUsernameInput, setUpgradeUsernameInput] = useState("");
@@ -63,7 +62,6 @@ export function useAuthSession() {
     nextPasswordInput,
     passwordInput,
     resetPasswordInput,
-    resetTokenInput,
     screen,
     setAuthMode,
     setCurrentPasswordInput,
@@ -77,7 +75,6 @@ export function useAuthSession() {
     setNextPasswordInput,
     setPasswordInput,
     setResetPasswordInput,
-    setResetTokenInput,
     setScreen,
     setShowAdminGenerator,
     setShowChangePassword,

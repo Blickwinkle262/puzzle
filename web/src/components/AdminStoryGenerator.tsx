@@ -39,10 +39,12 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     usersState: {
       adminUsers,
       loadingUsers,
+      passwordResetSubmittingUserId,
       roleSubmittingKey,
       userKeyword,
     },
     usersActions: {
+      handleApprovePasswordReset,
       handleRoleToggle,
       loadAdminUsers,
       setUserKeyword,
@@ -194,10 +196,14 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         collapsed={collapsedSections.users}
         loadingUsers={loadingUsers}
         managedRoles={MANAGED_ROLES}
+        passwordResetSubmittingUserId={passwordResetSubmittingUserId}
         roleSubmittingKey={roleSubmittingKey}
         userKeyword={userKeyword}
         formatDurationMs={formatDurationMs}
         formatTime={formatTime}
+        onApprovePasswordReset={(user) => {
+          void handleApprovePasswordReset(user);
+        }}
         onRefreshUsers={() => void loadAdminUsers()}
         onRoleToggle={(user, role) => {
           void handleRoleToggle(user, role);
