@@ -39,6 +39,8 @@ _VOLUME_TITLE_PATTERN = re.compile(r"^卷[·\.、\s-]*[0-9一二三四五六七�
 _VOLUME_MARKER_PATTERN = re.compile(r"【?卷[·\.、\s-]*[0-9一二三四五六七八九十百千零〇两]+】?")
 _SHORT_CJK_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,8}(?=\s|$)")
 _PUNCT_PATTERN = re.compile(r"[，。！？；：、“”‘’（）《》【】—…,.!?;:]")
+_PLAIN_HEADING_PATTERN = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9·《》〈〉「」『』“”‘’（）()\-—·\s]{2,40}$")
+_TOC_FILE_NAME_MARKERS = ("toc", "contents", "nav", "mulu", "index")
 
 
 class _HtmlTextExtractor(HTMLParser):
@@ -109,7 +111,35 @@ def _normalize_text(text: str) -> str:
     return "\n".join(compact).strip()
 
 
-def _extract_title_from_heading(line: str) -> str | None:
+def _extract_plain_heading(line: str, *, prev_line: str | None = None, next_line: str | None = None) -> str | None:
+    title = str(line or "").strip()
+    if not title:
+        return None
+    if title in _SKIP_TITLES:
+        return None
+    if _VOLUME_TITLE_PATTERN.match(title):
+        return None
+    if not _PLAIN_HEADING_PATTERN.match(title):
+        return None
+    if _PUNCT_PATTERN.search(title):
+        return None
+
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff]", title))
+    if cjk_count < 2:
+        return None
+
+    prev_normalized = prev_line.strip() if isinstance(prev_line, str) else None
+    next_normalized = next_line.strip() if isinstance(next_line, str) else None
+    has_prev_blank = prev_normalized == ""
+    has_next_blank = next_normalized == ""
+
+    if not (has_prev_blank or has_next_blank):
+        return None
+
+    return title
+
+
+def _extract_title_from_heading(line: str, *, prev_line: str | None = None, next_line: str | None = None) -> str | None:
     for pattern in _HEADING_PATTERNS:
         match = pattern.match(line)
         if not match:
@@ -120,7 +150,8 @@ def _extract_title_from_heading(line: str) -> str | None:
         if _VOLUME_TITLE_PATTERN.match(title):
             return None
         return title
-    return None
+
+    return _extract_plain_heading(line, prev_line=prev_line, next_line=next_line)
 
 
 def _word_count(text: str) -> int:
@@ -170,7 +201,9 @@ def parse_txt_content(
     headings: list[tuple[int, str]] = []
 
     for idx, line in enumerate(lines):
-        title = _extract_title_from_heading(line)
+        prev_line = lines[idx - 1] if idx > 0 else None
+        next_line = lines[idx + 1] if idx + 1 < len(lines) else None
+        title = _extract_title_from_heading(line, prev_line=prev_line, next_line=next_line)
         if title:
             headings.append((idx, title))
 
@@ -264,6 +297,36 @@ def _first_metadata(book: Any, namespace: str, key: str) -> str:
     return str(value or "").strip()
 
 
+def _is_probably_toc_file(file_name: str) -> bool:
+    normalized = str(file_name or "").strip().lower()
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _TOC_FILE_NAME_MARKERS)
+
+
+def _infer_epub_doc_title(*, text: str, file_name: str, fallback_title: str, doc_index: int) -> str:
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    for idx, line in enumerate(lines[:8]):
+        prev_line = lines[idx - 1] if idx > 0 else None
+        next_line = lines[idx + 1] if idx + 1 < len(lines) else None
+        heading = _extract_title_from_heading(line, prev_line=prev_line, next_line=next_line)
+        if heading:
+            return heading
+
+    if lines:
+        fallback_heading = _extract_plain_heading(lines[0], prev_line="", next_line="")
+        if fallback_heading:
+            return fallback_heading
+
+    stem = Path(str(file_name or "")).stem.strip()
+    if stem and not re.fullmatch(r"(?:chapter|chap|part|sec|section)?[_\-\s]*\d+", stem, flags=re.IGNORECASE):
+        normalized_stem = stem.replace("_", " ").replace("-", " ").strip()
+        if normalized_stem:
+            return normalized_stem[:80]
+
+    return f"{fallback_title} · 片段{doc_index}"
+
+
 def parse_book(
     source_path: Path,
     *,
@@ -302,7 +365,7 @@ def parse_book(
     title = fallback_title or _first_metadata(book, "DC", "title") or source_path.stem
     author = fallback_author or _first_metadata(book, "DC", "creator")
 
-    docs: list[str] = []
+    docs: list[tuple[str, str]] = []
     seen: set[str] = set()
 
     for item_ref in book.spine:
@@ -315,16 +378,66 @@ def parse_book(
         if item.file_name in seen:
             continue
         seen.add(item.file_name)
-        docs.append(_html_to_text(item.get_content().decode("utf-8", errors="ignore")))
+        docs.append((item.file_name, _html_to_text(item.get_content().decode("utf-8", errors="ignore"))))
 
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
         file_name = getattr(item, "file_name", "")
         if file_name in seen:
             continue
         seen.add(file_name)
-        docs.append(_html_to_text(item.get_content().decode("utf-8", errors="ignore")))
+        docs.append((file_name, _html_to_text(item.get_content().decode("utf-8", errors="ignore"))))
 
-    merged = _normalize_text("\n\n".join(text for text in docs if text))
+    chapters: list[ParsedChapter] = []
+    for doc_index, (file_name, raw_text) in enumerate(docs, start=1):
+        normalized_doc = _normalize_text(raw_text)
+        if not normalized_doc:
+            continue
+        if _is_probably_toc_file(file_name):
+            continue
+
+        doc_title = _infer_epub_doc_title(
+            text=normalized_doc,
+            file_name=file_name,
+            fallback_title=title,
+            doc_index=doc_index,
+        )
+        doc_meta = dict(base_chapter_meta or {})
+        doc_meta["epub_doc_index"] = doc_index
+        doc_meta["epub_source_file"] = file_name
+
+        doc_chapters = parse_txt_content(
+            normalized_doc,
+            default_title=doc_title,
+            min_chapter_chars=min_chapter_chars,
+            base_meta=doc_meta,
+        )
+
+        if not doc_chapters:
+            continue
+
+        if all(bool(chapter.meta.get("is_toc_like")) for chapter in doc_chapters):
+            continue
+
+        chapters.extend(doc_chapters)
+
+    if chapters:
+        for index, chapter in enumerate(chapters, start=1):
+            chapter.chapter_index = index
+
+        metadata = {
+            "language": _first_metadata(book, "DC", "language"),
+            "identifier": _first_metadata(book, "DC", "identifier"),
+        }
+
+        return ParsedBook(
+            title=title,
+            author=author,
+            source_format="epub",
+            metadata=metadata,
+            chapters=chapters,
+        )
+
+    merged = _normalize_text("\n\n".join(text for _, text in docs if text))
     chapters = parse_txt_content(
         merged,
         default_title=title,

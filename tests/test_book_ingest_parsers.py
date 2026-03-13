@@ -51,6 +51,27 @@ class BookIngestParserTests(unittest.TestCase):
         self.assertEqual(chapters[0].chapter_title, "短篇")
         self.assertEqual(chapters[0].chapter_text, text)
 
+    def test_parse_txt_content_detects_plain_title_headings_with_blank_lines(self) -> None:
+        text = """
+序言说明。
+
+狗·猫·鼠
+
+这是第一篇正文，应该被识别为章节内容。
+
+阿长与山海经
+
+这是第二篇正文，也应该被识别。
+"""
+        chapters = parse_txt_content(text, default_title="朝花夕拾", min_chapter_chars=5)
+        self.assertEqual([chapter.chapter_title for chapter in chapters], ["狗·猫·鼠", "阿长与山海经"])
+
+    def test_parse_txt_content_plain_titles_require_blank_context(self) -> None:
+        text = "狗·猫·鼠\n这是正文第一段。\n阿长与山海经\n这是正文第二段。"
+        chapters = parse_txt_content(text, default_title="朝花夕拾", min_chapter_chars=5)
+        self.assertEqual(len(chapters), 1)
+        self.assertEqual(chapters[0].chapter_title, "朝花夕拾")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--author", default="")
     parser.add_argument("--genre", default="")
     parser.add_argument("--language", default="zh")
+    parser.add_argument("--run-id", default="")
     parser.add_argument("--book-meta-json", default="{}")
     parser.add_argument("--chapter-meta-json", default="{}")
     parser.add_argument("--min-chars", type=int, default=0)
@@ -56,7 +57,7 @@ def run(args: argparse.Namespace) -> dict:
     apply_schema(conn)
     repo = BookRepository(conn)
 
-    run_id = new_run_id("ingest")
+    run_id = str(getattr(args, "run_id", "") or "").strip() or new_run_id("ingest")
     ingest_run_id = repo.start_ingest_run(
         run_id=run_id,
         source_path=str(source_path),

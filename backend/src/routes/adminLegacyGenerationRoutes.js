@@ -1,7 +1,11 @@
+import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
+import express from "express";
 
 export function registerAdminLegacyGenerationRoutes(app, deps) {
   const {
+    BOOK_UPLOADS_DIR,
     LEGACY_GENERATE_STORY_CREATE_ENABLED,
     RESOLVED_BOOK_INGEST_DB_PATH,
     STORY_GENERATOR_INDEX_FILE,
@@ -31,6 +35,8 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     readJsonSafe,
     readRunEvents,
     readTailLines,
+    runBookIngestCommand,
+    runBookSummaryCommand,
     requireAdmin,
     requireAuth,
     requireCsrf,
@@ -41,6 +47,656 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     summarizeLegacyCandidateCountsFromScenes,
     syncGenerationJobCandidatesFromSummary,
   } = deps;
+
+  function normalizeIngestTaskStatus(value) {
+    const status = String(value || "").trim().toLowerCase();
+    if (status === "success") {
+      return "succeeded";
+    }
+    if (status === "failed") {
+      return "failed";
+    }
+    if (status === "running") {
+      return "running";
+    }
+    return "queued";
+  }
+
+  function serializeIngestRun(row) {
+    if (!row || typeof row !== "object") {
+      return null;
+    }
+
+    return {
+      run_id: String(row.run_id || ""),
+      status: normalizeIngestTaskStatus(row.status),
+      source_path: String(row.source_path || ""),
+      source_format: String(row.source_format || ""),
+      source_name: path.basename(String(row.source_path || "")),
+      started_at: row.started_at ? String(row.started_at) : null,
+      finished_at: row.finished_at ? String(row.finished_at) : null,
+      created_at: row.created_at ? String(row.created_at) : null,
+      total: Number(row.total_chapters || 0),
+      inserted: Number(row.inserted_chapters || 0),
+      updated: Number(row.updated_chapters || 0),
+      skipped: Number(row.skipped_chapters || 0),
+      error_message: String(row.error_message || ""),
+    };
+  }
+
+  function getIngestRunByRunId(runId) {
+    const normalizedRunId = normalizeShortText(runId || "");
+    if (!normalizedRunId) {
+      return null;
+    }
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const row = booksDb
+        .prepare(
+          `
+            SELECT
+              run_id,
+              source_path,
+              source_format,
+              started_at,
+              finished_at,
+              status,
+              total_chapters,
+              inserted_chapters,
+              updated_chapters,
+              skipped_chapters,
+              error_message,
+              created_at
+            FROM ingest_runs
+            WHERE run_id = ?
+            LIMIT 1
+          `,
+        )
+        .get(normalizedRunId);
+      return serializeIngestRun(row);
+    } catch {
+      return null;
+    }
+  }
+
+  function listIngestRuns(limitValue) {
+    const limit = Math.min(50, normalizePositiveInteger(limitValue) || 10);
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const rows = booksDb
+        .prepare(
+          `
+            SELECT
+              run_id,
+              source_path,
+              source_format,
+              started_at,
+              finished_at,
+              status,
+              total_chapters,
+              inserted_chapters,
+              updated_chapters,
+              skipped_chapters,
+              error_message,
+              created_at
+            FROM ingest_runs
+            ORDER BY id DESC
+            LIMIT ?
+          `,
+        )
+        .all(limit);
+
+      return rows
+        .map((row) => serializeIngestRun(row))
+        .filter((item) => item && item.run_id);
+    } catch {
+      return [];
+    }
+  }
+
+  function normalizeSummaryTaskStatus(value) {
+    const status = String(value || "").trim().toLowerCase();
+    if (status === "success") {
+      return "succeeded";
+    }
+    if (status === "failed") {
+      return "failed";
+    }
+    if (status === "running") {
+      return "running";
+    }
+    return "queued";
+  }
+
+  function serializeSummaryRun(row) {
+    if (!row || typeof row !== "object") {
+      return null;
+    }
+
+    return {
+      run_id: String(row.run_id || ""),
+      status: normalizeSummaryTaskStatus(row.status),
+      scope_type: String(row.scope_type || "book"),
+      scope_id: Number(row.scope_id || 0),
+      started_at: row.started_at ? String(row.started_at) : null,
+      finished_at: row.finished_at ? String(row.finished_at) : null,
+      created_at: row.created_at ? String(row.created_at) : null,
+      total: Number(row.total_chapters || 0),
+      processed: Number(row.processed_chapters || 0),
+      succeeded: Number(row.succeeded_chapters || 0),
+      failed: Number(row.failed_chapters || 0),
+      skipped: Number(row.skipped_chapters || 0),
+      error_message: String(row.error_message || ""),
+    };
+  }
+
+  function getSummaryRunByRunId(runId) {
+    const normalizedRunId = normalizeShortText(runId || "");
+    if (!normalizedRunId) {
+      return null;
+    }
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const row = booksDb
+        .prepare(
+          `
+            SELECT
+              run_id,
+              scope_type,
+              scope_id,
+              started_at,
+              finished_at,
+              status,
+              total_chapters,
+              processed_chapters,
+              succeeded_chapters,
+              failed_chapters,
+              skipped_chapters,
+              error_message,
+              created_at
+            FROM chapter_summary_runs
+            WHERE run_id = ?
+            LIMIT 1
+          `,
+        )
+        .get(normalizedRunId);
+      return serializeSummaryRun(row);
+    } catch {
+      return null;
+    }
+  }
+
+  function listSummaryRuns(limitValue) {
+    const limit = Math.min(50, normalizePositiveInteger(limitValue) || 10);
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const rows = booksDb
+        .prepare(
+          `
+            SELECT
+              run_id,
+              scope_type,
+              scope_id,
+              started_at,
+              finished_at,
+              status,
+              total_chapters,
+              processed_chapters,
+              succeeded_chapters,
+              failed_chapters,
+              skipped_chapters,
+              error_message,
+              created_at
+            FROM chapter_summary_runs
+            ORDER BY id DESC
+            LIMIT ?
+          `,
+        )
+        .all(limit);
+
+      return rows
+        .map((row) => serializeSummaryRun(row))
+        .filter((item) => item && item.run_id);
+    } catch {
+      return [];
+    }
+  }
+
+  function getBookByBookId(bookId) {
+    const normalizedBookId = normalizePositiveInteger(bookId);
+    if (!normalizedBookId) {
+      return null;
+    }
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const row = booksDb
+        .prepare(
+          `
+            SELECT
+              b.id,
+              b.title,
+              b.author,
+              b.genre,
+              b.language,
+              b.source_path,
+              b.source_format,
+              COUNT(c.id) AS chapter_count
+            FROM books b
+            LEFT JOIN chapters c ON c.book_id = b.id
+            WHERE b.id = ?
+            GROUP BY b.id
+            LIMIT 1
+          `,
+        )
+        .get(normalizedBookId);
+      if (!row) {
+        return null;
+      }
+
+      return {
+        id: Number(row.id),
+        title: String(row.title || ""),
+        author: String(row.author || ""),
+        genre: String(row.genre || ""),
+        language: String(row.language || "zh"),
+        source_path: String(row.source_path || ""),
+        source_format: String(row.source_format || "auto"),
+        chapter_count: Number(row.chapter_count || 0),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  app.get("/api/admin/books/upload", requireAuth, requireAdmin, (req, res) => {
+    const limit = Math.min(50, normalizePositiveInteger(req.query?.limit) || 10);
+    const tasks = listIngestRuns(limit);
+    res.json({
+      ok: true,
+      db_path: RESOLVED_BOOK_INGEST_DB_PATH,
+      limit,
+      tasks,
+    });
+  });
+
+  app.get("/api/admin/books/upload/:runId", requireAuth, requireAdmin, (req, res) => {
+    const task = getIngestRunByRunId(req.params?.runId || "");
+    if (!task) {
+      res.status(404).json({ message: "未找到上传任务", code: "book_ingest_run_not_found" });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      db_path: RESOLVED_BOOK_INGEST_DB_PATH,
+      task,
+    });
+  });
+
+  app.post(
+    "/api/admin/books/upload",
+    requireAuth,
+    requireCsrf,
+    requireAdmin,
+    express.raw({
+      type: ["application/octet-stream", "application/epub+zip", "text/plain"],
+      limit: "80mb",
+    }),
+    async (req, res) => {
+      const fileNameHeader = req.headers["x-file-name"];
+      const headerFileName = Array.isArray(fileNameHeader) ? String(fileNameHeader[0] || "") : String(fileNameHeader || "");
+      const rawFileName = normalizeShortText(headerFileName || req.query?.filename || "");
+      if (!rawFileName) {
+        res.status(400).json({ message: "缺少文件名，请在 x-file-name 头里传入" });
+        return;
+      }
+
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        res.status(400).json({ message: "上传内容为空" });
+        return;
+      }
+
+      const normalizedName = rawFileName
+        .replace(/[\\/]+/g, "_")
+        .replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 120);
+      const safeName = normalizedName || `book_${Date.now()}.epub`;
+
+      const requestedFormat = String(req.query?.format || "").trim().toLowerCase();
+      const inferredFormat = safeName.toLowerCase().endsWith(".epub") ? "epub" : "txt";
+      const sourceFormat = requestedFormat === "epub" || requestedFormat === "txt" ? requestedFormat : inferredFormat;
+
+      const title = normalizeShortText(req.query?.title || "");
+      const author = normalizeShortText(req.query?.author || "");
+      const genre = normalizeShortText(req.query?.genre || "");
+      const language = normalizeShortText(req.query?.language || "") || "zh";
+      const replaceBook = normalizeBoolean(req.query?.replace_book);
+
+      const inferredTitle = normalizeShortText(
+        String(rawFileName || "")
+          .replace(/\.[^.]+$/, "")
+          .trim(),
+      );
+      const uploadTitle = title || inferredTitle;
+      const normalizedTitle = normalizeShortText(uploadTitle);
+
+      const ext = sourceFormat === "epub" ? "epub" : "txt";
+      const sourceSha256 = crypto.createHash("sha256").update(req.body).digest("hex");
+      const storedName = `${sourceSha256}.${ext}`;
+      const storedPath = path.join(BOOK_UPLOADS_DIR, storedName);
+
+      let existingBook = null;
+      if (normalizedTitle) {
+        try {
+          const booksDb = getBooksDbOrThrow();
+          existingBook = booksDb
+            .prepare(
+              `
+                SELECT
+                  b.id,
+                  b.title,
+                  b.source_path,
+                  COUNT(c.id) AS chapter_count
+                FROM books b
+                LEFT JOIN chapters c ON c.book_id = b.id
+                WHERE lower(trim(b.title)) = lower(trim(?))
+                GROUP BY b.id
+                ORDER BY b.updated_at DESC, b.id DESC
+                LIMIT 1
+              `,
+            )
+            .get(normalizedTitle);
+        } catch {
+          existingBook = null;
+        }
+      }
+
+      if (existingBook && !replaceBook) {
+        res.status(409).json({
+          code: "book_exists",
+          message: `同名书籍已存在：${String(existingBook.title || normalizedTitle)}（${Number(existingBook.chapter_count || 0)}章）。是否替换？`,
+          book: {
+            id: Number(existingBook.id),
+            title: String(existingBook.title || normalizedTitle),
+            chapter_count: Number(existingBook.chapter_count || 0),
+          },
+        });
+        return;
+      }
+
+      let latestSameSourceRun = null;
+      try {
+        const booksDb = getBooksDbOrThrow();
+        latestSameSourceRun = booksDb
+          .prepare(
+            `
+              SELECT
+                run_id,
+                source_path,
+                source_format,
+                started_at,
+                finished_at,
+                status,
+                total_chapters,
+                inserted_chapters,
+                updated_chapters,
+                skipped_chapters,
+                error_message,
+                created_at
+              FROM ingest_runs
+              WHERE source_path = ?
+              ORDER BY id DESC
+              LIMIT 1
+            `,
+          )
+          .get(storedPath);
+      } catch {
+        latestSameSourceRun = null;
+      }
+
+      const latestTask = serializeIngestRun(latestSameSourceRun);
+      if (latestTask && latestTask.status === "running") {
+        res.status(409).json({
+          code: "book_ingest_running",
+          message: `相同文件内容正在解析中（任务 ${latestTask.run_id}）`,
+          task: latestTask,
+          source_sha256: sourceSha256,
+        });
+        return;
+      }
+
+      if (latestTask && latestTask.status === "succeeded") {
+        res.status(409).json({
+          code: "book_ingest_succeeded",
+          message: `该文件内容已解析完成（任务 ${latestTask.run_id}），可直接使用`,
+          task: latestTask,
+          source_sha256: sourceSha256,
+        });
+        return;
+      }
+
+      try {
+        fs.mkdirSync(BOOK_UPLOADS_DIR, { recursive: true });
+        fs.writeFileSync(storedPath, req.body);
+
+        const runId = `ingest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        let ingestSource = storedPath;
+        if (replaceBook && existingBook) {
+          const existingSourcePath = String(existingBook.source_path || "").trim();
+          if (existingSourcePath) {
+            fs.mkdirSync(path.dirname(existingSourcePath), { recursive: true });
+            fs.writeFileSync(existingSourcePath, req.body);
+            ingestSource = existingSourcePath;
+          }
+        }
+
+        void runBookIngestCommand({
+          source: ingestSource,
+          format: sourceFormat,
+          title: normalizedTitle,
+          author,
+          genre,
+          language,
+          replaceBook,
+          runId,
+        }).catch((error) => {
+          console.error("[book-ingest] async task failed", error);
+        });
+
+        res.status(202).json({
+          ok: true,
+          run_id: runId,
+          status: "queued",
+          db_path: RESOLVED_BOOK_INGEST_DB_PATH,
+          stored_file: storedPath,
+          source_sha256: sourceSha256,
+        });
+      } catch (error) {
+        res.status(500).json({ message: asMessage(error, "上传解析失败") });
+      }
+    },
+  );
+
+  app.post("/api/admin/books/:bookId/reparse", requireAuth, requireCsrf, requireAdmin, async (req, res) => {
+    const bookId = normalizePositiveInteger(req.params?.bookId);
+    if (!bookId) {
+      res.status(400).json({ message: "book_id 必须是正整数" });
+      return;
+    }
+
+    const targetBook = getBookByBookId(bookId);
+    if (!targetBook) {
+      res.status(404).json({ message: "书籍不存在", code: "book_not_found" });
+      return;
+    }
+
+    const sourcePath = String(targetBook.source_path || "").trim();
+    if (!sourcePath) {
+      res.status(400).json({ message: "书籍缺少 source_path，无法重解析", code: "book_source_missing" });
+      return;
+    }
+
+    if (!fs.existsSync(sourcePath)) {
+      res.status(400).json({ message: `源文件不存在：${sourcePath}`, code: "book_source_not_found" });
+      return;
+    }
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const runningRow = booksDb
+        .prepare(
+          `
+            SELECT run_id
+            FROM ingest_runs
+            WHERE source_path = ? AND status = 'running'
+            ORDER BY id DESC
+            LIMIT 1
+          `,
+        )
+        .get(sourcePath);
+
+      if (runningRow?.run_id) {
+        res.status(409).json({
+          code: "book_ingest_running",
+          message: `该书正在解析中（任务 ${String(runningRow.run_id)}）`,
+          task: getIngestRunByRunId(String(runningRow.run_id)),
+        });
+        return;
+      }
+    } catch {
+      // ignore lookup failure and continue to command execution
+    }
+
+    try {
+      const runId = `ingest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      void runBookIngestCommand({
+        source: sourcePath,
+        format: targetBook.source_format,
+        title: targetBook.title,
+        author: targetBook.author,
+        genre: targetBook.genre,
+        language: targetBook.language,
+        replaceBook: true,
+        runId,
+      }).catch((error) => {
+        console.error("[book-ingest] reparse task failed", error);
+      });
+
+      res.status(202).json({
+        ok: true,
+        run_id: runId,
+        status: "queued",
+        book: {
+          id: targetBook.id,
+          title: targetBook.title,
+          chapter_count: targetBook.chapter_count,
+          source_name: path.basename(sourcePath),
+        },
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "发起重解析失败") });
+    }
+  });
+
+  app.get("/api/admin/books/summaries", requireAuth, requireAdmin, (req, res) => {
+    const limit = Math.min(50, normalizePositiveInteger(req.query?.limit) || 10);
+    const tasks = listSummaryRuns(limit);
+    res.json({
+      ok: true,
+      db_path: RESOLVED_BOOK_INGEST_DB_PATH,
+      limit,
+      tasks,
+    });
+  });
+
+  app.get("/api/admin/books/summaries/:runId", requireAuth, requireAdmin, (req, res) => {
+    const task = getSummaryRunByRunId(req.params?.runId || "");
+    if (!task) {
+      res.status(404).json({ message: "未找到摘要任务", code: "book_summary_run_not_found" });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      db_path: RESOLVED_BOOK_INGEST_DB_PATH,
+      task,
+    });
+  });
+
+  app.post("/api/admin/books/:bookId/summaries", requireAuth, requireCsrf, requireAdmin, async (req, res) => {
+    const bookId = normalizePositiveInteger(req.params?.bookId);
+    if (!bookId) {
+      res.status(400).json({ message: "book_id 必须是正整数" });
+      return;
+    }
+
+    const targetBook = getBookByBookId(bookId);
+    if (!targetBook) {
+      res.status(404).json({ message: "书籍不存在", code: "book_not_found" });
+      return;
+    }
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const runningRow = booksDb
+        .prepare(
+          `
+            SELECT run_id
+            FROM chapter_summary_runs
+            WHERE scope_type = 'book' AND scope_id = ? AND status = 'running'
+            ORDER BY id DESC
+            LIMIT 1
+          `,
+        )
+        .get(bookId);
+
+      if (runningRow?.run_id) {
+        res.status(409).json({
+          code: "book_summary_running",
+          message: `该书摘要任务正在进行中（任务 ${String(runningRow.run_id)}）`,
+          task: getSummaryRunByRunId(String(runningRow.run_id)),
+        });
+        return;
+      }
+    } catch {
+      // ignore lookup failure and continue to command execution
+    }
+
+    try {
+      const runId = `summary_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const force = normalizeBoolean(req.query?.force ?? req.body?.force);
+
+      void runBookSummaryCommand({
+        bookId,
+        runId,
+        force,
+        chunkSize: normalizePositiveInteger(req.query?.chunk_size ?? req.body?.chunk_size) || 1000,
+        summaryMaxChars: normalizePositiveInteger(req.query?.summary_max_chars ?? req.body?.summary_max_chars) || 200,
+      }).catch((error) => {
+        console.error("[book-summary] async task failed", error);
+      });
+
+      res.status(202).json({
+        ok: true,
+        run_id: runId,
+        status: "queued",
+        book: {
+          id: targetBook.id,
+          title: targetBook.title,
+          chapter_count: targetBook.chapter_count,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "创建摘要任务失败") });
+    }
+  });
 
   app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (req, res) => {
     if (!LEGACY_GENERATE_STORY_CREATE_ENABLED) {
@@ -279,6 +935,9 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
           SELECT c.id, c.book_id, b.title AS book_title, b.genre,
                  c.chapter_index, c.chapter_title, c.char_count, c.word_count,
                  c.used_count, c.last_used_at, c.meta_json,
+                 json_extract(c.meta_json, '$.summary.text') AS summary_text,
+                 json_extract(c.meta_json, '$.summary.status') AS summary_status,
+                 json_extract(c.meta_json, '$.summary.updated_at') AS summary_updated_at,
                  SUBSTR(REPLACE(REPLACE(c.chapter_text, char(13), ' '), char(10), ' '), 1, 120) AS preview,
                  CASE WHEN EXISTS (
                    SELECT 1
@@ -342,6 +1001,10 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
           const chapterId = Number(row.id);
           const generatedMeta = generatedByChapterId.get(chapterId);
           const hasSucceededStory = Boolean(row.has_succeeded_story) || Boolean(generatedMeta);
+          const summaryText = String(row.summary_text || "").trim();
+          const summaryStatus = String(row.summary_status || "").trim();
+          const summaryUpdatedAt = row.summary_updated_at ? String(row.summary_updated_at) : null;
+          const previewText = summaryText || String(row.preview || "");
 
           return {
             id: chapterId,
@@ -354,7 +1017,10 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
             word_count: Number(row.word_count || 0),
             used_count: Number(row.used_count || 0),
             last_used_at: row.last_used_at || null,
-            preview: String(row.preview || ""),
+            preview: previewText,
+            summary_text: summaryText,
+            summary_status: summaryStatus,
+            summary_updated_at: summaryUpdatedAt,
             has_succeeded_story: hasSucceededStory,
             generated_story_id: generatedMeta?.story_id || null,
             generated_run_id: generatedMeta?.run_id || null,
@@ -365,6 +1031,63 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
       });
     } catch (error) {
       res.status(500).json({ message: asMessage(error, "读取章节列表失败") });
+    }
+  });
+
+  app.get("/api/admin/book-chapters/:chapterId/text", requireAuth, requireAdmin, (req, res) => {
+    const chapterId = normalizePositiveInteger(req.params?.chapterId);
+    if (!chapterId) {
+      res.status(400).json({ message: "chapter_id 必须是正整数" });
+      return;
+    }
+
+    try {
+      const booksDatabase = getBooksDbOrThrow();
+      const row = booksDatabase
+        .prepare(
+          `
+            SELECT
+              c.id,
+              c.book_id,
+              b.title AS book_title,
+              b.author AS book_author,
+              c.chapter_index,
+              c.chapter_title,
+              c.char_count,
+              c.word_count,
+              c.chapter_text,
+              c.meta_json
+            FROM chapters c
+            JOIN books b ON b.id = c.book_id
+            WHERE c.id = ?
+            LIMIT 1
+          `,
+        )
+        .get(chapterId);
+
+      if (!row) {
+        res.status(404).json({ message: "章节不存在", code: "chapter_not_found" });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        db_path: RESOLVED_BOOK_INGEST_DB_PATH,
+        chapter: {
+          id: Number(row.id),
+          book_id: Number(row.book_id),
+          book_title: String(row.book_title || ""),
+          book_author: String(row.book_author || ""),
+          chapter_index: Number(row.chapter_index),
+          chapter_title: String(row.chapter_title || ""),
+          char_count: Number(row.char_count || 0),
+          word_count: Number(row.word_count || 0),
+          chapter_text: String(row.chapter_text || ""),
+          meta_json: safeParseJsonObject(row.meta_json),
+        },
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "读取章节原文失败") });
     }
   });
 
