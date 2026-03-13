@@ -62,3 +62,6 @@ web/public/assets/xiangyu/
 
 # Accidental nested backend folder
 backend/backend/
+
+# local ingest artifacts
+scripts/book_ingest/data/
