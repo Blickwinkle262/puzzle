@@ -16,6 +16,7 @@ export function createGenerationPublishService(options = {}) {
     normalizeShortText,
     randomToken,
     nowIso,
+    syncBooksGenerationLink,
   } = options;
 
   function resolveStoryAssetUrlFromFsPath(filePath) {
@@ -224,7 +225,7 @@ export function createGenerationPublishService(options = {}) {
     const coverName = `cover${coverExt}`;
     fs.copyFileSync(path.join(stagingImagesDir, firstImageName), path.join(stagingDir, coverName));
 
-    const storyTitle = String(summary?.title || "").trim() || storyId;
+    const storyTitle = String(summary?.title || job?.payload?.chapter_title || "").trim() || storyId;
     const storyDescription = String(summary?.description || "").trim();
     const overviewTitle = String(summary?.story_overview_title || "").trim();
     const overviewParagraphs = Array.isArray(summary?.story_overview_paragraphs)
@@ -353,6 +354,19 @@ export function createGenerationPublishService(options = {}) {
       selected_count: selectedCandidates.length,
       manifest: manifestUrl,
     });
+
+    if (typeof syncBooksGenerationLink === "function") {
+      try {
+        syncBooksGenerationLink({
+          runId,
+          chapterId: job?.payload?.chapter_id,
+          storyId,
+          summaryPath: job?.summary_path,
+        });
+      } catch {
+        // keep publish flow robust even if books sync fails
+      }
+    }
 
     return {
       story_id: storyId,

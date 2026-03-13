@@ -210,9 +210,13 @@ export function registerRunGenerateTextRoutes(app, deps) {
       const storedScenes = replaceGenerationScenes(runId, sceneRows, "pipeline");
 
       const now = nowIso();
+      const chapterStoryTitle = String(mergedPayload.chapter_title || "").trim();
+      const generatedStoryTitle = String(atomicResult.title || "").trim();
+      const resolvedStoryTitle = chapterStoryTitle || generatedStoryTitle;
+
       const nextPayload = {
         ...mergedPayload,
-        title: String(atomicResult.title || "").trim(),
+        title: resolvedStoryTitle,
         description: String(atomicResult.description || "").trim(),
         story_overview_title: String(atomicResult.story_overview_title || "").trim(),
         story_overview_paragraphs: Array.isArray(atomicResult.story_overview_paragraphs)
@@ -242,7 +246,7 @@ export function registerRunGenerateTextRoutes(app, deps) {
         target_date: targetDate,
         review_mode: true,
         review_status: "pending_review",
-        title: String(atomicResult.title || "").trim(),
+        title: resolvedStoryTitle,
         description: String(atomicResult.description || "").trim(),
         story_overview_title: String(atomicResult.story_overview_title || "").trim(),
         story_overview_paragraphs: Array.isArray(atomicResult.story_overview_paragraphs)

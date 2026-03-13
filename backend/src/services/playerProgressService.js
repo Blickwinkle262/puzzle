@@ -5,6 +5,7 @@ export function createPlayerProgressService(options = {}) {
     loadStoryCatalog,
     loadStoryById,
     buildGeneratedStoryBookMap,
+    listBooksForNavigation,
     resolveDefaultStoryBookMeta,
     resolveStoryBookMeta,
     normalizeContentVersion,
@@ -15,6 +16,7 @@ export function createPlayerProgressService(options = {}) {
     const stories = [];
     const generatedStoryBookMap = buildGeneratedStoryBookMap();
     const defaultBookMeta = resolveDefaultStoryBookMeta(generatedStoryBookMap);
+    const coveredBookKeys = new Set();
 
     for (const entry of catalog.stories) {
       const story = loadStoryById(entry.id, catalog);
@@ -62,9 +64,69 @@ export function createPlayerProgressService(options = {}) {
         completed_levels: completedLevels,
         last_level_id: lastLevelId,
       });
+
+      const coveredBookKey = resolveBookCoverKey(bookMeta.book_id, bookMeta.book_title);
+      if (coveredBookKey) {
+        coveredBookKeys.add(coveredBookKey);
+      }
+    }
+
+    const books = typeof listBooksForNavigation === "function" ? listBooksForNavigation() : [];
+    for (const item of books) {
+      const bookId = String(item?.book_id || "").trim();
+      const bookTitle = String(item?.book_title || "").trim() || "未归档书籍";
+      const chapterCount = Math.max(0, Number(item?.chapter_count || 0));
+      const coveredBookKey = resolveBookCoverKey(bookId, bookTitle);
+      if (coveredBookKey && coveredBookKeys.has(coveredBookKey)) {
+        continue;
+      }
+
+      if (coveredBookKey) {
+        coveredBookKeys.add(coveredBookKey);
+      }
+
+      stories.push({
+        id: `book_placeholder_${bookId || normalizeBookSegment(bookTitle) || String(stories.length + 1)}`,
+        title: `${bookTitle}（待生成）`,
+        description: chapterCount > 0
+          ? `该书已入库（${chapterCount}章），尚未生成故事关卡。`
+          : "该书已入库，尚未生成故事关卡。",
+        cover: "",
+        cover_missing: true,
+        book_id: bookId,
+        book_title: bookTitle,
+        total_levels: 0,
+        completed_levels: 0,
+        last_level_id: null,
+        book_placeholder: true,
+      });
     }
 
     return stories;
+  }
+
+  function resolveBookCoverKey(bookId, bookTitle) {
+    const normalizedId = normalizeBookSegment(bookId);
+    if (normalizedId) {
+      return `id:${normalizedId}`;
+    }
+
+    const normalizedTitle = normalizeBookSegment(bookTitle);
+    if (normalizedTitle) {
+      return `title:${normalizedTitle}`;
+    }
+
+    return "";
+  }
+
+  function normalizeBookSegment(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 48);
   }
 
   function getLevelProgressMap(userId, storyOrStoryId) {
