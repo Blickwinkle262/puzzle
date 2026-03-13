@@ -1,6 +1,8 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
 
 import {
+  AdminBookIngestTask,
+  AdminBookSummaryTask,
   AdminBookInfo,
   AdminChapterSummary,
   AdminGenerationJob,
@@ -431,6 +433,497 @@ export function AdminChapterSelectionSection({
   );
 }
 
+type AdminBookUploadSectionProps = {
+  books: AdminBookInfo[];
+  bookUploadTasks: AdminBookIngestTask[];
+  bookSummaryTasks: AdminBookSummaryTask[];
+  collapsed: boolean;
+  loadingBookUploadTasks: boolean;
+  loadingBookSummaryTasks: boolean;
+  reparsingBook: boolean;
+  summaryBookId: string;
+  generatingBookSummary: boolean;
+  uploadingBook: boolean;
+  onReloadTasks: () => void;
+  onReloadSummaryTasks: () => void;
+  onReparseBook: (bookId: number) => void;
+  onSummaryBookIdChange: (value: string) => void;
+  onGenerateBookSummary: (bookId: number) => void;
+  onUploadBook: (file: File) => void;
+  onToggleSection: () => void;
+};
+
+export function AdminBookUploadSection({
+  books,
+  bookUploadTasks,
+  bookSummaryTasks,
+  collapsed,
+  loadingBookUploadTasks,
+  loadingBookSummaryTasks,
+  reparsingBook,
+  summaryBookId,
+  generatingBookSummary,
+  uploadingBook,
+  onReloadTasks,
+  onReloadSummaryTasks,
+  onReparseBook,
+  onSummaryBookIdChange,
+  onGenerateBookSummary,
+  onUploadBook,
+  onToggleSection,
+}: AdminBookUploadSectionProps): JSX.Element {
+  const [dismissedSuccessRunId, setDismissedSuccessRunId] = useState("");
+  const runningTask = bookUploadTasks.find((task) => task.status === "running" || task.status === "queued") || null;
+  const runningSummaryTask = bookSummaryTasks.find((task) => task.status === "running" || task.status === "queued") || null;
+  const latestSucceededIngestTask = bookUploadTasks.find((task) => task.status === "succeeded") || null;
+  const selectedSummaryBookId = Number(summaryBookId);
+  const selectedSummaryBook = Number.isFinite(selectedSummaryBookId)
+    ? books.find((item) => item.id === selectedSummaryBookId) || null
+    : null;
+
+  const statusClassName = (status: AdminBookIngestTask["status"]): string => {
+    if (status === "succeeded") {
+      return "done";
+    }
+    if (status === "failed") {
+      return "todo";
+    }
+    return "running";
+  };
+
+  const statusLabel = (status: AdminBookIngestTask["status"]): string => {
+    if (status === "succeeded") {
+      return "succeeded";
+    }
+    if (status === "failed") {
+      return "failed";
+    }
+    if (status === "running") {
+      return "running";
+    }
+    return "queued";
+  };
+
+  const formatTaskSummary = (task: AdminBookIngestTask): string => {
+    if (task.status === "succeeded") {
+      return `总${task.total}章 / 新增${task.inserted} / 更新${task.updated} / 跳过${task.skipped}`;
+    }
+    if (task.status === "failed") {
+      const reason = String(task.error_message || "未知错误").trim();
+      return reason ? `失败：${compactText(reason, 80)}` : "失败：未知错误";
+    }
+    return `文件：${task.source_name || "-"}`;
+  };
+
+  const formatSummaryTask = (task: AdminBookSummaryTask): string => {
+    if (task.status === "succeeded") {
+      return `总${task.total}章 / 成功${task.succeeded} / 跳过${task.skipped} / 失败${task.failed}`;
+    }
+    if (task.status === "failed") {
+      const reason = String(task.error_message || "未知错误").trim();
+      return reason ? `失败：${compactText(reason, 80)}` : "失败：未知错误";
+    }
+    return `摘要生成中（${task.processed}/${task.total}）`;
+  };
+
+  const parseSummaryBookId = (): number => {
+    const value = Number(summaryBookId);
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+    return Math.floor(value);
+  };
+
+  const taskTimestamp = (task: AdminBookSummaryTask): string => String(task.created_at || task.started_at || task.finished_at || "");
+  const latestSummaryTaskByBookId = new Map<number, AdminBookSummaryTask>();
+  for (const task of bookSummaryTasks) {
+    if (task.scope_type !== "book" || !Number.isFinite(task.scope_id)) {
+      continue;
+    }
+    const existing = latestSummaryTaskByBookId.get(task.scope_id);
+    if (!existing || taskTimestamp(task) >= taskTimestamp(existing)) {
+      latestSummaryTaskByBookId.set(task.scope_id, task);
+    }
+  }
+
+  const bookListRows = books.map((book) => {
+    const summaryTask = latestSummaryTaskByBookId.get(book.id) || null;
+    const total = Math.max(0, Number(book.chapter_count) || 0);
+    const summarizedCount = summaryTask
+      ? Math.max(0, (Number(summaryTask.succeeded) || 0) + (Number(summaryTask.skipped) || 0))
+      : 0;
+    const doneCount = Math.max(0, Math.min(total, summarizedCount));
+    const pendingCount = Math.max(0, total - doneCount);
+    const percent = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+    const status = summaryTask?.status || "queued";
+    const hasSummaryTask = Boolean(summaryTask);
+
+    let statusText = "未生成";
+    let statusClass = "todo";
+    if (summaryTask?.status === "running" || summaryTask?.status === "queued") {
+      statusText = "生成中";
+      statusClass = "running";
+    } else if (summaryTask?.status === "succeeded") {
+      statusText = doneCount >= total && total > 0 ? "已完成" : "部分完成";
+      statusClass = "done";
+    } else if (summaryTask?.status === "failed") {
+      statusText = "失败";
+      statusClass = "todo";
+    } else if (hasSummaryTask && doneCount > 0) {
+      statusText = "部分完成";
+      statusClass = "running";
+    }
+
+    return {
+      book,
+      doneCount,
+      pendingCount,
+      percent,
+      status,
+      statusText,
+      statusClass,
+    };
+  });
+
+  const totalBooks = books.length;
+  const totalChapters = books.reduce((sum, book) => sum + Math.max(0, Number(book.chapter_count) || 0), 0);
+  const totalSummarized = bookListRows.reduce((sum, row) => sum + row.doneCount, 0);
+  const totalPending = Math.max(0, totalChapters - totalSummarized);
+  const summaryPercent = totalChapters > 0 ? Math.round((totalSummarized / totalChapters) * 100) : 0;
+  const runningUploadCount = bookUploadTasks.filter((task) => task.status === "queued" || task.status === "running").length;
+  const runningSummaryCount = bookSummaryTasks.filter((task) => task.status === "queued" || task.status === "running").length;
+  const targetBookId = parseSummaryBookId();
+
+  const latestSuccessBannerText = latestSucceededIngestTask
+    ? `${latestSucceededIngestTask.source_name || "book"} 解析完成 · ${Math.max(0, latestSucceededIngestTask.inserted || latestSucceededIngestTask.total)}章入库`
+    : "";
+  const showLatestSuccessBanner = Boolean(
+    latestSucceededIngestTask
+      && latestSucceededIngestTask.run_id
+      && latestSucceededIngestTask.run_id !== dismissedSuccessRunId,
+  );
+
+  useEffect(() => {
+    if (!latestSucceededIngestTask?.run_id) {
+      return;
+    }
+    if (!dismissedSuccessRunId) {
+      return;
+    }
+    if (latestSucceededIngestTask.run_id !== dismissedSuccessRunId) {
+      setDismissedSuccessRunId("");
+    }
+  }, [dismissedSuccessRunId, latestSucceededIngestTask?.run_id]);
+
+  return (
+    <div className="admin-run-box admin-collapsible-box">
+      <button type="button" className={`admin-collapse-head ${collapsed ? "collapsed" : ""}`} onClick={onToggleSection}>
+        <h4>书籍管理（上传解析）</h4>
+        <span className="admin-collapse-icon" aria-hidden="true">▾</span>
+      </button>
+
+      {!collapsed && (
+        <>
+          <p className="progress-inline">上传 .epub / .txt 后会自动解析入库，并同步到“谜题管理（章节生成）”选章节列表。</p>
+
+          {runningTask && (
+            <div className="banner-info admin-running-banner">
+              <span>检测到未完成上传任务：{runningTask.run_id}（{statusLabel(runningTask.status)}）</span>
+            </div>
+          )}
+
+          {runningSummaryTask && (
+            <div className="banner-info admin-running-banner">
+              <span>检测到未完成摘要任务：{runningSummaryTask.run_id}（{statusLabel(runningSummaryTask.status)}）</span>
+            </div>
+          )}
+
+          {showLatestSuccessBanner && latestSucceededIngestTask && (
+            <div className="admin-book-success-banner" role="status" aria-live="polite">
+              <span className="admin-book-success-dot" aria-hidden="true">●</span>
+              <span>{latestSuccessBannerText}</span>
+              <button
+                type="button"
+                className="link-btn"
+                onClick={() => setDismissedSuccessRunId(latestSucceededIngestTask.run_id)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          <div className="admin-book-manager">
+            <section className="admin-book-section">
+              <div className="admin-book-section-head">
+                <h4>总览</h4>
+                <span className="progress-inline">当前运行：上传 {runningUploadCount} · 摘要 {runningSummaryCount}</span>
+              </div>
+
+              <div className="admin-book-overview-stats">
+                <div className="admin-book-stat-card">
+                  <strong>{totalBooks}</strong>
+                  <span>总书籍</span>
+                </div>
+                <div className="admin-book-stat-card">
+                  <strong>{totalChapters}</strong>
+                  <span>总章节</span>
+                </div>
+                <div className="admin-book-stat-card">
+                  <strong>{totalSummarized}</strong>
+                  <span>已摘要</span>
+                </div>
+                <div className="admin-book-stat-card">
+                  <strong>{totalPending}</strong>
+                  <span>待处理</span>
+                </div>
+              </div>
+
+              <div className="admin-book-overview-progress">
+                <div className="admin-running-banner">
+                  <span>摘要总进度</span>
+                  <span>{summaryPercent}%</span>
+                </div>
+                <div className="admin-progress-bar">
+                  <div style={{ width: `${summaryPercent}%` }} />
+                </div>
+              </div>
+
+              <div className="admin-book-target-row">
+                <label className="form-field">
+                  摘要目标书籍
+                  <select value={summaryBookId} onChange={(event) => onSummaryBookIdChange(event.currentTarget.value)}>
+                    <option value="">请选择书籍</option>
+                    {books.map((book) => (
+                      <option key={`summary-book-${book.id}`} value={book.id}>
+                        {book.title}（{book.chapter_count}章）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="inline-actions admin-book-target-actions">
+                  <button
+                    type="button"
+                    className="nav-btn"
+                    disabled={reparsingBook || uploadingBook || targetBookId <= 0}
+                    onClick={() => onReparseBook(targetBookId)}
+                  >
+                    {reparsingBook ? "重解析中..." : "一键重解析"}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    disabled={generatingBookSummary || targetBookId <= 0}
+                    onClick={() => onGenerateBookSummary(targetBookId)}
+                  >
+                    {generatingBookSummary ? "摘要生成中..." : "生成章节摘要"}
+                  </button>
+                </div>
+              </div>
+
+              {selectedSummaryBook && !generatingBookSummary && (
+                <p className="progress-inline">
+                  当前摘要目标：{selectedSummaryBook.title}（{selectedSummaryBook.chapter_count}章，摘要预览将显示在章节预览中）
+                </p>
+              )}
+            </section>
+
+            <section className="admin-book-section">
+              <div className="admin-book-section-head">
+                <h4>书籍列表</h4>
+                <span className="progress-inline">点击书籍可快速切换摘要目标</span>
+              </div>
+
+              {bookListRows.length === 0 ? (
+                <p className="progress-inline">暂无已入库书籍，请先上传新书。</p>
+              ) : (
+                <ul className="admin-book-list">
+                  {bookListRows.map((row) => {
+                    const isTarget = row.book.id === targetBookId;
+                    return (
+                      <li key={`book-list-${row.book.id}`} className={`admin-book-list-item ${isTarget ? "is-active" : ""}`.trim()}>
+                        <div className="admin-book-list-head">
+                          <div>
+                            <strong>{row.book.title}</strong>
+                            <p className="progress-inline">
+                              {row.book.author || "佚名"} · {row.book.chapter_count}章
+                            </p>
+                          </div>
+                          <span className={`level-state ${row.statusClass}`}>{row.statusText}</span>
+                        </div>
+
+                        <div className="admin-running-banner">
+                          <span className="progress-inline">摘要进度</span>
+                          <span className="progress-inline">{row.doneCount} / {row.book.chapter_count}</span>
+                        </div>
+                        <div className="admin-progress-bar">
+                          <div style={{ width: `${row.percent}%` }} />
+                        </div>
+
+                        <div className="inline-actions admin-book-item-actions">
+                          <button
+                            type="button"
+                            className={isTarget ? "primary-btn" : "nav-btn"}
+                            onClick={() => onSummaryBookIdChange(String(row.book.id))}
+                          >
+                            {isTarget ? "当前目标" : "设为目标"}
+                          </button>
+                          <button
+                            type="button"
+                            className="nav-btn"
+                            disabled={generatingBookSummary}
+                            onClick={() => onGenerateBookSummary(row.book.id)}
+                          >
+                            {generatingBookSummary && isTarget ? "生成中..." : "生成摘要"}
+                          </button>
+                          <button
+                            type="button"
+                            className="link-btn"
+                            disabled={reparsingBook || uploadingBook}
+                            onClick={() => onReparseBook(row.book.id)}
+                          >
+                            {reparsingBook && isTarget ? "重解析中..." : "重解析"}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            <section className="admin-book-section">
+              <div className="admin-book-section-head">
+                <h4>上传新书</h4>
+                <span className="progress-inline">.epub / .txt 上传后自动解析章节</span>
+              </div>
+
+              <label className="admin-book-upload-drop">
+                <input
+                  className="admin-book-upload-input"
+                  type="file"
+                  accept=".epub,.txt,application/epub+zip,text/plain"
+                  disabled={uploadingBook}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (!file) {
+                      return;
+                    }
+                    onUploadBook(file);
+                  }}
+                />
+                <span className="admin-book-upload-plus">＋</span>
+                <strong>点击上传 .epub / .txt</strong>
+                <small>上传后自动解析并同步到章节选择列表</small>
+              </label>
+
+              {uploadingBook && <p className="progress-inline">上传解析中，请稍候...</p>}
+              {generatingBookSummary && <p className="progress-inline">章节摘要生成中，请稍候...</p>}
+
+              <div className="admin-book-task-grid">
+                <div className="admin-recent-jobs admin-book-task-card">
+                  <div className="admin-running-banner">
+                    <h4>最近上传任务（10条）</h4>
+                    <button type="button" className="nav-btn" onClick={onReloadTasks} disabled={loadingBookUploadTasks}>
+                      {loadingBookUploadTasks ? "刷新中..." : "刷新任务"}
+                    </button>
+                  </div>
+
+                  {loadingBookUploadTasks ? (
+                    <p className="progress-inline">加载中...</p>
+                  ) : bookUploadTasks.length === 0 ? (
+                    <p className="progress-inline">暂无上传任务记录。</p>
+                  ) : (
+                    <ul>
+                      {bookUploadTasks.map((task) => (
+                        <li key={task.run_id}>
+                          <span>{task.run_id}</span>
+                          <span className={`level-state ${statusClassName(task.status)}`}>{statusLabel(task.status)}</span>
+                          <span>{task.source_name || "-"}</span>
+                          <span>{formatTaskSummary(task)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="admin-recent-jobs admin-book-task-card">
+                  <div className="admin-running-banner">
+                    <h4>最近摘要任务（10条）</h4>
+                    <button type="button" className="nav-btn" onClick={onReloadSummaryTasks} disabled={loadingBookSummaryTasks}>
+                      {loadingBookSummaryTasks ? "刷新中..." : "刷新任务"}
+                    </button>
+                  </div>
+
+                  {loadingBookSummaryTasks ? (
+                    <p className="progress-inline">加载中...</p>
+                  ) : bookSummaryTasks.length === 0 ? (
+                    <p className="progress-inline">暂无摘要任务记录。</p>
+                  ) : (
+                    <ul>
+                      {bookSummaryTasks.map((task) => (
+                        <li key={task.run_id}>
+                          <span>{task.run_id}</span>
+                          <span className={`level-state ${statusClassName(task.status)}`}>{statusLabel(task.status)}</span>
+                          <span>{task.scope_type}:{task.scope_id}</span>
+                          <span>{formatSummaryTask(task)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+type AdminBookReplaceConfirmModalProps = {
+  pendingReplace: {
+    incomingFileName: string;
+    existingBookTitle: string;
+    existingChapterCount: number;
+    message: string;
+  } | null;
+  submitting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+};
+
+export function AdminBookReplaceConfirmModal({
+  pendingReplace,
+  submitting,
+  onCancel,
+  onConfirm,
+}: AdminBookReplaceConfirmModalProps): JSX.Element | null {
+  if (!pendingReplace) {
+    return null;
+  }
+
+  return (
+    <div className="mask" role="dialog" aria-modal="true" onClick={onCancel}>
+      <div className="mask-card admin-generate-modal" onClick={(event) => event.stopPropagation()}>
+        <h4>同名书籍冲突</h4>
+        <p className="progress-inline">{pendingReplace.message || "检测到已有同名书籍，是否替换？"}</p>
+        <p className="progress-inline">旧书：{pendingReplace.existingBookTitle}（{Math.max(0, pendingReplace.existingChapterCount)}章）</p>
+        <p className="progress-inline">本次文件：{pendingReplace.incomingFileName}</p>
+        <div className="inline-actions">
+          <button type="button" className="primary-btn" onClick={onConfirm} disabled={submitting}>
+            {submitting ? "替换中..." : "替换旧书"}
+          </button>
+          <button type="button" className="link-btn" onClick={onCancel} disabled={submitting}>
+            撤销上传
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type PuzzleFlowStep = "select" | "generate" | "review";
 
 type AdminRunReviewSectionProps = {
@@ -693,6 +1186,7 @@ type AdminPuzzleSelectStageProps = {
   selectedChapter: AdminChapterSummary | null;
   selectedChapterId: number | null;
   submitting: boolean;
+  loadingChapterTextPreview: boolean;
   totalChapterPages: number;
   onBookIdChange: (value: string) => void;
   onChapterPageSizeChange: (value: number) => void;
@@ -705,6 +1199,7 @@ type AdminPuzzleSelectStageProps = {
   onNextPage: () => void;
   onOpenGeneratedStory: (storyId: string) => void;
   onOpenGenerateDialog: () => void;
+  onPreviewChapterText: (chapterId?: number) => void;
   onPrevPage: () => void;
   onSelectChapterId: (chapterId: number) => void;
   onSetPuzzleFlowGenerate: () => void;
@@ -727,6 +1222,7 @@ export function AdminPuzzleSelectStage({
   selectedChapter,
   selectedChapterId,
   submitting,
+  loadingChapterTextPreview,
   totalChapterPages,
   onBookIdChange,
   onChapterPageSizeChange,
@@ -739,74 +1235,132 @@ export function AdminPuzzleSelectStage({
   onNextPage,
   onOpenGeneratedStory,
   onOpenGenerateDialog,
+  onPreviewChapterText,
   onPrevPage,
   onSelectChapterId,
   onSetPuzzleFlowGenerate,
 }: AdminPuzzleSelectStageProps): JSX.Element {
+  const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false);
+
+  const renderPreviewPanel = (mode: "desktop" | "mobile"): JSX.Element => {
+    if (!selectedChapter) {
+      return (
+        <div className="admin-run-box admin-puzzle-preview">
+          <h4>章节预览</h4>
+          <p className="progress-inline">请先在左侧选择章节，再发起生成。</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`admin-run-box admin-puzzle-preview ${mode === "mobile" ? "mobile" : ""}`.trim()}>
+        <div className="admin-puzzle-preview-head">
+          <h4>章节预览</h4>
+          {mode === "mobile" && (
+            <button type="button" className="nav-btn" onClick={() => setMobilePreviewOpen(false)}>
+              收起
+            </button>
+          )}
+        </div>
+        <p className="progress-inline">
+          当前选择：第{selectedChapter.chapter_index}章 · {selectedChapter.chapter_title}（{selectedChapter.char_count}字）
+        </p>
+        <p className="admin-puzzle-preview-text">{selectedChapter.preview || "暂无章节预览"}</p>
+        <div className="inline-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            disabled={submitting}
+            onClick={onOpenGenerateDialog}
+          >
+            {submitting ? "创建中..." : "去生成"}
+          </button>
+          <button
+            type="button"
+            className="nav-btn"
+            disabled={loadingChapterTextPreview}
+            onClick={() => onPreviewChapterText(selectedChapter.id)}
+          >
+            {loadingChapterTextPreview && selectedChapterId === selectedChapter.id ? "加载原文..." : "预览原文"}
+          </button>
+          {canJumpGenerateStep && (
+            <button
+              type="button"
+              className="nav-btn"
+              onClick={onSetPuzzleFlowGenerate}
+            >
+              查看生成进度
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
-      <p className="progress-inline">第一步：先选章节，再点击“去生成”创建任务。</p>
+      <p className="progress-inline">第一步：先选章节，再点击“去生成”创建任务；章节预览改为悬浮窗展示。</p>
 
-      <div className="admin-puzzle-layout">
-        <div className="admin-puzzle-main">
-          <div className="admin-filters">
-            <label className="form-field">
-              书籍
-              <select value={bookId} onChange={(event) => onBookIdChange(event.currentTarget.value)}>
-                <option value="">全部（默认聊斋）</option>
-                {books.map((book) => (
-                  <option key={book.id} value={book.id}>
-                    {book.title}（{book.chapter_count}章）
-                  </option>
-                ))}
-              </select>
-            </label>
+      <div className="admin-puzzle-main">
+        <div className="admin-filters admin-puzzle-filters">
+          <label className="form-field">
+            书籍
+            <select value={bookId} onChange={(event) => onBookIdChange(event.currentTarget.value)}>
+              <option value="">全部书籍</option>
+              {books.map((book) => (
+                <option key={book.id} value={book.id}>
+                  {book.title}（{book.chapter_count}章）
+                </option>
+              ))}
+            </select>
+          </label>
 
-            <label className="form-field">
-              关键词
-              <input value={keyword} onChange={(event) => onKeywordChange(event.currentTarget.value)} placeholder="章节标题关键词" />
-            </label>
+          <label className="form-field">
+            关键词
+            <input value={keyword} onChange={(event) => onKeywordChange(event.currentTarget.value)} placeholder="章节标题关键词" />
+          </label>
 
-            <label className="form-field">
-              最小字数
-              <input value={minCharsInput} onChange={(event) => onMinCharsInputChange(event.currentTarget.value)} inputMode="numeric" />
-            </label>
+          <label className="form-field">
+            最小字数
+            <input value={minCharsInput} onChange={(event) => onMinCharsInputChange(event.currentTarget.value)} inputMode="numeric" />
+          </label>
 
-            <label className="form-field">
-              最大字数
-              <input value={maxCharsInput} onChange={(event) => onMaxCharsInputChange(event.currentTarget.value)} inputMode="numeric" />
-            </label>
+          <label className="form-field">
+            最大字数
+            <input value={maxCharsInput} onChange={(event) => onMaxCharsInputChange(event.currentTarget.value)} inputMode="numeric" />
+          </label>
 
-            <label className="form-field">
-              每页条数
-              <select
-                value={chapterPageSize}
-                onChange={(event) => onChapterPageSizeChange(Number(event.currentTarget.value))}
-              >
-                {chapterPageSizeOptions.map((size) => (
-                  <option key={size} value={size}>
-                    {size} 条/页
-                  </option>
-                ))}
-              </select>
-            </label>
+          <label className="form-field">
+            每页条数
+            <select
+              value={chapterPageSize}
+              onChange={(event) => onChapterPageSizeChange(Number(event.currentTarget.value))}
+            >
+              {chapterPageSizeOptions.map((size) => (
+                <option key={size} value={size}>
+                  {size} 条/页
+                </option>
+              ))}
+            </select>
+          </label>
 
-            <label className="admin-check">
+          <div className="inline-actions admin-puzzle-filter-actions">
+            <label className="admin-check admin-puzzle-reuse-check">
               <input type="checkbox" checked={includeUsed} onChange={(event) => onIncludeUsedChange(event.currentTarget.checked)} />
               显示已生成章节（可重生）
             </label>
-
-            <div className="inline-actions">
-              <button type="button" className="nav-btn" onClick={onLoadChapters} disabled={loadingChapters}>
-                {loadingChapters ? "查询中..." : "刷新章节"}
-              </button>
-              <button type="button" className="link-btn" onClick={onClose}>
-                收起面板
-              </button>
-            </div>
+            <button type="button" className="nav-btn" onClick={onLoadChapters} disabled={loadingChapters}>
+              {loadingChapters ? "查询中..." : "刷新章节"}
+            </button>
+            <button type="button" className="link-btn" onClick={onClose}>
+              收起面板
+            </button>
           </div>
+        </div>
 
-          <div className="admin-chapter-table">
+        <div className="admin-puzzle-layout">
+          <div className="admin-puzzle-table-stack">
+            <div className="admin-chapter-table">
             {chapters.length === 0 ? (
               <div className="progress-inline">没有匹配章节，请调整条件。</div>
             ) : (
@@ -818,7 +1372,6 @@ export function AdminPuzzleSelectStage({
                     <th>章节</th>
                     <th>字数</th>
                     <th>使用次数</th>
-                    <th>预览</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -836,9 +1389,11 @@ export function AdminPuzzleSelectStage({
                           onChange={() => onSelectChapterId(chapter.id)}
                         />
                       </td>
-                      <td>{chapter.book_title}</td>
                       <td>
-                        第{chapter.chapter_index}章 · {chapter.chapter_title}
+                        <div className="admin-chapter-cell-book">{chapter.book_title}</div>
+                      </td>
+                      <td>
+                        <div className="admin-chapter-cell-title">第{chapter.chapter_index}章 · {chapter.chapter_title}</div>
                         {chapter.has_succeeded_story && (
                           <>
                             <span className="level-state done" title={chapter.generated_story_id || undefined}>
@@ -858,86 +1413,77 @@ export function AdminPuzzleSelectStage({
                       </td>
                       <td>{chapter.char_count}</td>
                       <td>{chapter.used_count}</td>
-                      <td>{chapter.preview || "-"}</td>
                       <td>
-                        <button
-                          type="button"
-                          className="nav-btn"
-                          disabled={submitting}
-                          onClick={() => {
-                            onSelectChapterId(chapter.id);
-                            onOpenGenerateDialog();
-                          }}
-                        >
-                          生成
-                        </button>
+                        <div className="admin-chapter-cell-action">
+                          <button
+                            type="button"
+                            className="nav-btn"
+                            disabled={submitting}
+                            onClick={() => {
+                              onSelectChapterId(chapter.id);
+                              onOpenGenerateDialog();
+                            }}
+                          >
+                            生成
+                          </button>
+                          <button
+                            type="button"
+                            className="nav-btn"
+                            disabled={loadingChapterTextPreview}
+                            onClick={() => {
+                              onSelectChapterId(chapter.id);
+                              onPreviewChapterText(chapter.id);
+                            }}
+                          >
+                            {loadingChapterTextPreview && selectedChapterId === chapter.id ? "加载原文..." : "预览原文"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
-          </div>
-
-          <div className="admin-chapter-pagination">
-            <button
-              type="button"
-              className="nav-btn admin-page-side-btn"
-              onClick={onPrevPage}
-              disabled={loadingChapters || chapterPage <= 1}
-            >
-              ← 上一页
-            </button>
-
-            <div className="admin-page-meta">
-              第 {chapterPage} / {totalChapterPages} 页 · 每页 {chapterPageSize} 条 · 共 {chapterTotal} 条
             </div>
 
-            <button
-              type="button"
-              className="nav-btn admin-page-side-btn"
-              onClick={onNextPage}
-              disabled={loadingChapters || chapterPage >= totalChapterPages}
-            >
-              下一页 →
-            </button>
-          </div>
-        </div>
+            <div className="admin-chapter-pagination">
+              <button
+                type="button"
+                className="nav-btn admin-page-side-btn"
+                onClick={onPrevPage}
+                disabled={loadingChapters || chapterPage <= 1}
+              >
+                ← 上一页
+              </button>
 
-        <aside className="admin-puzzle-side">
-          <div className="admin-run-box admin-puzzle-preview">
-            <h4>章节预览</h4>
-            {selectedChapter ? (
-              <>
-                <p className="progress-inline">
-                  当前选择：第{selectedChapter.chapter_index}章 · {selectedChapter.chapter_title}（{selectedChapter.char_count}字）
-                </p>
-                <p className="admin-puzzle-preview-text">{selectedChapter.preview || "暂无章节预览"}</p>
-                <div className="inline-actions">
-                  <button
-                    type="button"
-                    className="primary-btn"
-                    disabled={submitting}
-                    onClick={onOpenGenerateDialog}
-                  >
-                    {submitting ? "创建中..." : "去生成"}
-                  </button>
-                  {canJumpGenerateStep && (
-                    <button
-                      type="button"
-                      className="nav-btn"
-                      onClick={onSetPuzzleFlowGenerate}
-                    >
-                      查看生成进度
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : (
-              <p className="progress-inline">请先在左侧选择章节，再发起生成。</p>
-            )}
+              <div className="admin-page-meta">
+                第 {chapterPage} / {totalChapterPages} 页 · 每页 {chapterPageSize} 条 · 共 {chapterTotal} 条
+              </div>
+
+              <button
+                type="button"
+                className="nav-btn admin-page-side-btn"
+                onClick={onNextPage}
+                disabled={loadingChapters || chapterPage >= totalChapterPages}
+              >
+                下一页 →
+              </button>
+            </div>
           </div>
-        </aside>
+
+          <aside className="admin-puzzle-side">{renderPreviewPanel("desktop")}</aside>
+        </div>
+      </div>
+
+      <div className={`admin-puzzle-preview-fab-shell ${mobilePreviewOpen ? "is-open" : ""}`}>
+        <button
+          type="button"
+          className="admin-puzzle-preview-fab-toggle"
+          onClick={() => setMobilePreviewOpen((prev) => !prev)}
+        >
+          章节速览 {selectedChapter ? `第${selectedChapter.chapter_index}章` : "未选择"}
+        </button>
+        {mobilePreviewOpen && renderPreviewPanel("mobile")}
       </div>
     </>
   );
@@ -1532,6 +2078,50 @@ export function AdminScenePreviewModal({ scenePreview, onClose }: AdminScenePrev
           <p className="progress-inline">暂无可预览图片。</p>
         )}
         <p className="admin-image-preview-prompt">{compactText(scenePreview.image_prompt, 260)}</p>
+      </div>
+    </div>
+  );
+}
+
+type AdminChapterTextPreviewModalProps = {
+  chapterPreview: {
+    chapter_id: number;
+    book_title: string;
+    book_author: string;
+    chapter_index: number;
+    chapter_title: string;
+    char_count: number;
+    word_count: number;
+    chapter_text: string;
+  } | null;
+  onClose: () => void;
+};
+
+export function AdminChapterTextPreviewModal({
+  chapterPreview,
+  onClose,
+}: AdminChapterTextPreviewModalProps): JSX.Element | null {
+  if (!chapterPreview) {
+    return null;
+  }
+
+  return (
+    <div className="mask" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="mask-card admin-chapter-text-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="admin-image-preview-head">
+          <h4>
+            第{chapterPreview.chapter_index}章 · {chapterPreview.chapter_title}
+          </h4>
+          <button type="button" className="nav-btn" onClick={onClose}>关闭</button>
+        </div>
+        <p className="progress-inline">
+          {chapterPreview.book_title}
+          {chapterPreview.book_author ? ` · ${chapterPreview.book_author}` : ""}
+        </p>
+        <p className="progress-inline">
+          字数 {chapterPreview.char_count} · 词数 {chapterPreview.word_count}
+        </p>
+        <pre className="admin-chapter-text-content">{chapterPreview.chapter_text || "暂无章节原文"}</pre>
       </div>
     </div>
   );

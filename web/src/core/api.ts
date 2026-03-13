@@ -1,5 +1,10 @@
 import {
   AdminBookChaptersResponse,
+  AdminBookIngestTask,
+  AdminBookSummaryTask,
+  AdminChapterTextResponse,
+  AdminBookUploadResponse,
+  AdminStoryMetaResponse,
   AdminGenerationCreateResponse,
   AdminGenerationCandidate,
   AdminGenerationRunDetailResponse,
@@ -68,11 +73,13 @@ export type UpdateLevelProgressResponse = {
 
 class ApiError extends Error {
   status: number;
+  payload: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, payload: unknown = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.payload = payload;
   }
 }
 
@@ -113,7 +120,7 @@ async function requestJson<T>(
         ? (payload as { message: string }).message
         : `请求失败 (${response.status})`;
 
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, payload);
   }
 
   if (response.status === 204) {
@@ -242,6 +249,34 @@ export function apiGetStoryDetail(storyId: string): Promise<StoryDetailResponse>
   return requestJson<StoryDetailResponse>(`/stories/${encodeURIComponent(storyId)}`);
 }
 
+export function apiGetAdminStoryMeta(storyId: string): Promise<AdminStoryMetaResponse> {
+  const normalizedStoryId = String(storyId || "").trim();
+  if (!normalizedStoryId) {
+    throw new ApiError(400, "story_id 不能为空");
+  }
+  return requestJson<AdminStoryMetaResponse>(`/admin/stories/${encodeURIComponent(normalizedStoryId)}/meta`);
+}
+
+export function apiUpdateAdminStoryMeta(
+  storyId: string,
+  payload: {
+    book_id: string;
+    description: string;
+    story_overview_title: string;
+    story_overview_paragraphs: string[];
+  },
+): Promise<AdminStoryMetaResponse> {
+  const normalizedStoryId = String(storyId || "").trim();
+  if (!normalizedStoryId) {
+    throw new ApiError(400, "story_id 不能为空");
+  }
+
+  return requestJson<AdminStoryMetaResponse>(`/admin/stories/${encodeURIComponent(normalizedStoryId)}/meta`, {
+    method: "PUT",
+    body: payload,
+  });
+}
+
 export function apiUpdateLevelProgress(
   levelId: string,
   payload: UpdateLevelProgressPayload,
@@ -263,6 +298,17 @@ export type AdminBookChaptersQuery = {
   include_toc_like?: boolean;
   limit?: number;
   offset?: number;
+};
+
+export type AdminUploadBookPayload = {
+  file: Blob;
+  fileName?: string;
+  format?: "epub" | "txt";
+  title?: string;
+  author?: string;
+  genre?: string;
+  language?: string;
+  replaceBook?: boolean;
 };
 
 export type AdminGenerateStoryPayload = {
@@ -293,6 +339,185 @@ export type AdminUsersQuery = {
 export function apiListAdminBookChapters(query: AdminBookChaptersQuery = {}): Promise<AdminBookChaptersResponse> {
   const qs = buildQueryString(query);
   return requestJson<AdminBookChaptersResponse>(`/admin/book-chapters${qs}`);
+}
+
+export function apiGetAdminChapterText(chapterId: number): Promise<AdminChapterTextResponse> {
+  const normalizedChapterId = Number.isFinite(chapterId) ? Math.floor(chapterId) : 0;
+  if (normalizedChapterId <= 0) {
+    throw new ApiError(400, "chapter_id 必须是正整数");
+  }
+
+  return requestJson<AdminChapterTextResponse>(
+    `/admin/book-chapters/${encodeURIComponent(String(normalizedChapterId))}/text`,
+  );
+}
+
+export async function apiUploadAdminBook(payload: AdminUploadBookPayload): Promise<AdminBookUploadResponse> {
+  if (!payload || !(payload.file instanceof Blob)) {
+    throw new ApiError(400, "上传文件无效");
+  }
+
+  const query = buildQueryString({
+    format: payload.format,
+    title: payload.title,
+    author: payload.author,
+    genre: payload.genre,
+    language: payload.language,
+    replace_book: payload.replaceBook,
+  });
+
+  const hasFileCtor = typeof File !== "undefined";
+  const fallbackName = hasFileCtor && payload.file instanceof File ? payload.file.name : "book_upload.epub";
+  const rawName = String(payload.fileName || fallbackName || "book_upload.epub");
+  const safeFileName = rawName
+    .replace(/[\\/\r\n]+/g, "_")
+    .replace(/[^\x20-\x7E]+/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 120)
+    .trim() || "book_upload.epub";
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/octet-stream",
+    "x-file-name": safeFileName,
+  };
+
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) {
+    headers[CSRF_HEADER_NAME] = csrfToken;
+  }
+
+  const response = await fetch(`${API_PREFIX}/admin/books/upload${query}`, {
+    method: "POST",
+    credentials: "include",
+    headers,
+    body: payload.file,
+  });
+
+  if (!response.ok) {
+    const errorPayload = await safeParseJson(response);
+    const message =
+      errorPayload && typeof errorPayload === "object" && typeof (errorPayload as { message?: unknown }).message === "string"
+        ? (errorPayload as { message: string }).message
+        : `请求失败 (${response.status})`;
+    throw new ApiError(response.status, message, errorPayload);
+  }
+
+  return (await response.json()) as AdminBookUploadResponse;
+}
+
+export function apiGetAdminBookUploadTask(runId: string): Promise<{ ok: boolean; db_path: string; task: AdminBookIngestTask }> {
+  return requestJson<{ ok: boolean; db_path: string; task: AdminBookIngestTask }>(
+    `/admin/books/upload/${encodeURIComponent(runId)}`,
+  );
+}
+
+export function apiListAdminBookUploadTasks(limit = 10): Promise<{
+  ok: boolean;
+  db_path: string;
+  limit: number;
+  tasks: AdminBookIngestTask[];
+}> {
+  const normalizedLimit = Number.isFinite(limit)
+    ? Math.min(50, Math.max(1, Math.floor(limit)))
+    : 10;
+  const qs = buildQueryString({ limit: normalizedLimit });
+  return requestJson<{
+    ok: boolean;
+    db_path: string;
+    limit: number;
+    tasks: AdminBookIngestTask[];
+  }>(`/admin/books/upload${qs}`);
+}
+
+export function apiReparseAdminBook(bookId: number): Promise<{
+  ok: boolean;
+  run_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  book: {
+    id: number;
+    title: string;
+    chapter_count: number;
+    source_name: string;
+  };
+}> {
+  const normalizedBookId = Number.isFinite(bookId) ? Math.floor(bookId) : 0;
+  if (normalizedBookId <= 0) {
+    throw new ApiError(400, "book_id 必须是正整数");
+  }
+  return requestJson<{
+    ok: boolean;
+    run_id: string;
+    status: "queued" | "running" | "succeeded" | "failed";
+    book: {
+      id: number;
+      title: string;
+      chapter_count: number;
+      source_name: string;
+    };
+  }>(`/admin/books/${encodeURIComponent(String(normalizedBookId))}/reparse`, {
+    method: "POST",
+  });
+}
+
+export function apiCreateAdminBookSummaryRun(
+  bookId: number,
+  payload: {
+    force?: boolean;
+    chunk_size?: number;
+    summary_max_chars?: number;
+  } = {},
+): Promise<{
+  ok: boolean;
+  run_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  book: {
+    id: number;
+    title: string;
+    chapter_count: number;
+  };
+}> {
+  const normalizedBookId = Number.isFinite(bookId) ? Math.floor(bookId) : 0;
+  if (normalizedBookId <= 0) {
+    throw new ApiError(400, "book_id 必须是正整数");
+  }
+
+  return requestJson<{
+    ok: boolean;
+    run_id: string;
+    status: "queued" | "running" | "succeeded" | "failed";
+    book: {
+      id: number;
+      title: string;
+      chapter_count: number;
+    };
+  }>(`/admin/books/${encodeURIComponent(String(normalizedBookId))}/summaries`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiGetAdminBookSummaryTask(runId: string): Promise<{ ok: boolean; db_path: string; task: AdminBookSummaryTask }> {
+  return requestJson<{ ok: boolean; db_path: string; task: AdminBookSummaryTask }>(
+    `/admin/books/summaries/${encodeURIComponent(runId)}`,
+  );
+}
+
+export function apiListAdminBookSummaryTasks(limit = 10): Promise<{
+  ok: boolean;
+  db_path: string;
+  limit: number;
+  tasks: AdminBookSummaryTask[];
+}> {
+  const normalizedLimit = Number.isFinite(limit)
+    ? Math.min(50, Math.max(1, Math.floor(limit)))
+    : 10;
+  const qs = buildQueryString({ limit: normalizedLimit });
+  return requestJson<{
+    ok: boolean;
+    db_path: string;
+    limit: number;
+    tasks: AdminBookSummaryTask[];
+  }>(`/admin/books/summaries${qs}`);
 }
 
 export function apiCreateAdminGenerationJob(payload: AdminGenerateStoryPayload): Promise<AdminGenerationCreateResponse> {

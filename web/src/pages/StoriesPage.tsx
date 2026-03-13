@@ -1,11 +1,12 @@
 import { SyntheticEvent } from "react";
 
-import { StoryListItem } from "../core/types";
+import { AdminStoryBookOption, StoryListItem } from "../core/types";
 
 type StoryBookGroup = {
   key: string;
   title: string;
   stories: StoryListItem[];
+  storyCount: number;
   totalLevels: number;
   completedLevels: number;
 };
@@ -29,6 +30,15 @@ type StoriesPageProps = {
   showChangePassword: boolean;
   showGuestUpgrade: boolean;
   storyBookGroups: StoryBookGroup[];
+  storyMetaBookOptions: AdminStoryBookOption[];
+  storyMetaEditor: {
+    story_id: string;
+    title: string;
+    book_id: string;
+    description: string;
+    story_overview_title: string;
+    story_overview_text: string;
+  } | null;
   totalBookCount: number;
   totalCompletedCount: number;
   totalLevelCount: number;
@@ -46,13 +56,22 @@ type StoriesPageProps = {
   onLogout: () => void;
   onNextPasswordInputChange: (value: string) => void;
   onOpenStory: (story: StoryListItem) => void;
+  onOpenStoryMetaEditor: (story: StoryListItem) => void;
+  onSaveStoryMetaEditor: () => void;
   onStoryCoverRefChange: (storyId: string, node: HTMLImageElement | null) => void;
+  onStoryMetaBookIdChange: (value: string) => void;
+  onStoryMetaDescriptionChange: (value: string) => void;
+  onStoryMetaOverviewTextChange: (value: string) => void;
+  onStoryMetaOverviewTitleChange: (value: string) => void;
+  onCloseStoryMetaEditor: () => void;
   onToggleAdminGenerator: () => void;
   onToggleBook: (bookKey: string) => void;
   onToggleChangePassword: () => void;
   onToggleGuestUpgrade: () => void;
   onUpgradePasswordInputChange: (value: string) => void;
   onUpgradeUsernameInputChange: (value: string) => void;
+  loadingStoryMetaEditor: boolean;
+  savingStoryMetaEditor: boolean;
 };
 
 export function StoriesPage({
@@ -74,6 +93,8 @@ export function StoriesPage({
   showChangePassword,
   showGuestUpgrade,
   storyBookGroups,
+  storyMetaBookOptions,
+  storyMetaEditor,
   totalBookCount,
   totalCompletedCount,
   totalLevelCount,
@@ -91,13 +112,22 @@ export function StoriesPage({
   onLogout,
   onNextPasswordInputChange,
   onOpenStory,
+  onOpenStoryMetaEditor,
+  onSaveStoryMetaEditor,
   onStoryCoverRefChange,
+  onStoryMetaBookIdChange,
+  onStoryMetaDescriptionChange,
+  onStoryMetaOverviewTextChange,
+  onStoryMetaOverviewTitleChange,
+  onCloseStoryMetaEditor,
   onToggleAdminGenerator,
   onToggleBook,
   onToggleChangePassword,
   onToggleGuestUpgrade,
   onUpgradePasswordInputChange,
   onUpgradeUsernameInputChange,
+  loadingStoryMetaEditor,
+  savingStoryMetaEditor,
 }: StoriesPageProps): JSX.Element {
   return (
     <div className={`hub-shell stories-shell stories-home-shell role-shell role-${roleKey}`}>
@@ -240,7 +270,10 @@ export function StoriesPage({
           {storyBookGroups.map((group, groupIndex) => {
             const isOpen = activeBookKey === group.key;
             const bookProgressPercent = group.totalLevels > 0 ? Math.round((group.completedLevels / group.totalLevels) * 100) : 0;
-            const coverStory = group.stories.find((story) => Boolean(story.cover)) || group.stories[0] || null;
+            const coverStory = group.stories.find((story) => !story.book_placeholder && Boolean(story.cover))
+              || group.stories.find((story) => !story.book_placeholder)
+              || group.stories[0]
+              || null;
 
             return (
               <section
@@ -264,7 +297,7 @@ export function StoriesPage({
                   <div className="stories-book-info">
                     <h2>{group.title}</h2>
                     <p>
-                      故事 {group.stories.length} 本 · 关卡 {group.totalLevels} 关
+                      故事 {group.storyCount} 本 · 关卡 {group.totalLevels} 关
                     </p>
                     <div className="stories-book-progress-row">
                       <div className="stories-book-progress-bar">
@@ -298,50 +331,74 @@ export function StoriesPage({
                   </div>
                   <div className="stories-book-body-inner">
                     <p className="stories-book-description">
-                      已收录 {group.stories.length} 个故事，支持继续闯关与新故事扩展。
+                      {group.storyCount > 0
+                        ? `已收录 ${group.storyCount} 个故事，支持继续闯关与新故事扩展。`
+                        : "该书已入库，暂未生成故事关卡。请在管理后台先生成故事。"}
                     </p>
 
                     <div className={`stories-story-grid ${openingStoryId ? "has-opening" : ""}`}>
                       {group.stories.map((story) => {
+                        const isPlaceholder = Boolean(story.book_placeholder);
                         const completed = Number(story.completed_levels || 0);
                         const total = Number(story.total_levels || 0);
                         const progressPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
                         const statusClass = completed >= total && total > 0 ? "done" : completed > 0 ? "current" : "none";
+                        const showEditButton = isAdmin && showAdminGenerator && !isPlaceholder;
 
                         return (
-                          <button
-                            type="button"
+                          <div
                             key={story.id}
-                            className={`stories-story-card status-${statusClass} ${openingStoryId === story.id ? "is-opening" : ""}`}
-                            disabled={Boolean(openingStoryId)}
-                            onClick={() => onOpenStory(story)}
+                            className={`stories-story-card status-${statusClass} ${openingStoryId === story.id ? "is-opening" : ""} ${showEditButton ? "has-edit" : ""}`.trim()}
                           >
-                            <div className="stories-story-cover">
-                              <img
-                                ref={(node) => {
-                                  onStoryCoverRefChange(story.id, node);
-                                }}
-                                src={onCoverOrFallback(story.cover)}
-                                alt={story.title}
-                                onError={onCoverError}
-                              />
-                              {statusClass === "current" && <span className="stories-story-badge current">进行中</span>}
-                              {statusClass === "done" && <span className="stories-story-badge done">已完成</span>}
-                            </div>
-                            <div className="stories-story-info">
-                              <h3>{story.title}</h3>
-                              <p>{story.description}</p>
-                              <div className="stories-story-progress-row">
-                                <span className={completed > 0 ? "has-progress" : ""}>
-                                  完成度 {completed}/{total}
-                                </span>
-                                <div className="stories-story-mini-bar">
-                                  <i style={{ width: `${progressPercent}%` }} />
-                                </div>
+                            <button
+                              type="button"
+                              className="stories-story-card-open"
+                              disabled={Boolean(openingStoryId) || isPlaceholder}
+                              onClick={() => onOpenStory(story)}
+                            >
+                              <div className="stories-story-cover">
+                                <img
+                                  ref={(node) => {
+                                    onStoryCoverRefChange(story.id, node);
+                                  }}
+                                  src={onCoverOrFallback(story.cover)}
+                                  alt={story.title}
+                                  onError={onCoverError}
+                                />
+                                {statusClass === "current" && <span className="stories-story-badge current">进行中</span>}
+                                {statusClass === "done" && <span className="stories-story-badge done">已完成</span>}
+                                {isPlaceholder && <span className="stories-story-badge">待生成</span>}
                               </div>
-                              <div className="stories-story-cta">{completed > 0 ? "继续翻开" : "打开这本故事"} →</div>
-                            </div>
-                          </button>
+                              <div className="stories-story-info">
+                                <h3>{story.title}</h3>
+                                <p>{story.description}</p>
+                                <div className="stories-story-progress-row">
+                                  {isPlaceholder ? (
+                                    <span>尚未生成</span>
+                                  ) : (
+                                    <span className={completed > 0 ? "has-progress" : ""}>
+                                      完成度 {completed}/{total}
+                                    </span>
+                                  )}
+                                  <div className="stories-story-mini-bar">
+                                    <i style={{ width: `${progressPercent}%` }} />
+                                  </div>
+                                </div>
+                                <div className="stories-story-cta">{isPlaceholder ? "请先生成故事" : completed > 0 ? "继续翻开" : "打开这本故事"} →</div>
+                              </div>
+                            </button>
+
+                            {showEditButton && (
+                              <button
+                                type="button"
+                                className="stories-story-edit-btn"
+                                disabled={Boolean(openingStoryId) || loadingStoryMetaEditor || savingStoryMetaEditor}
+                                onClick={() => onOpenStoryMetaEditor(story)}
+                              >
+                                编辑
+                              </button>
+                            )}
+                          </div>
                         );
                       })}
                     </div>
@@ -353,6 +410,78 @@ export function StoriesPage({
         </main>
       ) : (
         <div className="screen-message">暂无可展示的故事内容</div>
+      )}
+
+      {storyMetaEditor && (
+        <div className="mask" role="dialog" aria-modal="true" onClick={onCloseStoryMetaEditor}>
+          <div className="mask-card stories-edit-modal" onClick={(event) => event.stopPropagation()}>
+            <h4>编辑故事元数据</h4>
+            <p className="progress-inline">{storyMetaEditor.title}</p>
+
+            <label className="form-field">
+              所属书目
+              <select
+                value={storyMetaEditor.book_id}
+                onChange={(event) => onStoryMetaBookIdChange(event.currentTarget.value)}
+                disabled={savingStoryMetaEditor}
+              >
+                {storyMetaBookOptions.map((item) => (
+                  <option key={`story-book-${item.book_id}`} value={item.book_id}>
+                    {item.book_title}（{item.chapter_count}章）
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="form-field">
+              故事简介
+              <textarea
+                rows={3}
+                value={storyMetaEditor.description}
+                onChange={(event) => onStoryMetaDescriptionChange(event.currentTarget.value)}
+                disabled={savingStoryMetaEditor}
+              />
+            </label>
+
+            <label className="form-field">
+              梗概标题
+              <input
+                value={storyMetaEditor.story_overview_title}
+                onChange={(event) => onStoryMetaOverviewTitleChange(event.currentTarget.value)}
+                disabled={savingStoryMetaEditor}
+              />
+            </label>
+
+            <label className="form-field">
+              故事梗概（段落间空一行）
+              <textarea
+                rows={8}
+                value={storyMetaEditor.story_overview_text}
+                onChange={(event) => onStoryMetaOverviewTextChange(event.currentTarget.value)}
+                disabled={savingStoryMetaEditor}
+              />
+            </label>
+
+            <div className="inline-actions">
+              <button
+                type="button"
+                className="primary-btn"
+                disabled={savingStoryMetaEditor}
+                onClick={onSaveStoryMetaEditor}
+              >
+                {savingStoryMetaEditor ? "保存中..." : "保存修改"}
+              </button>
+              <button
+                type="button"
+                className="link-btn"
+                disabled={savingStoryMetaEditor}
+                onClick={onCloseStoryMetaEditor}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {openingStoryId && <div className="opening-note">正在翻开故事...</div>}

@@ -18,6 +18,10 @@ export function createStoryCatalogService(options = {}) {
     getBooksDbOrThrow,
   } = options;
 
+  const DEFAULT_UNASSIGNED_BOOK_ID = "unassigned";
+  const DEFAULT_UNASSIGNED_BOOK_TITLE = "未归档书籍";
+  const DEFAULT_FALLBACK_BOOK_TITLE_KEYWORD = "聊斋";
+
   const {
     getLevelOverrideMap,
     loadTimerPolicy,
@@ -39,6 +43,98 @@ export function createStoryCatalogService(options = {}) {
     safeParseJsonObject,
   });
 
+  function normalizeLongText(value, limit = 4000) {
+    if (typeof value !== "string") {
+      return "";
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return "";
+    }
+    return trimmed.slice(0, limit);
+  }
+
+  function normalizeOverviewParagraphs(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter((item) => item.length > 0)
+      .slice(0, 24);
+  }
+
+  function parseOverviewParagraphsJson(value) {
+    if (typeof value !== "string" || !value.trim()) {
+      return [];
+    }
+
+    let parsed = [];
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return [];
+    }
+
+    return normalizeOverviewParagraphs(parsed);
+  }
+
+  function listStoryMetaOverridesById() {
+    const map = new Map();
+    try {
+      const rows = db
+        .prepare(
+          `
+            SELECT
+              story_id,
+              book_id,
+              book_title,
+              description,
+              story_overview_title,
+              story_overview_paragraphs_json,
+              updated_by_user_id,
+              created_at,
+              updated_at
+            FROM story_meta_overrides
+          `,
+        )
+        .all();
+
+      for (const row of rows) {
+        const storyId = normalizeShortText(row?.story_id);
+        if (!storyId) {
+          continue;
+        }
+
+        map.set(storyId, {
+          story_id: storyId,
+          book_id: normalizeStoryBookId(row?.book_id),
+          book_title: normalizeShortText(row?.book_title),
+          description: typeof row?.description === "string" ? row.description : "",
+          story_overview_title: typeof row?.story_overview_title === "string" ? row.story_overview_title : "",
+          story_overview_paragraphs: parseOverviewParagraphsJson(row?.story_overview_paragraphs_json),
+          updated_by_user_id: Number(row?.updated_by_user_id || 0) || null,
+          created_at: row?.created_at ? String(row.created_at) : null,
+          updated_at: row?.updated_at ? String(row.updated_at) : null,
+        });
+      }
+    } catch {
+      return new Map();
+    }
+
+    return map;
+  }
+
+  function getStoryMetaOverrideById(storyId) {
+    const normalizedStoryId = normalizeShortText(storyId);
+    if (!normalizedStoryId) {
+      return null;
+    }
+
+    const map = listStoryMetaOverridesById();
+    return map.get(normalizedStoryId) || null;
+  }
+
   function loadStoryCatalog() {
     if (!fs.existsSync(storyIndexFile)) {
       throw new Error(`未找到故事索引文件: ${storyIndexFile}`);
@@ -57,6 +153,7 @@ export function createStoryCatalogService(options = {}) {
 
     const idSet = new Set();
     const stories = [];
+    const overridesById = listStoryMetaOverridesById();
 
     for (const item of payload.stories) {
       if (!item || typeof item !== "object") {
@@ -81,14 +178,19 @@ export function createStoryCatalogService(options = {}) {
 
       resolveManifestFsPath(manifest);
 
+      const storyOverride = overridesById.get(id) || null;
+
       const storyTitle = typeof item.title === "string" ? item.title : "";
-      const storyBookTitle = normalizeShortText(item.book_title);
-      const storyBookId = normalizeStoryBookId(item.book_id);
+      const storyBookTitle = normalizeShortText(storyOverride?.book_title || item.book_title);
+      const storyBookId = normalizeStoryBookId(storyOverride?.book_id || item.book_id);
+      const storyDescription = storyOverride
+        ? normalizeLongText(storyOverride.description)
+        : normalizeLongText(item.description);
 
       stories.push({
         id,
         title: storyTitle,
-        description: typeof item.description === "string" ? item.description : "",
+        description: storyDescription,
         cover: typeof item.cover === "string" ? item.cover : "",
         manifest,
         book_id: storyBookId,
@@ -123,21 +225,19 @@ export function createStoryCatalogService(options = {}) {
 
     const fallbackMeta = defaultBookMeta && typeof defaultBookMeta === "object"
       ? defaultBookMeta
-      : { book_id: "liaozhai", book_title: "聊斋志异" };
+      : { book_id: "", book_title: "" };
 
     const finalBookTitle = explicitBookTitle
       || normalizeShortText(generatedBookMeta?.book_title)
-      || normalizeShortText(fallbackMeta.book_title)
-      || "聊斋志异";
+      || normalizeShortText(fallbackMeta.book_title);
 
     const finalBookId = explicitBookId
       || normalizeStoryBookId(generatedBookMeta?.book_id)
-      || normalizeStoryBookId(fallbackMeta.book_id)
-      || "liaozhai";
+      || normalizeStoryBookId(fallbackMeta.book_id);
 
     return {
-      book_id: finalBookId,
-      book_title: finalBookTitle,
+      book_id: finalBookId || DEFAULT_UNASSIGNED_BOOK_ID,
+      book_title: finalBookTitle || DEFAULT_UNASSIGNED_BOOK_TITLE,
     };
   }
 
@@ -152,8 +252,8 @@ export function createStoryCatalogService(options = {}) {
       }
 
       map.set(storyId, {
-        book_id: normalizeStoryBookId(row?.book_id) || "liaozhai",
-        book_title: normalizeShortText(row?.book_title) || "聊斋志异",
+        book_id: normalizeStoryBookId(row?.book_id) || DEFAULT_UNASSIGNED_BOOK_ID,
+        book_title: normalizeShortText(row?.book_title) || DEFAULT_UNASSIGNED_BOOK_TITLE,
       });
     }
 
@@ -182,8 +282,8 @@ export function createStoryCatalogService(options = {}) {
 
       const bookMeta = getBookMetaById(row.book_id);
       map.set(storyId, {
-        book_id: normalizeStoryBookId(bookMeta.book_id || row.book_id) || "liaozhai",
-        book_title: normalizeShortText(bookMeta.book_title) || "聊斋志异",
+        book_id: normalizeStoryBookId(bookMeta.book_id || row.book_id) || DEFAULT_UNASSIGNED_BOOK_ID,
+        book_title: normalizeShortText(bookMeta.book_title) || DEFAULT_UNASSIGNED_BOOK_TITLE,
       });
     }
 
@@ -216,34 +316,60 @@ export function createStoryCatalogService(options = {}) {
     }
   }
 
-  function resolveDefaultStoryBookMeta(generatedStoryBookMap) {
-    if (generatedStoryBookMap instanceof Map && generatedStoryBookMap.size > 0) {
-      const first = generatedStoryBookMap.values().next().value;
-      if (first && typeof first === "object") {
-        return {
-          book_id: normalizeStoryBookId(first.book_id) || "liaozhai",
-          book_title: normalizeShortText(first.book_title) || "聊斋志异",
-        };
-      }
-    }
-
-    const preferred = findPreferredBookMeta();
-    if (preferred) {
-      return preferred;
+  function resolveDefaultStoryBookMeta() {
+    const preferredBookMeta = findPreferredDefaultBookMeta();
+    if (preferredBookMeta) {
+      return preferredBookMeta;
     }
 
     return {
-      book_id: "liaozhai",
-      book_title: "聊斋志异",
+      book_id: DEFAULT_UNASSIGNED_BOOK_ID,
+      book_title: DEFAULT_UNASSIGNED_BOOK_TITLE,
     };
+  }
+
+  function findPreferredDefaultBookMeta() {
+    try {
+      const booksDatabase = getBooksDbOrThrow();
+      const keywordLike = `%${DEFAULT_FALLBACK_BOOK_TITLE_KEYWORD}%`;
+      const sourceLike = "%liaozhai%";
+      const row = booksDatabase
+        .prepare(
+          `
+            SELECT id, title
+            FROM books
+            WHERE title LIKE ? OR source_path LIKE ?
+            ORDER BY CASE WHEN title LIKE ? THEN 0 ELSE 1 END, id ASC
+            LIMIT 1
+          `,
+        )
+        .get(keywordLike, sourceLike, keywordLike);
+
+      if (!row) {
+        return null;
+      }
+
+      const bookId = normalizeStoryBookId(row.id);
+      const bookTitle = normalizeShortText(row.title);
+      if (!bookId || !bookTitle) {
+        return null;
+      }
+
+      return {
+        book_id: bookId,
+        book_title: bookTitle,
+      };
+    } catch {
+      return null;
+    }
   }
 
   function getBookMetaById(bookId) {
     const normalizedBookId = normalizePositiveInteger(bookId);
     if (!normalizedBookId) {
       return {
-        book_id: "liaozhai",
-        book_title: "聊斋志异",
+        book_id: DEFAULT_UNASSIGNED_BOOK_ID,
+        book_title: DEFAULT_UNASSIGNED_BOOK_TITLE,
       };
     }
 
@@ -265,36 +391,8 @@ export function createStoryCatalogService(options = {}) {
 
     return {
       book_id: String(normalizedBookId),
-      book_title: "聊斋志异",
+      book_title: DEFAULT_UNASSIGNED_BOOK_TITLE,
     };
-  }
-
-  function findPreferredBookMeta() {
-    try {
-      const booksDatabase = getBooksDbOrThrow();
-      const preferred = booksDatabase
-        .prepare("SELECT id, title FROM books WHERE title LIKE ? ORDER BY id ASC LIMIT 1")
-        .get("%聊斋%");
-
-      if (preferred) {
-        return {
-          book_id: normalizeStoryBookId(preferred.id) || "liaozhai",
-          book_title: normalizeShortText(preferred.title) || "聊斋志异",
-        };
-      }
-
-      const first = booksDatabase.prepare("SELECT id, title FROM books ORDER BY id ASC LIMIT 1").get();
-      if (first) {
-        return {
-          book_id: normalizeStoryBookId(first.id) || "liaozhai",
-          book_title: normalizeShortText(first.title) || "聊斋志异",
-        };
-      }
-    } catch {
-      return null;
-    }
-
-    return null;
   }
 
   function normalizeStoryBookId(value) {
@@ -310,6 +408,150 @@ export function createStoryCatalogService(options = {}) {
       .replace(/^-|-$/g, "");
 
     return normalized.slice(0, 48);
+  }
+
+  function listBooksForNavigation() {
+    try {
+      const booksDatabase = getBooksDbOrThrow();
+      const rows = booksDatabase
+        .prepare(
+          `
+            SELECT
+              b.id AS id,
+              b.title AS title,
+              COUNT(c.id) AS chapter_count,
+              COALESCE(b.updated_at, b.created_at) AS updated_at
+            FROM books b
+            LEFT JOIN chapters c ON c.book_id = b.id
+            GROUP BY b.id
+            ORDER BY COALESCE(b.updated_at, b.created_at) DESC, b.id DESC
+          `,
+        )
+        .all();
+
+      return rows.map((row) => ({
+        book_id: normalizeStoryBookId(row.id) || DEFAULT_UNASSIGNED_BOOK_ID,
+        book_title: normalizeShortText(row.title) || DEFAULT_UNASSIGNED_BOOK_TITLE,
+        chapter_count: Math.max(0, Number(row.chapter_count || 0)),
+        updated_at: String(row.updated_at || ""),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  function buildAdminStoryMetaSnapshot(storyId) {
+    const normalizedStoryId = normalizeShortText(storyId);
+    if (!normalizedStoryId) {
+      return null;
+    }
+
+    const catalog = loadStoryCatalog();
+    const entry = catalog.stories.find((item) => item.id === normalizedStoryId);
+    if (!entry) {
+      return null;
+    }
+
+    const story = loadStoryById(normalizedStoryId, catalog);
+    if (!story) {
+      return null;
+    }
+
+    const generatedStoryBookMap = buildGeneratedStoryBookMap();
+    const defaultBookMeta = resolveDefaultStoryBookMeta();
+    const bookMeta = resolveStoryBookMeta(entry, story, generatedStoryBookMap, defaultBookMeta);
+    const books = listBooksForNavigation().map((item) => ({
+      book_id: String(item.book_id || ""),
+      book_title: String(item.book_title || ""),
+      chapter_count: Math.max(0, Number(item.chapter_count || 0)),
+    }));
+
+    const storyOverride = getStoryMetaOverrideById(normalizedStoryId);
+
+    return {
+      story: {
+        id: story.id,
+        title: story.title,
+        description: story.description,
+        book_id: bookMeta.book_id,
+        book_title: bookMeta.book_title,
+        story_overview_title: String(story.story_overview_title || ""),
+        story_overview_paragraphs: Array.isArray(story.story_overview_paragraphs)
+          ? story.story_overview_paragraphs.filter((item) => typeof item === "string")
+          : [],
+        has_override: Boolean(storyOverride),
+      },
+      books,
+    };
+  }
+
+  function saveAdminStoryMetaOverride(storyId, payload, actorUserId) {
+    const normalizedStoryId = normalizeShortText(storyId);
+    if (!normalizedStoryId) {
+      throw new Error("storyId 不能为空");
+    }
+
+    const snapshot = buildAdminStoryMetaSnapshot(normalizedStoryId);
+    if (!snapshot) {
+      throw new Error("故事不存在");
+    }
+
+    const availableBooks = listBooksForNavigation();
+    const requestedBookId = normalizeStoryBookId(payload?.book_id);
+    const currentBookId = normalizeStoryBookId(snapshot.story.book_id);
+    const nextBookId = requestedBookId || currentBookId;
+
+    let nextBookTitle = "";
+    const matchedBook = availableBooks.find((item) => normalizeStoryBookId(item.book_id) === nextBookId) || null;
+    if (matchedBook) {
+      nextBookTitle = normalizeShortText(matchedBook.book_title);
+    } else if (nextBookId === DEFAULT_UNASSIGNED_BOOK_ID) {
+      nextBookTitle = DEFAULT_UNASSIGNED_BOOK_TITLE;
+    } else {
+      throw new Error("book_id 不存在，请重新选择所属书目");
+    }
+
+    const nextDescription = normalizeLongText(payload?.description, 4000);
+    const nextOverviewTitle = normalizeLongText(payload?.story_overview_title, 120);
+    const nextOverviewParagraphs = normalizeOverviewParagraphs(payload?.story_overview_paragraphs);
+    const now = new Date().toISOString();
+    const normalizedActorUserId = normalizePositiveInteger(actorUserId) || null;
+
+    db.prepare(
+      `
+        INSERT INTO story_meta_overrides (
+          story_id,
+          book_id,
+          book_title,
+          description,
+          story_overview_title,
+          story_overview_paragraphs_json,
+          updated_by_user_id,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(story_id) DO UPDATE SET
+          book_id = excluded.book_id,
+          book_title = excluded.book_title,
+          description = excluded.description,
+          story_overview_title = excluded.story_overview_title,
+          story_overview_paragraphs_json = excluded.story_overview_paragraphs_json,
+          updated_by_user_id = excluded.updated_by_user_id,
+          updated_at = excluded.updated_at
+      `,
+    ).run(
+      normalizedStoryId,
+      nextBookId,
+      nextBookTitle,
+      nextDescription,
+      nextOverviewTitle,
+      JSON.stringify(nextOverviewParagraphs),
+      normalizedActorUserId,
+      now,
+      now,
+    );
+
+    return buildAdminStoryMetaSnapshot(normalizedStoryId);
   }
 
   function loadStoryById(storyId, catalog) {
@@ -338,16 +580,27 @@ export function createStoryCatalogService(options = {}) {
       ? coverCandidate
       : levels.find((item) => !item.asset_missing)?.source_image || "";
 
+    const storyOverride = getStoryMetaOverrideById(entry.id);
+    const storyOverviewParagraphs = storyOverride
+      ? normalizeOverviewParagraphs(storyOverride.story_overview_paragraphs)
+      : (Array.isArray(payload.story_overview_paragraphs)
+        ? payload.story_overview_paragraphs.filter((item) => typeof item === "string")
+        : []);
+    const storyOverviewTitle = storyOverride
+      ? normalizeLongText(storyOverride.story_overview_title, 120)
+      : String(payload.story_overview_title || "");
+    const storyDescription = storyOverride
+      ? normalizeLongText(storyOverride.description, 4000)
+      : normalizeLongText(payload.description || entry.description, 4000);
+
     return {
       id: entry.id,
       title: payload.title || entry.title || entry.id,
-      description: payload.description || entry.description || "",
+      description: storyDescription,
       cover,
       cover_missing: !cover,
-      story_overview_title: payload.story_overview_title || "",
-      story_overview_paragraphs: Array.isArray(payload.story_overview_paragraphs)
-        ? payload.story_overview_paragraphs.filter((item) => typeof item === "string")
-        : [],
+      story_overview_title: storyOverviewTitle,
+      story_overview_paragraphs: storyOverviewParagraphs,
       default_bgm: normalizeAssetPath(entry.manifest, payload.default_bgm),
       levels,
     };
@@ -355,6 +608,8 @@ export function createStoryCatalogService(options = {}) {
 
   return {
     buildGeneratedStoryBookMap,
+    listBooksForNavigation,
+    buildAdminStoryMetaSnapshot,
     loadStoryById,
     loadStoryCatalog,
     loadTimerPolicy,
@@ -365,5 +620,6 @@ export function createStoryCatalogService(options = {}) {
     resolveDefaultStoryBookMeta,
     resolveManifestFsPath,
     resolveStoryBookMeta,
+    saveAdminStoryMetaOverride,
   };
 }

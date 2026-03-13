@@ -19,6 +19,7 @@ import {
 import { runMigrations } from "./migrate.js";
 import { registerAdminLevelRoutes } from "./routes/adminLevelRoutes.js";
 import { registerAdminLegacyGenerationRoutes } from "./routes/adminLegacyGenerationRoutes.js";
+import { registerAdminStoryRoutes } from "./routes/adminStoryRoutes.js";
 import { registerAdminUserRoutes } from "./routes/adminUserRoutes.js";
 import { registerAuthRoutes } from "./routes/authRoutes.js";
 import { registerGenerationReviewRetryRoutes } from "./routes/generationReviewRetryRoutes.js";
@@ -208,6 +209,7 @@ const BOOK_INGEST_DB_PATH = resolveProjectPath(
   path.join(ROOT_DIR, "scripts", "book_ingest", "data", "books.sqlite"),
 );
 const RESOLVED_BOOK_INGEST_DB_PATH = BOOK_INGEST_DB_PATH;
+const BOOK_UPLOADS_DIR = path.join(path.dirname(RESOLVED_BOOK_INGEST_DB_PATH), "uploads");
 let booksDb = null;
 
 const {
@@ -226,6 +228,7 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 fs.mkdirSync(STORIES_ROOT_DIR, { recursive: true });
 fs.mkdirSync(STORY_GENERATOR_LOG_DIR, { recursive: true });
 fs.mkdirSync(STORY_GENERATOR_SUMMARY_DIR, { recursive: true });
+fs.mkdirSync(BOOK_UPLOADS_DIR, { recursive: true });
 ensureStoryIndexFile();
 
 const db = new Database(DB_PATH);
@@ -241,7 +244,9 @@ if (LEGACY_GENERATE_STORY_CREATE_ENABLED) {
 }
 
 const {
+  buildAdminStoryMetaSnapshot,
   buildGeneratedStoryBookMap,
+  listBooksForNavigation,
   loadStoryById,
   loadStoryCatalog,
   loadTimerPolicy,
@@ -252,6 +257,7 @@ const {
   resolveDefaultStoryBookMeta,
   resolveManifestFsPath,
   resolveStoryBookMeta,
+  saveAdminStoryMetaOverride,
 } = createStoryCatalogService({
   db,
   storyIndexFile: STORY_INDEX_FILE,
@@ -288,6 +294,7 @@ const {
   normalizeShortText,
   randomToken,
   nowIso,
+  syncBooksGenerationLink,
 });
 
 const {
@@ -522,6 +529,7 @@ const {
   loadStoryCatalog,
   loadStoryById,
   buildGeneratedStoryBookMap,
+  listBooksForNavigation,
   resolveDefaultStoryBookMeta,
   resolveStoryBookMeta,
   normalizeContentVersion,
@@ -674,6 +682,7 @@ registerAuthRoutes(app, {
 });
 
 registerAdminLegacyGenerationRoutes(app, {
+  BOOK_UPLOADS_DIR,
   LEGACY_GENERATE_STORY_CREATE_ENABLED,
   RESOLVED_BOOK_INGEST_DB_PATH,
   STORY_GENERATOR_INDEX_FILE,
@@ -703,6 +712,8 @@ registerAdminLegacyGenerationRoutes(app, {
   readJsonSafe,
   readRunEvents,
   readTailLines,
+  runBookIngestCommand,
+  runBookSummaryCommand,
   requireAdmin,
   requireAuth,
   requireCsrf,
@@ -888,6 +899,17 @@ registerAdminLevelRoutes(app, {
   requireCsrf,
   saveAdminLevelOverrideConfig,
   serializeLevelOverrideConfig,
+});
+
+registerAdminStoryRoutes(app, {
+  appendAdminAuditLog,
+  asMessage,
+  buildAdminStoryMetaSnapshot,
+  normalizeShortText,
+  requireAdmin,
+  requireAuth,
+  requireCsrf,
+  saveAdminStoryMetaOverride,
 });
 
 registerPlayerRoutes(app, {
@@ -1203,6 +1225,344 @@ function materializeChapterTextToFile(chapterId, runId) {
     char_count: Number(row.char_count || 0),
     story_file: chapterFile,
   };
+}
+
+function syncBooksGenerationLink({ runId, chapterId, storyId, summaryPath }) {
+  const normalizedChapterId = normalizePositiveInteger(chapterId);
+  const normalizedStoryId = normalizeShortText(storyId);
+  if (!normalizedChapterId || !normalizedStoryId) {
+    return false;
+  }
+
+  if (!fs.existsSync(RESOLVED_BOOK_INGEST_DB_PATH)) {
+    return false;
+  }
+
+  let booksWriteDb = null;
+  try {
+    booksWriteDb = new Database(RESOLVED_BOOK_INGEST_DB_PATH, {
+      fileMustExist: true,
+    });
+    booksWriteDb.pragma("busy_timeout = 5000");
+    booksWriteDb.exec("PRAGMA foreign_keys = ON");
+
+    const chapter = booksWriteDb.prepare("SELECT id FROM chapters WHERE id = ? LIMIT 1").get(normalizedChapterId);
+    if (!chapter) {
+      return false;
+    }
+
+    booksWriteDb.prepare("BEGIN IMMEDIATE").run();
+    try {
+      const usage = booksWriteDb
+        .prepare(
+          `
+          SELECT id, pipeline_run_id
+          FROM chapter_usage
+          WHERE chapter_id = ?
+            AND usage_type = 'puzzle_story'
+            AND status = 'succeeded'
+          LIMIT 1
+        `,
+        )
+        .get(normalizedChapterId);
+
+      const isSameRun = usage && String(usage.pipeline_run_id || "") === String(runId || "");
+
+      if (usage) {
+        booksWriteDb
+          .prepare(
+            `
+            UPDATE chapter_usage
+            SET pipeline_run_id = ?,
+                generated_story_id = ?,
+                summary_path = ?,
+                status = 'succeeded',
+                error_message = '',
+                updated_at = datetime('now')
+            WHERE id = ?
+          `,
+          )
+          .run(String(runId || ""), normalizedStoryId, String(summaryPath || ""), usage.id);
+      } else {
+        booksWriteDb
+          .prepare(
+            `
+            INSERT INTO chapter_usage (
+              chapter_id, usage_type, status, reserved_at, expires_at,
+              pipeline_run_id, generated_story_id, summary_path, error_message, updated_at
+            ) VALUES (?, 'puzzle_story', 'succeeded', datetime('now'), NULL, ?, ?, ?, '', datetime('now'))
+          `,
+          )
+          .run(normalizedChapterId, String(runId || ""), normalizedStoryId, String(summaryPath || ""));
+      }
+
+      if (!isSameRun) {
+        booksWriteDb
+          .prepare(
+            `
+            UPDATE chapters
+            SET used_count = used_count + 1,
+                last_used_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE id = ?
+          `,
+          )
+          .run(normalizedChapterId);
+      }
+
+      booksWriteDb.prepare("COMMIT").run();
+      return true;
+    } catch (error) {
+      booksWriteDb.prepare("ROLLBACK").run();
+      throw error;
+    }
+  } catch {
+    return false;
+  } finally {
+    if (booksWriteDb) {
+      booksWriteDb.close();
+    }
+  }
+}
+
+function runBookIngestCommand(options = {}) {
+  const source = String(options.source || "").trim();
+  if (!source) {
+    return Promise.reject(new Error("source 不能为空"));
+  }
+
+  const format = String(options.format || "auto").trim().toLowerCase();
+  const sourceFormat = format === "txt" || format === "epub" ? format : "auto";
+  const title = String(options.title || "").trim();
+  const author = String(options.author || "").trim();
+  const genre = String(options.genre || "").trim();
+  const language = String(options.language || "zh").trim() || "zh";
+  const replaceBook = Boolean(options.replaceBook);
+  const runId = String(options.runId || "").trim();
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
+    : 1000 * 60 * 5;
+
+  const pythonCommand = Array.isArray(STORY_GENERATOR_PYTHON_CMD) && STORY_GENERATOR_PYTHON_CMD.length > 0
+    ? STORY_GENERATOR_PYTHON_CMD
+    : [STORY_GENERATOR_PYTHON_BIN || "python3"];
+  const pythonExec = String(pythonCommand[0] || STORY_GENERATOR_PYTHON_BIN || "python3").trim() || "python3";
+  const pythonArgs = pythonCommand.slice(1);
+
+  const args = [
+    ...pythonArgs,
+    "-m",
+    "scripts.book_ingest.ingest",
+    "--db",
+    RESOLVED_BOOK_INGEST_DB_PATH,
+    "--source",
+    source,
+    "--format",
+    sourceFormat,
+    "--language",
+    language,
+  ];
+
+  if (title) {
+    args.push("--title", title);
+  }
+  if (author) {
+    args.push("--author", author);
+  }
+  if (genre) {
+    args.push("--genre", genre);
+  }
+  if (replaceBook) {
+    args.push("--replace-book");
+  }
+  if (runId) {
+    args.push("--run-id", runId);
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(pythonExec, args, {
+      cwd: ROOT_DIR,
+      env: {
+        ...process.env,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let finished = false;
+
+    const finalize = (handler) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timer);
+      handler();
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (error) => {
+      finalize(() => reject(error));
+    });
+
+    child.on("close", (code) => {
+      finalize(() => {
+        const output = String(stdout || "").trim();
+        const parsed = safeParseJsonObject(output);
+        if (Number(code) !== 0) {
+          const message = normalizeShortText(parsed?.error || "")
+            || normalizeShortText(stderr)
+            || `book ingest exited with code ${Number(code)}`;
+          reject(new Error(message));
+          return;
+        }
+
+        if (parsed && parsed.ok === false) {
+          const message = normalizeShortText(parsed.error || "") || "book ingest failed";
+          reject(new Error(message));
+          return;
+        }
+
+        resolve(parsed && typeof parsed === "object" && Object.keys(parsed).length > 0
+          ? parsed
+          : {
+            ok: true,
+            output,
+          });
+      });
+    });
+
+    const timer = setTimeout(() => {
+      finalize(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`book ingest timeout after ${timeoutMs}ms`));
+      });
+    }, timeoutMs);
+  });
+}
+
+function runBookSummaryCommand(options = {}) {
+  const bookId = normalizePositiveInteger(options.bookId);
+  const chapterId = normalizePositiveInteger(options.chapterId);
+  if (!bookId && !chapterId) {
+    return Promise.reject(new Error("bookId 或 chapterId 至少传一个"));
+  }
+
+  const runId = String(options.runId || "").trim();
+  const force = Boolean(options.force);
+  const chunkSize = normalizePositiveInteger(options.chunkSize) || 1000;
+  const summaryMaxChars = normalizePositiveInteger(options.summaryMaxChars) || 200;
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
+    : 1000 * 60 * 20;
+
+  const pythonCommand = Array.isArray(STORY_GENERATOR_PYTHON_CMD) && STORY_GENERATOR_PYTHON_CMD.length > 0
+    ? STORY_GENERATOR_PYTHON_CMD
+    : [STORY_GENERATOR_PYTHON_BIN || "python3"];
+  const pythonExec = String(pythonCommand[0] || STORY_GENERATOR_PYTHON_BIN || "python3").trim() || "python3";
+  const pythonArgs = pythonCommand.slice(1);
+
+  const args = [
+    ...pythonArgs,
+    "-m",
+    "scripts.book_ingest.summarize",
+    "--db",
+    RESOLVED_BOOK_INGEST_DB_PATH,
+    "--chunk-size",
+    String(chunkSize),
+    "--summary-max-chars",
+    String(summaryMaxChars),
+  ];
+
+  if (bookId) {
+    args.push("--book-id", String(bookId));
+  }
+  if (chapterId) {
+    args.push("--chapter-id", String(chapterId));
+  }
+  if (runId) {
+    args.push("--run-id", runId);
+  }
+  if (force) {
+    args.push("--force");
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(pythonExec, args, {
+      cwd: ROOT_DIR,
+      env: {
+        ...process.env,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let finished = false;
+
+    const finalize = (handler) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timer);
+      handler();
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (error) => {
+      finalize(() => reject(error));
+    });
+
+    child.on("close", (code) => {
+      finalize(() => {
+        const output = String(stdout || "").trim();
+        const parsed = safeParseJsonObject(output);
+        if (Number(code) !== 0) {
+          const message = normalizeShortText(parsed?.error || "")
+            || normalizeShortText(stderr)
+            || `book summary exited with code ${Number(code)}`;
+          reject(new Error(message));
+          return;
+        }
+
+        if (parsed && parsed.ok === false) {
+          const message = normalizeShortText(parsed.error || "") || "book summary failed";
+          reject(new Error(message));
+          return;
+        }
+
+        resolve(parsed && typeof parsed === "object" && Object.keys(parsed).length > 0
+          ? parsed
+          : {
+            ok: true,
+            output,
+          });
+      });
+    });
+
+    const timer = setTimeout(() => {
+      finalize(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`book summary timeout after ${timeoutMs}ms`));
+      });
+    }, timeoutMs);
+  });
 }
 
 function runStoryGeneratorAtomicCommand(command, payload, options = {}) {

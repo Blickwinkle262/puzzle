@@ -99,6 +99,7 @@ export type StoryListItem = {
   book_id?: string;
   book_title?: string;
   cover_missing?: boolean;
+  book_placeholder?: boolean;
   total_levels: number;
   completed_levels: number;
   last_level_id?: string | null;
@@ -141,6 +142,9 @@ export type AdminChapterSummary = {
   used_count: number;
   last_used_at: string | null;
   preview: string;
+  summary_text?: string;
+  summary_status?: "" | "running" | "succeeded" | "failed" | "queued";
+  summary_updated_at?: string | null;
   has_succeeded_story: boolean;
   generated_story_id?: string | null;
   generated_run_id?: string | null;
@@ -165,6 +169,99 @@ export type AdminBookChaptersResponse = {
   };
   books: AdminBookInfo[];
   chapters: AdminChapterSummary[];
+};
+
+export type AdminChapterTextResponse = {
+  ok: boolean;
+  db_path: string;
+  chapter: {
+    id: number;
+    book_id: number;
+    book_title: string;
+    book_author: string;
+    chapter_index: number;
+    chapter_title: string;
+    char_count: number;
+    word_count: number;
+    chapter_text: string;
+    meta_json: Record<string, unknown>;
+  };
+};
+
+export type AdminBookUploadResponse = {
+  ok: boolean;
+  run_id?: string;
+  status?: "queued" | "running" | "succeeded" | "failed";
+  db_path: string;
+  stored_file: string;
+  source_sha256?: string;
+  ingest?: {
+    ok?: boolean;
+    run_id?: string;
+    book_title?: string;
+    book_author?: string;
+    format?: string;
+    inserted?: number;
+    updated?: number;
+    skipped?: number;
+    total?: number;
+    [key: string]: unknown;
+  };
+};
+
+export type AdminBookIngestTask = {
+  run_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  source_path: string;
+  source_format: string;
+  source_name: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  total: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  error_message: string;
+};
+
+export type AdminBookSummaryTask = {
+  run_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  scope_type: "book" | "chapter";
+  scope_id: number;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  total: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  error_message: string;
+};
+
+export type AdminStoryBookOption = {
+  book_id: string;
+  book_title: string;
+  chapter_count: number;
+};
+
+export type AdminStoryMeta = {
+  id: string;
+  title: string;
+  description: string;
+  book_id: string;
+  book_title: string;
+  story_overview_title: string;
+  story_overview_paragraphs: string[];
+  has_override?: boolean;
+};
+
+export type AdminStoryMetaResponse = {
+  ok: boolean;
+  story: AdminStoryMeta;
+  books: AdminStoryBookOption[];
 };
 
 export type AdminGenerationJob = {

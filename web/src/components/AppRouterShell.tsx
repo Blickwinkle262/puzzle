@@ -66,7 +66,12 @@ export function AppRouterShell(): JSX.Element {
     roleHint,
     roleKey,
     roleLabel,
+    closeStoryMetaEditor,
+    loadingStoryMetaEditor,
+    openStoryMetaEditor,
     screen,
+    saveStoryMetaEditor,
+    savingStoryMetaEditor,
     setAuthMode,
     setCurrentPasswordInput,
     setError,
@@ -91,11 +96,14 @@ export function AppRouterShell(): JSX.Element {
     showChangePassword,
     showGuestUpgrade,
     showMobileJumper,
+    storyMetaBookOptions,
+    storyMetaEditor,
     storyBookGroups,
     storyCoverRefs,
     storyDetailCoverRef,
     stories,
     submitLevelProgress,
+    updateStoryMetaEditorField,
     upgradePasswordInput,
     upgradeUsernameInput,
     userName,
@@ -141,7 +149,7 @@ export function AppRouterShell(): JSX.Element {
 
   if (screen === "stories") {
     const totalBookCount = storyBookGroups.length;
-    const totalStoryCount = stories.length;
+    const totalStoryCount = stories.filter((story) => !story.book_placeholder).length;
     const totalLevelCount = storyBookGroups.reduce((sum, group) => sum + group.totalLevels, 0);
     const totalCompletedCount = storyBookGroups.reduce((sum, group) => sum + group.completedLevels, 0);
     const hideStoriesHero = isAdmin && showAdminGenerator;
@@ -173,6 +181,8 @@ export function AppRouterShell(): JSX.Element {
         showChangePassword={showChangePassword}
         showGuestUpgrade={showGuestUpgrade}
         storyBookGroups={storyBookGroups}
+        storyMetaBookOptions={storyMetaBookOptions}
+        storyMetaEditor={storyMetaEditor}
         totalBookCount={totalBookCount}
         totalCompletedCount={totalCompletedCount}
         totalLevelCount={totalLevelCount}
@@ -190,9 +200,16 @@ export function AppRouterShell(): JSX.Element {
         onLogout={() => void handleLogout()}
         onNextPasswordInputChange={setNextPasswordInput}
         onOpenStory={(story) => void openStory(story)}
+        onOpenStoryMetaEditor={(story) => void openStoryMetaEditor(story)}
+        onSaveStoryMetaEditor={() => void saveStoryMetaEditor()}
         onStoryCoverRefChange={(storyId, node) => {
           storyCoverRefs.current[storyId] = node;
         }}
+        onStoryMetaBookIdChange={(value) => updateStoryMetaEditorField("book_id", value)}
+        onStoryMetaDescriptionChange={(value) => updateStoryMetaEditorField("description", value)}
+        onStoryMetaOverviewTextChange={(value) => updateStoryMetaEditorField("story_overview_text", value)}
+        onStoryMetaOverviewTitleChange={(value) => updateStoryMetaEditorField("story_overview_title", value)}
+        onCloseStoryMetaEditor={closeStoryMetaEditor}
         onToggleAdminGenerator={() => {
           setShowAdminGenerator((value) => !value);
           setError("");
@@ -215,6 +232,8 @@ export function AppRouterShell(): JSX.Element {
         }}
         onUpgradePasswordInputChange={setUpgradePasswordInput}
         onUpgradeUsernameInputChange={setUpgradeUsernameInput}
+        loadingStoryMetaEditor={loadingStoryMetaEditor}
+        savingStoryMetaEditor={savingStoryMetaEditor}
       />
     );
   }

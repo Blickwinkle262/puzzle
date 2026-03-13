@@ -3,6 +3,7 @@ import { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, SyntheticE
 import {
   apiChangePassword,
   apiForgotPassword,
+  apiGetAdminStoryMeta,
   apiGetMe,
   apiGuestLogin,
   apiGuestUpgrade,
@@ -12,10 +13,11 @@ import {
   apiLogin,
   apiLogout,
   apiRegister,
+  apiUpdateAdminStoryMeta,
   apiUpdateLevelProgress,
   ApiError,
 } from "../core/api";
-import { LevelProgress, StoryDetail, StoryListItem, UserProfile } from "../core/types";
+import { AdminStoryBookOption, LevelProgress, StoryDetail, StoryListItem, UserProfile } from "../core/types";
 import { useAuthSession } from "./useAuthSession";
 import { usePlayFlow } from "./usePlayFlow";
 import { useStoryHub } from "./useStoryHub";
@@ -50,8 +52,18 @@ type StoryBookGroup = {
   key: string;
   title: string;
   stories: StoryListItem[];
+  storyCount: number;
   totalLevels: number;
   completedLevels: number;
+};
+
+type StoryMetaEditorState = {
+  story_id: string;
+  title: string;
+  book_id: string;
+  description: string;
+  story_overview_title: string;
+  story_overview_text: string;
 };
 
 export function useAppCoordinator() {
@@ -130,6 +142,11 @@ export function useAppCoordinator() {
     setShowMobileJumper,
     showMobileJumper,
   } = usePlayFlow();
+
+  const [storyMetaEditor, setStoryMetaEditor] = useState<StoryMetaEditorState | null>(null);
+  const [storyMetaBookOptions, setStoryMetaBookOptions] = useState<AdminStoryBookOption[]>([]);
+  const [loadingStoryMetaEditor, setLoadingStoryMetaEditor] = useState(false);
+  const [savingStoryMetaEditor, setSavingStoryMetaEditor] = useState(false);
 
   const clearSession = useCallback(() => {
     setHasSession(false);
@@ -225,6 +242,108 @@ export function useAppCoordinator() {
     const response = await apiListStories();
     setStories(response.stories);
   }, []);
+
+  const openStoryMetaEditor = useCallback(async (story: StoryListItem) => {
+    if (!isAdmin || !showAdminGenerator) {
+      return;
+    }
+    if (story.book_placeholder) {
+      return;
+    }
+
+    setLoadingStoryMetaEditor(true);
+    setError("");
+
+    try {
+      const response = await apiGetAdminStoryMeta(story.id);
+      const overviewText = Array.isArray(response.story.story_overview_paragraphs)
+        ? response.story.story_overview_paragraphs
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .join("\n\n")
+        : "";
+
+      setStoryMetaBookOptions(Array.isArray(response.books) ? response.books : []);
+      setStoryMetaEditor({
+        story_id: response.story.id,
+        title: response.story.title,
+        book_id: response.story.book_id,
+        description: response.story.description || "",
+        story_overview_title: response.story.story_overview_title || "",
+        story_overview_text: overviewText,
+      });
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoadingStoryMetaEditor(false);
+    }
+  }, [isAdmin, showAdminGenerator]);
+
+  const closeStoryMetaEditor = useCallback(() => {
+    if (savingStoryMetaEditor) {
+      return;
+    }
+    setStoryMetaEditor(null);
+    setStoryMetaBookOptions([]);
+  }, [savingStoryMetaEditor]);
+
+  const updateStoryMetaEditorField = useCallback((field: keyof StoryMetaEditorState, value: string) => {
+    setStoryMetaEditor((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [field]: value,
+      };
+    });
+  }, []);
+
+  const saveStoryMetaEditor = useCallback(async () => {
+    if (!storyMetaEditor) {
+      return;
+    }
+
+    const normalizedBookId = String(storyMetaEditor.book_id || "").trim();
+    if (!normalizedBookId) {
+      setError("请选择所属书目");
+      return;
+    }
+
+    const overviewParagraphs = String(storyMetaEditor.story_overview_text || "")
+      .replace(/\r\n/g, "\n")
+      .split(/\n{2,}/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 24);
+
+    setSavingStoryMetaEditor(true);
+    setError("");
+
+    try {
+      const response = await apiUpdateAdminStoryMeta(storyMetaEditor.story_id, {
+        book_id: normalizedBookId,
+        description: storyMetaEditor.description || "",
+        story_overview_title: storyMetaEditor.story_overview_title || "",
+        story_overview_paragraphs: overviewParagraphs,
+      });
+
+      await refreshStories();
+
+      if (activeStory?.id === response.story.id && screen === "story") {
+        const detail = await apiGetStoryDetail(response.story.id);
+        setActiveStory(detail.story);
+      }
+
+      setInfo(`《${response.story.title}》元数据已更新`);
+      setStoryMetaEditor(null);
+      setStoryMetaBookOptions([]);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSavingStoryMetaEditor(false);
+    }
+  }, [activeStory?.id, refreshStories, screen, storyMetaEditor]);
 
   const handleAdminGenerated = useCallback(
     async (storyId: string) => {
@@ -442,6 +561,12 @@ export function useAppCoordinator() {
   const openStory = useCallback(
     async (story: StoryListItem) => {
       if (openingStoryId) {
+        return;
+      }
+
+      if (story.book_placeholder) {
+        setInfo(`《${story.book_title || story.title}》已入库，暂未生成故事关卡，请先到管理后台生成。`);
+        setError("");
         return;
       }
 
@@ -808,7 +933,10 @@ export function useAppCoordinator() {
     roleHint,
     roleKey,
     roleLabel,
+    closeStoryMetaEditor,
     screen,
+    saveStoryMetaEditor,
+    savingStoryMetaEditor,
     setAuthMode,
     setCurrentPasswordInput,
     setError,
@@ -825,6 +953,7 @@ export function useAppCoordinator() {
     setShowChangePassword,
     setShowGuestUpgrade,
     setShowMobileJumper,
+    setStoryMetaEditor,
     setUpgradePasswordInput,
     setUpgradeUsernameInput,
     setUsernameInput,
@@ -833,6 +962,8 @@ export function useAppCoordinator() {
     showChangePassword,
     showGuestUpgrade,
     showMobileJumper,
+    storyMetaBookOptions,
+    storyMetaEditor,
     storyBookGroups,
     storyCoverRefs,
     storyDetailCoverRef,
@@ -840,8 +971,11 @@ export function useAppCoordinator() {
     submitLevelProgress,
     upgradePasswordInput,
     upgradeUsernameInput,
+    updateStoryMetaEditorField,
     userName,
     usernameInput,
+    openStoryMetaEditor,
+    loadingStoryMetaEditor,
   };
 }
 
@@ -922,6 +1056,7 @@ function buildStoryBookGroups(stories: StoryListItem[]): StoryBookGroup[] {
         key,
         title,
         stories: [story],
+        storyCount: story.book_placeholder ? 0 : 1,
         totalLevels: Number(story.total_levels || 0),
         completedLevels: Number(story.completed_levels || 0),
       });
@@ -929,6 +1064,9 @@ function buildStoryBookGroups(stories: StoryListItem[]): StoryBookGroup[] {
     }
 
     existing.stories.push(story);
+    if (!story.book_placeholder) {
+      existing.storyCount += 1;
+    }
     existing.totalLevels += Number(story.total_levels || 0);
     existing.completedLevels += Number(story.completed_levels || 0);
   }
@@ -941,7 +1079,7 @@ function resolveStoryBookTitle(story: StoryListItem): string {
   if (candidate) {
     return candidate;
   }
-  return "聊斋志异";
+  return "未归档书籍";
 }
 
 function resolveStoryBookKey(story: StoryListItem, fallbackTitle: string, fallbackIndex: number): string {
