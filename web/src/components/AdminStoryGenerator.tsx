@@ -1,5 +1,8 @@
 import { useAdminStoryGeneratorCoordinator } from "../hooks/useAdminStoryGeneratorCoordinator";
 import {
+  AdminBookReplaceConfirmModal,
+  AdminChapterTextPreviewModal,
+  AdminBookUploadSection,
   AdminChapterSelectionSection,
   AdminGenerateDialogModal,
   AdminPuzzleGenerateStage,
@@ -93,11 +96,30 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       submitting,
       targetDate,
       totalChapterPages,
+      chapterTextPreview,
+      loadingChapterTextPreview,
+      reparsingBook,
+      summaryBookId,
+      generatingBookSummary,
+      bookUploadTasks,
+      loadingBookUploadTasks,
+      bookSummaryTasks,
+      loadingBookSummaryTasks,
+      pendingBookReplace,
+      uploadingBook,
     },
     chapterActions: {
+      handleCancelBookReplace,
+      handleConfirmBookReplace,
+      handleReparseBook,
+      handleGenerateBookSummary,
+      handlePreviewChapterText,
+      handleUploadBook,
       handleOpenGeneratedStory,
       handleSubmit,
       loadChapters,
+      loadBookUploadTasks,
+      loadBookSummaryTasks,
       setBookId,
       setChapterPage,
       setChapterPageSize,
@@ -107,6 +129,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setMinCharsInput,
       setSceneCountInput,
       setSelectedChapterId,
+      setChapterTextPreview,
+      setSummaryBookId,
       setTargetDate,
     },
     puzzleState: {
@@ -247,6 +271,36 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         onToggleSection={() => toggleSection("levelConfig")}
       />
 
+      <AdminBookUploadSection
+        books={books}
+        bookUploadTasks={bookUploadTasks}
+        bookSummaryTasks={bookSummaryTasks}
+        collapsed={collapsedSections.bookIngest}
+        loadingBookUploadTasks={loadingBookUploadTasks}
+        loadingBookSummaryTasks={loadingBookSummaryTasks}
+        reparsingBook={reparsingBook}
+        summaryBookId={summaryBookId}
+        generatingBookSummary={generatingBookSummary}
+        uploadingBook={uploadingBook}
+        onReloadTasks={() => {
+          void loadBookUploadTasks();
+        }}
+        onReloadSummaryTasks={() => {
+          void loadBookSummaryTasks();
+        }}
+        onReparseBook={(targetBookId) => {
+          void handleReparseBook(targetBookId);
+        }}
+        onSummaryBookIdChange={setSummaryBookId}
+        onGenerateBookSummary={(targetBookId) => {
+          void handleGenerateBookSummary(targetBookId);
+        }}
+        onUploadBook={(file) => {
+          void handleUploadBook(file);
+        }}
+        onToggleSection={() => toggleSection("bookIngest")}
+      />
+
       <AdminRunReviewSection
         canGoNextFlowStep={canGoNextFlowStep}
         canGoPrevFlowStep={canGoPrevFlowStep}
@@ -300,9 +354,13 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                   void handleOpenGeneratedStory(storyId);
                 }}
                 onOpenGenerateDialog={() => setShowGenerateDialog(true)}
+                onPreviewChapterText={(chapterId) => {
+                  void handlePreviewChapterText(chapterId);
+                }}
                 onPrevPage={() => setChapterPage((page) => Math.max(1, page - 1))}
                 onSelectChapterId={setSelectedChapterId}
                 onSetPuzzleFlowGenerate={() => setPuzzleFlowStep("generate")}
+                loadingChapterTextPreview={loadingChapterTextPreview}
               />
             )}
 
@@ -397,9 +455,23 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         onStayAfterPublish={handleStayAfterPublish}
       />
 
+      <AdminBookReplaceConfirmModal
+        pendingReplace={pendingBookReplace}
+        submitting={uploadingBook}
+        onCancel={handleCancelBookReplace}
+        onConfirm={() => {
+          void handleConfirmBookReplace();
+        }}
+      />
+
       <AdminScenePreviewModal
         scenePreview={scenePreview}
         onClose={() => setScenePreview(null)}
+      />
+
+      <AdminChapterTextPreviewModal
+        chapterPreview={chapterTextPreview}
+        onClose={() => setChapterTextPreview(null)}
       />
 
       <AdminGenerateDialogModal

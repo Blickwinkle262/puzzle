@@ -27,6 +27,7 @@ const INITIAL_FLOW_STATE: RunReviewFlowState = {
   collapsedSections: {
     users: true,
     levelConfig: true,
+    bookIngest: true,
     puzzle: true,
   },
   puzzleFlowStep: "select",

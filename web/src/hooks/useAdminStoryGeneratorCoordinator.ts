@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { apiListAdminBookChapters } from "../core/adminApi";
 import {
+  apiCreateAdminBookSummaryRun,
+  apiGetAdminBookSummaryTask,
+  apiGetAdminChapterText,
+  apiGetAdminBookUploadTask,
+  apiListAdminBookSummaryTasks,
+  apiListAdminBookChapters,
+  apiListAdminBookUploadTasks,
+  apiReparseAdminBook,
+  apiUploadAdminBook,
+} from "../core/adminApi";
+import { apiGetMe } from "../core/api";
+import {
+  AdminBookIngestTask,
+  AdminBookSummaryTask,
+  AdminBookUploadResponse,
   AdminLevelDifficulty,
   AdminManagedRole,
 } from "../core/types";
@@ -32,6 +46,27 @@ type AdminStoryGeneratorCoordinatorOptions = {
   onOpenStory: (storyId: string) => Promise<void> | void;
 };
 
+type PendingBookReplaceState = {
+  file: File;
+  format: "epub" | "txt";
+  uploadTitle: string;
+  incomingFileName: string;
+  existingBookTitle: string;
+  existingChapterCount: number;
+  message: string;
+};
+
+type ChapterTextPreviewState = {
+  chapter_id: number;
+  book_title: string;
+  book_author: string;
+  chapter_index: number;
+  chapter_title: string;
+  char_count: number;
+  word_count: number;
+  chapter_text: string;
+};
+
 export const PUZZLE_FLOW_SEQUENCE: PuzzleFlowStep[] = ["select", "generate", "review"];
 
 export const DEFAULT_MIN_CHARS = 500;
@@ -45,6 +80,7 @@ export const MANAGED_ROLES: AdminManagedRole[] = ["admin", "editor", "level_desi
 export const MANAGED_LEVEL_DIFFICULTIES: AdminLevelDifficulty[] = ["easy", "normal", "hard", "nightmare"];
 export const REVIEW_GRID_OPTIONS = Array.from({ length: 19 }, (_, index) => index + 2);
 export const REVIEW_TIME_OPTIONS = [60, 90, 120, 150, 180, 240, 300, 420, 600];
+const BOOK_UPLOAD_MAX_BYTES = 80 * 1024 * 1024;
 
 export function useAdminStoryGeneratorCoordinator({
   visible,
@@ -150,6 +186,17 @@ export function useAdminStoryGeneratorCoordinator({
   const [panelError, setPanelError] = useState("");
   const [panelInfo, setPanelInfo] = useState("");
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
+  const [uploadingBook, setUploadingBook] = useState(false);
+  const [bookUploadTasks, setBookUploadTasks] = useState<AdminBookIngestTask[]>([]);
+  const [loadingBookUploadTasks, setLoadingBookUploadTasks] = useState(false);
+  const [reparsingBook, setReparsingBook] = useState(false);
+  const [summaryBookId, setSummaryBookId] = useState("");
+  const [generatingBookSummary, setGeneratingBookSummary] = useState(false);
+  const [bookSummaryTasks, setBookSummaryTasks] = useState<AdminBookSummaryTask[]>([]);
+  const [loadingBookSummaryTasks, setLoadingBookSummaryTasks] = useState(false);
+  const [pendingBookReplace, setPendingBookReplace] = useState<PendingBookReplaceState | null>(null);
+  const [chapterTextPreview, setChapterTextPreview] = useState<ChapterTextPreviewState | null>(null);
+  const [loadingChapterTextPreview, setLoadingChapterTextPreview] = useState(false);
 
   const {
     configLevelId,
@@ -275,6 +322,530 @@ export function useAdminStoryGeneratorCoordinator({
     setSelectedChapterId,
   ]);
 
+  const loadBookUploadTasks = useCallback(async (options: { silent?: boolean } = {}): Promise<void> => {
+    const silent = Boolean(options.silent);
+    if (!silent) {
+      setLoadingBookUploadTasks(true);
+      setPanelError("");
+    }
+
+    try {
+      const response = await apiListAdminBookUploadTasks(10);
+      setBookUploadTasks(Array.isArray(response?.tasks) ? response.tasks : []);
+    } catch (err) {
+      if (!silent) {
+        setPanelError(errorMessage(err));
+      }
+    } finally {
+      if (!silent) {
+        setLoadingBookUploadTasks(false);
+      }
+    }
+  }, [setPanelError]);
+
+  const loadBookSummaryTasks = useCallback(async (options: { silent?: boolean } = {}): Promise<void> => {
+    const silent = Boolean(options.silent);
+    if (!silent) {
+      setLoadingBookSummaryTasks(true);
+      setPanelError("");
+    }
+
+    try {
+      const response = await apiListAdminBookSummaryTasks(10);
+      setBookSummaryTasks(Array.isArray(response?.tasks) ? response.tasks : []);
+    } catch (err) {
+      if (!silent) {
+        setPanelError(errorMessage(err));
+      }
+    } finally {
+      if (!silent) {
+        setLoadingBookSummaryTasks(false);
+      }
+    }
+  }, [setPanelError]);
+
+  const refreshChapterListAfterIngest = useCallback(async (): Promise<void> => {
+    setChapterPage(1);
+    if (chapterPage === 1) {
+      await loadChapters();
+    }
+  }, [chapterPage, loadChapters, setChapterPage]);
+
+  const waitForBookIngestTask = useCallback(async (runId: string, fallbackName: string): Promise<void> => {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      throw new Error("上传任务 run_id 为空");
+    }
+
+    let lastStatus = "";
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      let task = null as null | {
+        run_id: string;
+        status: "queued" | "running" | "succeeded" | "failed";
+        inserted: number;
+        updated: number;
+        skipped: number;
+        total: number;
+        source_name: string;
+        error_message: string;
+      };
+
+      try {
+        const response = await apiGetAdminBookUploadTask(normalizedRunId);
+        task = response?.task || null;
+      } catch (err) {
+        const status = Number((err as { status?: unknown })?.status || 0);
+        if (status !== 404) {
+          throw err;
+        }
+      }
+
+      if (task) {
+        if (task.status === "succeeded") {
+          const total = Number(task.total || 0);
+          const inserted = Number(task.inserted || 0);
+          const updated = Number(task.updated || 0);
+          const skipped = Number(task.skipped || 0);
+          setPanelInfo(`解析完成：${task.source_name || fallbackName}（总${total}章，新增${inserted}，更新${updated}，跳过${skipped}）`);
+          await loadBookUploadTasks({ silent: true });
+          await refreshChapterListAfterIngest();
+          return;
+        }
+
+        if (task.status === "failed") {
+          await loadBookUploadTasks({ silent: true });
+          throw new Error(task.error_message || `上传解析失败（任务 ${task.run_id}）`);
+        }
+
+        if (lastStatus !== task.status) {
+          setPanelInfo(`上传任务进行中：${task.run_id}（${task.status}）`);
+          lastStatus = task.status;
+        }
+      }
+
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 1500);
+      });
+    }
+
+    throw new Error(`上传解析超时（任务 ${normalizedRunId}）`);
+  }, [loadBookUploadTasks, refreshChapterListAfterIngest, setPanelInfo]);
+
+  const waitForBookSummaryTask = useCallback(async (runId: string, fallbackBookName: string): Promise<void> => {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      throw new Error("摘要任务 run_id 为空");
+    }
+
+    let lastStatus = "";
+    for (let attempt = 0; attempt < 360; attempt += 1) {
+      let task = null as null | {
+        run_id: string;
+        status: "queued" | "running" | "succeeded" | "failed";
+        total: number;
+        processed: number;
+        succeeded: number;
+        failed: number;
+        skipped: number;
+        error_message: string;
+      };
+
+      try {
+        const response = await apiGetAdminBookSummaryTask(normalizedRunId);
+        task = response?.task || null;
+      } catch (err) {
+        const status = Number((err as { status?: unknown })?.status || 0);
+        if (status !== 404) {
+          throw err;
+        }
+      }
+
+      if (task) {
+        if (task.status === "succeeded") {
+          setPanelInfo(
+            `摘要完成：${fallbackBookName}（总${task.total}章，成功${task.succeeded}，跳过${task.skipped}，失败${task.failed}）`,
+          );
+          await loadBookSummaryTasks({ silent: true });
+          await refreshChapterListAfterIngest();
+          return;
+        }
+
+        if (task.status === "failed") {
+          await loadBookSummaryTasks({ silent: true });
+          throw new Error(task.error_message || `摘要任务失败（任务 ${task.run_id}）`);
+        }
+
+        if (lastStatus !== task.status) {
+          setPanelInfo(`摘要任务进行中：${task.run_id}（${task.status}）`);
+          lastStatus = task.status;
+        }
+      }
+
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 1500);
+      });
+    }
+
+    throw new Error(`摘要任务超时（任务 ${normalizedRunId}）`);
+  }, [loadBookSummaryTasks, refreshChapterListAfterIngest, setPanelInfo]);
+
+  const handleBookUploadResponse = useCallback(async (
+    response: AdminBookUploadResponse | null | undefined,
+    fallbackName: string,
+  ): Promise<void> => {
+    const asyncRunId = String(response?.run_id || "").trim();
+    if (asyncRunId) {
+      setPanelInfo(`解析任务已提交：${asyncRunId}`);
+      await waitForBookIngestTask(asyncRunId, fallbackName);
+      return;
+    }
+
+    const ingest = response && response.ingest && typeof response.ingest === "object"
+      ? response.ingest as Record<string, unknown>
+      : {};
+
+    const toCount = (value: unknown): number => {
+      const normalized = Number(value);
+      return Number.isFinite(normalized) && normalized >= 0 ? Math.floor(normalized) : 0;
+    };
+
+    const bookTitle = String(ingest.book_title || "").trim() || fallbackName;
+    const total = toCount(ingest.total);
+    const inserted = toCount(ingest.inserted);
+    const updated = toCount(ingest.updated);
+    const skipped = toCount(ingest.skipped);
+
+    setPanelInfo(`解析完成：${bookTitle}（总${total}章，新增${inserted}，更新${updated}，跳过${skipped}）`);
+    await refreshChapterListAfterIngest();
+    void loadBookUploadTasks({ silent: true });
+  }, [loadBookUploadTasks, refreshChapterListAfterIngest, setPanelInfo, waitForBookIngestTask]);
+
+  const handleUploadBook = useCallback(async (file: File): Promise<void> => {
+    if (!file || file.size <= 0) {
+      setPanelError("请选择要上传的书籍文件");
+      return;
+    }
+
+    const lowerName = String(file.name || "").toLowerCase();
+    const format: "epub" | "txt" | null = lowerName.endsWith(".epub")
+      ? "epub"
+      : lowerName.endsWith(".txt")
+        ? "txt"
+        : null;
+    if (!format) {
+      setPanelError("仅支持 .epub 或 .txt 文件");
+      return;
+    }
+
+    if (file.size > BOOK_UPLOAD_MAX_BYTES) {
+      const actualMb = (file.size / 1024 / 1024).toFixed(1);
+      setPanelError(`文件过大（${actualMb}MB），当前上限为 80MB`);
+      return;
+    }
+
+    try {
+      await apiGetMe();
+    } catch (err) {
+      setPanelError(`登录状态异常，请重新登录后再上传：${errorMessage(err)}`);
+      return;
+    }
+
+    setUploadingBook(true);
+    setPanelError("");
+    setPendingBookReplace(null);
+    setPanelInfo(`正在解析书籍：${file.name}`);
+
+    try {
+      const uploadTitle = String(file.name || "")
+        .replace(/\.[^.]+$/, "")
+        .trim()
+        .slice(0, 120);
+
+      let response;
+      try {
+        response = await apiUploadAdminBook({
+          file,
+          fileName: file.name,
+          format,
+          title: uploadTitle,
+        });
+      } catch (err) {
+        const status = Number((err as { status?: unknown })?.status || 0);
+        if (status !== 409) {
+          throw err;
+        }
+
+        const errorPayload = (err as { payload?: unknown })?.payload;
+        const payloadObj = errorPayload && typeof errorPayload === "object"
+          ? errorPayload as Record<string, unknown>
+          : null;
+        const conflictCode = String(payloadObj?.code || "").trim();
+
+        if (conflictCode === "book_ingest_running") {
+          const task = payloadObj?.task && typeof payloadObj.task === "object"
+            ? payloadObj.task as Record<string, unknown>
+            : null;
+          const runningRunId = String(task?.run_id || "").trim();
+          if (runningRunId) {
+            setPanelInfo(`检测到同内容任务正在进行：${runningRunId}，已自动跟踪进度`);
+            await waitForBookIngestTask(runningRunId, uploadTitle || file.name);
+            return;
+          }
+        }
+
+        if (conflictCode === "book_ingest_succeeded") {
+          setPanelInfo(errorMessage(err));
+          await loadBookUploadTasks({ silent: true });
+          await refreshChapterListAfterIngest();
+          return;
+        }
+
+        if (conflictCode !== "book_exists") {
+          throw err;
+        }
+
+        const bookInfo = payloadObj?.book && typeof payloadObj.book === "object"
+          ? payloadObj.book as Record<string, unknown>
+          : null;
+        const existingBookTitle = String(bookInfo?.title || uploadTitle || file.name).trim() || file.name;
+        const existingChapterCount = Number(bookInfo?.chapter_count || 0);
+
+        setPendingBookReplace({
+          file,
+          format,
+          uploadTitle,
+          incomingFileName: file.name,
+          existingBookTitle,
+          existingChapterCount: Number.isFinite(existingChapterCount) ? existingChapterCount : 0,
+          message: errorMessage(err),
+        });
+        setPanelInfo(`检测到同名书籍：${existingBookTitle}（${Math.max(0, Number(existingChapterCount || 0))}章），请确认是否替换`);
+        return;
+      }
+
+      await handleBookUploadResponse(response, uploadTitle || file.name);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setUploadingBook(false);
+      void loadBookUploadTasks({ silent: true });
+    }
+  }, [
+    handleBookUploadResponse,
+    loadBookUploadTasks,
+    refreshChapterListAfterIngest,
+    setPanelError,
+    setPanelInfo,
+  ]);
+
+  const handleConfirmBookReplace = useCallback(async (): Promise<void> => {
+    if (!pendingBookReplace) {
+      return;
+    }
+
+    const {
+      file,
+      format,
+      incomingFileName,
+      uploadTitle,
+    } = pendingBookReplace;
+
+    setPendingBookReplace(null);
+    setUploadingBook(true);
+    setPanelError("");
+    setPanelInfo(`正在替换书籍：${uploadTitle || incomingFileName}`);
+
+    try {
+      let response;
+      try {
+        response = await apiUploadAdminBook({
+          file,
+          fileName: incomingFileName,
+          format,
+          title: uploadTitle,
+          replaceBook: true,
+        });
+      } catch (err) {
+        const status = Number((err as { status?: unknown })?.status || 0);
+        if (status !== 409) {
+          throw err;
+        }
+
+        const errorPayload = (err as { payload?: unknown })?.payload;
+        const payloadObj = errorPayload && typeof errorPayload === "object"
+          ? errorPayload as Record<string, unknown>
+          : null;
+        const conflictCode = String(payloadObj?.code || "").trim();
+
+        if (conflictCode === "book_ingest_running") {
+          const task = payloadObj?.task && typeof payloadObj.task === "object"
+            ? payloadObj.task as Record<string, unknown>
+            : null;
+          const runningRunId = String(task?.run_id || "").trim();
+          if (runningRunId) {
+            setPanelInfo(`检测到同内容任务正在进行：${runningRunId}，已自动跟踪进度`);
+            await waitForBookIngestTask(runningRunId, uploadTitle || incomingFileName);
+            return;
+          }
+        }
+
+        if (conflictCode === "book_ingest_succeeded") {
+          setPanelInfo(errorMessage(err));
+          await loadBookUploadTasks({ silent: true });
+          await refreshChapterListAfterIngest();
+          return;
+        }
+
+        if (conflictCode === "book_exists") {
+          setPanelInfo(errorMessage(err));
+          return;
+        }
+
+        throw err;
+      }
+
+      await handleBookUploadResponse(response, uploadTitle || incomingFileName);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setUploadingBook(false);
+      void loadBookUploadTasks({ silent: true });
+    }
+  }, [
+    handleBookUploadResponse,
+    loadBookUploadTasks,
+    pendingBookReplace,
+    refreshChapterListAfterIngest,
+    setPanelError,
+    setPanelInfo,
+    waitForBookIngestTask,
+  ]);
+
+  const handleCancelBookReplace = useCallback(() => {
+    setPendingBookReplace(null);
+    setPanelInfo("已撤销上传");
+  }, [setPanelInfo]);
+
+  const handleReparseBook = useCallback(async (targetBookId: number): Promise<void> => {
+    const normalizedBookId = Number.isFinite(targetBookId) ? Math.floor(targetBookId) : 0;
+    if (normalizedBookId <= 0) {
+      setPanelError("请先选择要重解析的书籍");
+      return;
+    }
+
+    setReparsingBook(true);
+    setPanelError("");
+    setPanelInfo("正在创建重解析任务...");
+
+    try {
+      const response = await apiReparseAdminBook(normalizedBookId);
+      const runId = String(response?.run_id || "").trim();
+      if (!runId) {
+        throw new Error("重解析任务 run_id 为空");
+      }
+      const sourceName = String(response?.book?.source_name || response?.book?.title || `book_${normalizedBookId}`).trim();
+      await waitForBookIngestTask(runId, sourceName);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setReparsingBook(false);
+      void loadBookUploadTasks({ silent: true });
+    }
+  }, [loadBookUploadTasks, setPanelError, setPanelInfo, waitForBookIngestTask]);
+
+  const handleGenerateBookSummary = useCallback(async (targetBookId: number): Promise<void> => {
+    const normalizedBookId = Number.isFinite(targetBookId) ? Math.floor(targetBookId) : 0;
+    if (normalizedBookId <= 0) {
+      setPanelError("请先选择要生成摘要的书籍");
+      return;
+    }
+
+    setGeneratingBookSummary(true);
+    setPanelError("");
+    setPanelInfo("正在创建章节摘要任务...");
+
+    try {
+      let runId = "";
+      let bookTitle = "";
+      try {
+        const response = await apiCreateAdminBookSummaryRun(normalizedBookId, {
+          force: false,
+          chunk_size: 1000,
+          summary_max_chars: 200,
+        });
+        runId = String(response?.run_id || "").trim();
+        bookTitle = String(response?.book?.title || "").trim();
+      } catch (err) {
+        const status = Number((err as { status?: unknown })?.status || 0);
+        if (status !== 409) {
+          throw err;
+        }
+
+        const payload = (err as { payload?: unknown })?.payload;
+        const payloadObj = payload && typeof payload === "object"
+          ? payload as Record<string, unknown>
+          : null;
+        const code = String(payloadObj?.code || "").trim();
+        if (code !== "book_summary_running") {
+          throw err;
+        }
+
+        const task = payloadObj?.task && typeof payloadObj.task === "object"
+          ? payloadObj.task as Record<string, unknown>
+          : null;
+        runId = String(task?.run_id || "").trim();
+        if (!runId) {
+          throw err;
+        }
+        setPanelInfo(`检测到进行中的摘要任务：${runId}，已自动跟踪`);
+      }
+
+      if (!runId) {
+        throw new Error("摘要任务 run_id 为空");
+      }
+
+      await waitForBookSummaryTask(runId, bookTitle || `book_${normalizedBookId}`);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setGeneratingBookSummary(false);
+      void loadBookSummaryTasks({ silent: true });
+    }
+  }, [loadBookSummaryTasks, setPanelError, setPanelInfo, waitForBookSummaryTask]);
+
+  const handlePreviewChapterText = useCallback(async (chapterId?: number): Promise<void> => {
+    const targetChapterId = chapterId ?? selectedChapterId;
+    if (!targetChapterId) {
+      setPanelError("请先选择章节");
+      return;
+    }
+
+    setLoadingChapterTextPreview(true);
+    setPanelError("");
+    try {
+      const response = await apiGetAdminChapterText(targetChapterId);
+      const chapter = response?.chapter;
+      if (!chapter) {
+        throw new Error("章节原文为空");
+      }
+
+      setChapterTextPreview({
+        chapter_id: Number(chapter.id),
+        book_title: String(chapter.book_title || ""),
+        book_author: String(chapter.book_author || ""),
+        chapter_index: Number(chapter.chapter_index || 0),
+        chapter_title: String(chapter.chapter_title || ""),
+        char_count: Number(chapter.char_count || 0),
+        word_count: Number(chapter.word_count || 0),
+        chapter_text: String(chapter.chapter_text || ""),
+      });
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setLoadingChapterTextPreview(false);
+    }
+  }, [selectedChapterId, setPanelError]);
+
   useEffect(() => {
     if (!visible) {
       return;
@@ -282,6 +853,31 @@ export function useAdminStoryGeneratorCoordinator({
 
     setChapterPage(1);
   }, [bookId, chapterPageSize, includeUsed, keyword, maxCharsInput, minCharsInput, setChapterPage, visible]);
+
+  useEffect(() => {
+    setChapterTextPreview(null);
+  }, [selectedChapterId]);
+
+  useEffect(() => {
+    if (books.length === 0) {
+      if (summaryBookId) {
+        setSummaryBookId("");
+      }
+      return;
+    }
+
+    const selectedInBooks = books.some((item) => String(item.id) === summaryBookId);
+    if (selectedInBooks) {
+      return;
+    }
+
+    if (bookId && books.some((item) => String(item.id) === String(bookId))) {
+      setSummaryBookId(String(bookId));
+      return;
+    }
+
+    setSummaryBookId(String(books[0].id));
+  }, [bookId, books, summaryBookId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -298,6 +894,43 @@ export function useAdminStoryGeneratorCoordinator({
 
     void loadChapters();
   }, [loadChapters, visible]);
+
+  const hasRunningBookUploadTasks = useMemo(
+    () => bookUploadTasks.some((task) => task.status === "queued" || task.status === "running"),
+    [bookUploadTasks],
+  );
+  const hasRunningBookSummaryTasks = useMemo(
+    () => bookSummaryTasks.some((task) => task.status === "queued" || task.status === "running"),
+    [bookSummaryTasks],
+  );
+
+  useEffect(() => {
+    if (!visible || !hasRunningBookUploadTasks) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void loadBookUploadTasks({ silent: true });
+    }, 3000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [hasRunningBookUploadTasks, loadBookUploadTasks, visible]);
+
+  useEffect(() => {
+    if (!visible || !hasRunningBookSummaryTasks) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void loadBookSummaryTasks({ silent: true });
+    }, 3000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [hasRunningBookSummaryTasks, loadBookSummaryTasks, visible]);
 
   const {
     handleCancelRun,
@@ -337,7 +970,9 @@ export function useAdminStoryGeneratorCoordinator({
     void loadRecentJobs();
     void loadAdminUsers();
     void loadConfigStories();
-  }, [loadAdminUsers, loadConfigStories, loadRecentJobs, visible]);
+    void loadBookUploadTasks();
+    void loadBookSummaryTasks();
+  }, [loadAdminUsers, loadBookSummaryTasks, loadBookUploadTasks, loadConfigStories, loadRecentJobs, visible]);
 
   useEffect(() => {
     if (!visible) {
@@ -487,12 +1122,31 @@ export function useAdminStoryGeneratorCoordinator({
     submitting,
     targetDate,
     totalChapterPages,
+    chapterTextPreview,
+    loadingChapterTextPreview,
+    reparsingBook,
+    summaryBookId,
+    generatingBookSummary,
+    bookUploadTasks,
+    loadingBookUploadTasks,
+    bookSummaryTasks,
+    loadingBookSummaryTasks,
+    pendingBookReplace,
+    uploadingBook,
   };
 
   const chapterActions = {
+    handleCancelBookReplace,
+    handleConfirmBookReplace,
+    handleReparseBook,
+    handleGenerateBookSummary,
+    handlePreviewChapterText,
+    handleUploadBook,
     handleOpenGeneratedStory,
     handleSubmit,
     loadChapters,
+    loadBookUploadTasks,
+    loadBookSummaryTasks,
     setBookId,
     setChapterPage,
     setChapterPageSize,
@@ -502,6 +1156,8 @@ export function useAdminStoryGeneratorCoordinator({
     setMinCharsInput,
     setSceneCountInput,
     setSelectedChapterId,
+    setChapterTextPreview,
+    setSummaryBookId,
     setTargetDate,
   };
 
