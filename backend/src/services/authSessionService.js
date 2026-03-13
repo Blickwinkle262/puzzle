@@ -288,6 +288,7 @@ export function createAuthSessionService(options = {}) {
     const token = extractSessionToken(req);
     const tokenHash = hashSessionToken(token);
     if (!token) {
+      console.warn(`[auth] requireAuth failed: missing token, path=${req.method} ${req.originalUrl || req.url}`);
       res.status(401).json({ message: "未登录" });
       return;
     }
@@ -308,6 +309,7 @@ export function createAuthSessionService(options = {}) {
       .get(tokenHash, token, nowIso());
 
     if (!row) {
+      console.warn(`[auth] requireAuth failed: session invalid, path=${req.method} ${req.originalUrl || req.url}`);
       res.status(401).json({ message: "登录状态已失效" });
       return;
     }
@@ -327,6 +329,9 @@ export function createAuthSessionService(options = {}) {
     const csrfHeader = extractCsrfHeader(req);
 
     if (!csrfHeader || !req.authCsrfToken || csrfHeader !== req.authCsrfToken) {
+      console.warn(
+        `[auth] requireCsrf failed: path=${req.method} ${req.originalUrl || req.url}, header=${csrfHeader ? "present" : "missing"}`,
+      );
       res.status(403).json({ message: "CSRF 校验失败" });
       return;
     }
@@ -366,33 +371,40 @@ export function createAuthSessionService(options = {}) {
     pruneExpiredSessions();
     const oldTokenHash = hashSessionToken(oldToken);
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const token = randomToken();
-      const tokenHash = hashSessionToken(token);
-      const csrfToken = randomToken();
-      const createdAt = nowIso();
-      const expiresAt = new Date(Date.now() + sessionTtlMs).toISOString();
+    const row = db
+      .prepare(
+        "SELECT token, csrf_token FROM sessions WHERE (token_hash = ? OR token = ?) AND expires_at > ? LIMIT 1",
+      )
+      .get(oldTokenHash, oldToken, nowIso());
 
-      try {
-        const result = db
-          .prepare(
-            "UPDATE sessions SET token = ?, token_hash = ?, csrf_token = ?, created_at = ?, expires_at = ? WHERE token_hash = ? OR token = ?",
-          )
-          .run(token, tokenHash, csrfToken, createdAt, expiresAt, oldTokenHash, oldToken);
-
-        if (result.changes === 1) {
-          return {
-            token,
-            csrfToken,
-          };
-        }
-        return null;
-      } catch {
-        // Token collision is unlikely; retry with a new random token.
-      }
+    if (!row) {
+      return null;
     }
 
-    return null;
+    const token = String(row.token || oldToken || "").trim();
+    const csrfToken = String(row.csrf_token || "").trim();
+    if (!token || !csrfToken) {
+      return null;
+    }
+
+    const createdAt = nowIso();
+    const expiresAt = new Date(Date.now() + sessionTtlMs).toISOString();
+    const tokenHash = hashSessionToken(token);
+
+    const result = db
+      .prepare(
+        "UPDATE sessions SET token_hash = ?, created_at = ?, expires_at = ? WHERE token = ?",
+      )
+      .run(tokenHash, createdAt, expiresAt, token);
+
+    if (result.changes !== 1) {
+      return null;
+    }
+
+    return {
+      token,
+      csrfToken,
+    };
   }
 
   function createGuestUsername() {
