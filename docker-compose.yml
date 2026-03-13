@@ -38,6 +38,7 @@ services:
       context: .
       dockerfile: deploy/worker/Dockerfile
     environment:
+      PYTHONPATH: /app
       AIHUBMIX_API_KEY: ${AIHUBMIX_API_KEY:-}
       STORY_GENERATOR_BACKEND_URL: ${STORY_GENERATOR_BACKEND_URL:-http://backend:8787}
       STORY_GENERATOR_WORKER_TOKEN: ${STORY_GENERATOR_WORKER_TOKEN:-dev-worker-token}

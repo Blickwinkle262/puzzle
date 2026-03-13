@@ -3,6 +3,22 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Local dev guardrails:
+# - avoid inheriting production-only STORY_GENERATOR_PYTHON_CMD from parent shell
+# - prefer repo-local .venv python for backend atomic/book-ingest commands
+if [[ "${DEV_ALL_RESPECT_PYTHON_CMD:-0}" != "1" ]]; then
+  unset STORY_GENERATOR_PYTHON_CMD || true
+  unset STORY_GENERATION_PYTHON_CMD || true
+fi
+
+if [[ -z "${STORY_GENERATOR_PYTHON_BIN:-}" && -x "$ROOT_DIR/.venv/bin/python" ]]; then
+  STORY_GENERATOR_PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+fi
+
+if [[ -z "${STORY_GENERATION_PYTHON_BIN:-}" && -n "${STORY_GENERATOR_PYTHON_BIN:-}" ]]; then
+  STORY_GENERATION_PYTHON_BIN="$STORY_GENERATOR_PYTHON_BIN"
+fi
+
 # Default to fast startup: skip install/rebuild unless explicitly requested.
 DEV_ALL_FULL_SETUP="${DEV_ALL_FULL_SETUP:-0}"
 if [[ "${1:-}" == "--full-setup" ]]; then
@@ -55,6 +71,8 @@ export STORY_GENERATION_SUMMARY_DIR
 export STORY_GENERATION_QUEUE_POLL_SECONDS
 export STORY_GENERATION_BACKEND_URL
 export STORY_GENERATION_WORKER_TOKEN
+export STORY_GENERATOR_PYTHON_BIN
+export STORY_GENERATION_PYTHON_BIN
 
 if [[ -z "${AIHUBMIX_API_KEY:-}" ]]; then
   echo "[warn] AIHUBMIX_API_KEY is empty. Story generation jobs may fail."

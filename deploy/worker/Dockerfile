@@ -3,6 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
@@ -17,4 +18,4 @@ COPY backend ./backend
 
 RUN mkdir -p /app/backend/data
 
-CMD ["uv", "run", "python", "scripts/story_generator_pipeline/queue_worker.py"]
+CMD ["uv", "run", "python", "-m", "scripts.story_generator_pipeline.queue_worker"]
