@@ -887,6 +887,7 @@ export function AdminChapterSelectionSection({
 
 type AdminLlmSettingsSectionProps = {
   collapsed: boolean;
+  isMobile: boolean;
   llmProviders: AdminLlmProvider[];
   llmProfileUserOptions: AdminUserSummary[];
   llmEnvKeyOptions: AdminLlmApiKeyOption[];
@@ -990,6 +991,7 @@ type AdminLlmSettingsSectionProps = {
 
 export function AdminLlmSettingsSection({
   collapsed,
+  isMobile,
   llmProviders,
   llmProfileUserOptions,
   llmEnvKeyOptions,
@@ -1190,6 +1192,132 @@ export function AdminLlmSettingsSection({
     : !selectedEnvKeyName
       ? "当前 Provider 未指定 env key。请先选择 Env Key 后再测试/拉取模型。"
       : `Env Key ${selectedEnvKeyName} 当前不可用，请先在环境中配置后重试。`;
+
+  const scopeLabel = llmProfileScope === "user" ? "Current user" : "Global default";
+  const storyModelDisplay = trimModel(llmProfileDraft.story_prompt_model) || trimModel(llmEffectiveRuntime?.text_model) || "未设置";
+  const imageModelDisplay = trimModel(llmProfileDraft.text2image_model) || trimModel(llmEffectiveRuntime?.image_model) || "未设置";
+  const summaryModelDisplay = trimModel(llmProfileDraft.summary_model) || trimModel(llmEffectiveRuntime?.summary_model) || "留空（跟随 Step 1）";
+  const enabledProviderCount = llmProviders.filter((item) => item.enabled).length;
+  const currentProviderLabel = selectedProvider
+    ? `#${selectedProvider.id} · ${selectedProvider.name}`
+    : "未选择 Provider";
+
+  if (!collapsed && isMobile) {
+    return (
+      <div className="admin-run-box admin-collapsible-box">
+        <button type="button" className={`admin-collapse-head ${collapsed ? "collapsed" : ""}`} onClick={onToggleSection}>
+          <h4>LLM 管理</h4>
+          <span className="admin-collapse-icon" aria-hidden="true">▾</span>
+        </button>
+
+        <div className="admin-llm-v2-shell admin-llm-mobile-shell">
+          <div className="admin-llm-mobile-readonly-banner" role="status" aria-live="polite">
+            移动端为只读视图。修改 Provider、Key 与模型分配，请在桌面端打开此页面。
+          </div>
+
+          {llmNoticeError && <div className="banner-error">{llmNoticeError}</div>}
+          {llmNoticeInfo && <div className="banner-info">{llmNoticeInfo}</div>}
+
+          <section className="admin-llm-v2-card">
+            <div className="admin-llm-v2-card-head">
+              <strong>Overview（只读）</strong>
+              <span>{scopeLabel}</span>
+            </div>
+            <div className="admin-config-summary admin-llm-mobile-summary-grid">
+              <div className="admin-llm-mobile-summary-item">
+                <span className="progress-inline">Provider 总数</span>
+                <strong>{llmProviders.length}</strong>
+                <small>启用 {enabledProviderCount}</small>
+              </div>
+              <div className="admin-llm-mobile-summary-item">
+                <span className="progress-inline">当前 Provider</span>
+                <strong>{currentProviderLabel}</strong>
+                <small>{lastModelsFetchedAt ? `最近拉取：${lastModelsFetchedAt}` : "尚未拉取模型"}</small>
+              </div>
+              <div className="admin-llm-mobile-summary-item">
+                <span className="progress-inline">用户 Profile</span>
+                <strong>{llmProfileScope === "user" ? (loadedUserId > 0 ? `#${loadedUserId}` : "未加载") : "全局"}</strong>
+                <small>{llmProfile?.updated_at ? `更新于 ${llmProfile.updated_at}` : "使用默认配置"}</small>
+              </div>
+            </div>
+
+            {providerKeyMissing && (
+              <div className="admin-llm-v2-warning-banner" role="status" aria-live="polite">
+                {providerKeyWarningText}
+              </div>
+            )}
+
+            <div className="admin-config-actions inline-actions admin-llm-actions">
+              <button type="button" className="nav-btn" onClick={onReload} disabled={loadingLlmConfig}>
+                {loadingLlmConfig ? "刷新中..." : "刷新只读数据"}
+              </button>
+            </div>
+          </section>
+
+          <section className="admin-llm-v2-card">
+            <div className="admin-llm-v2-card-head">
+              <strong>Model assignment（只读）</strong>
+              <span>{llmEffectiveRuntime?.provider_name || "未生效"}</span>
+            </div>
+            <div className="admin-config-summary admin-llm-mobile-step-list">
+              <div className="admin-llm-mobile-step">
+                <span className="admin-llm-v2-step-tag">Step 01</span>
+                <div className="admin-llm-mobile-step-meta">
+                  <strong>Story Prompt</strong>
+                  <span>{storyModelDisplay}</span>
+                  <small>{storyProviderMeta.count} models · {storyProviderMeta.fetchedLabel}</small>
+                </div>
+              </div>
+              <div className="admin-llm-mobile-step">
+                <span className="admin-llm-v2-step-tag">Step 02</span>
+                <div className="admin-llm-mobile-step-meta">
+                  <strong>Text2Image</strong>
+                  <span>{imageModelDisplay}</span>
+                  <small>{imageProviderMeta.count} models · {imageProviderMeta.fetchedLabel}</small>
+                </div>
+              </div>
+              <div className="admin-llm-mobile-step">
+                <span className="admin-llm-v2-step-tag is-optional">Step 03 · Optional</span>
+                <div className="admin-llm-mobile-step-meta">
+                  <strong>Book Summary</strong>
+                  <span>{summaryModelDisplay}</span>
+                  <small>{summaryProviderMeta.count} models · {summaryProviderMeta.fetchedLabel}</small>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {lastLlmTest && (
+            <section className="admin-llm-v2-card admin-llm-test-summary">
+              <div className="admin-llm-v2-card-head">
+                <strong>Connection Test（最近一次）</strong>
+                <span>{currentProviderLabel}</span>
+              </div>
+              <div className="admin-config-summary">
+                <div className="admin-llm-test-line">
+                  <span className={`level-state ${lastLlmTest.key_available ? "done" : "failed"}`}>
+                    API Key: {lastLlmTest.key_available ? "可用" : "不可用"}
+                  </span>
+                  <span className={`level-state ${lastLlmTest.text_model_exists ? "done" : "todo"}`}>
+                    Step 1: {lastLlmTest.text_model_exists ? "可用" : "未命中"}
+                  </span>
+                  <span className={`level-state ${lastLlmTest.image_model_exists ? "done" : "todo"}`}>
+                    Step 2: {lastLlmTest.image_model_exists ? "可用" : "未命中"}
+                  </span>
+                  <span className={`level-state ${lastLlmTest.summary_model_exists ? "done" : "todo"}`}>
+                    Step 3: {lastLlmTest.summary_model_exists ? "可用" : "未命中"}
+                  </span>
+                </div>
+                <p className="progress-inline admin-llm-mobile-hint">
+                  检测到模型 {lastLlmTest.models_count} 个，详情配置请在桌面端进行。
+                </p>
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="admin-run-box admin-collapsible-box">

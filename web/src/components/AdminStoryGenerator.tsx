@@ -379,6 +379,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       />
 
       <AdminLlmSettingsSection
+        isMobile={isMobile}
         collapsed={collapsedSections.llm}
         llmProviders={llmProviders}
         llmProfileUserOptions={llmProfileUserOptions}

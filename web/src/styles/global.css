@@ -1998,6 +1998,84 @@ select:hover:not(:focus) {
   margin-top: 10px;
 }
 
+.admin-llm-mobile-shell {
+  gap: 10px;
+}
+
+.admin-llm-mobile-readonly-banner {
+  border: 1px solid rgba(200, 150, 60, 0.4);
+  border-radius: var(--radius-md);
+  background: rgba(200, 150, 60, 0.14);
+  color: var(--gold-soft);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 8px 10px;
+}
+
+.admin-llm-mobile-summary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.admin-llm-mobile-summary-item {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.admin-llm-mobile-summary-item strong {
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.admin-llm-mobile-summary-item small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.admin-llm-mobile-step-list {
+  gap: 8px;
+}
+
+.admin-llm-mobile-step {
+  border: 1px solid rgba(200, 150, 60, 0.2);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.admin-llm-mobile-step-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-llm-mobile-step-meta strong {
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
+.admin-llm-mobile-step-meta span {
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+
+.admin-llm-mobile-step-meta small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.admin-llm-mobile-hint {
+  margin: 0;
+}
+
 .admin-config-summary {
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
@@ -6079,6 +6157,10 @@ summary:focus-visible {
 
   .admin-llm-v2-draft-summary {
     margin: 0;
+  }
+
+  .admin-llm-mobile-summary-grid {
+    grid-template-columns: 1fr;
   }
 
   .admin-recent-jobs li {
