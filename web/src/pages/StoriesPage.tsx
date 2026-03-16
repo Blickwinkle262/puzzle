@@ -1,4 +1,12 @@
-import { SyntheticEvent } from "react";
+import {
+  CSSProperties,
+  SyntheticEvent,
+  TouchEvent as ReactTouchEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { AdminStoryBookOption, StoryListItem } from "../core/types";
 
@@ -74,6 +82,63 @@ type StoriesPageProps = {
   savingStoryMetaEditor: boolean;
 };
 
+type StoryPreviewState = {
+  story: StoryListItem;
+  groupTitle: string;
+  completed: number;
+  total: number;
+  progressPercent: number;
+  isPlaceholder: boolean;
+};
+
+type StoryRailState = {
+  activeIndex: number;
+  total: number;
+  progress: number;
+};
+
+type StorySubgroup = {
+  key: string;
+  label: string;
+  stories: StoryListItem[];
+  offset: number;
+};
+
+const STORY_SUBGROUP_CHUNK_SIZE = 8;
+const STORY_TOUCH_MOVE_THRESHOLD_PX = 10;
+
+function getStoryFanTiltDegrees(index: number, total: number): number {
+  const normalizedTotal = Math.max(1, Number(total || 0));
+  if (normalizedTotal <= 1) {
+    return 0;
+  }
+  const center = (normalizedTotal - 1) / 2;
+  const distanceFromCenter = index - center;
+  const maxDistance = Math.max(1, center);
+  const normalizedDistance = distanceFromCenter / maxDistance;
+  const tilt = normalizedDistance * 5.5;
+  return Math.max(-6, Math.min(6, tilt));
+}
+
+function buildStorySubgroups(stories: StoryListItem[]): StorySubgroup[] {
+  if (!Array.isArray(stories) || stories.length <= 12) {
+    return [{ key: "all", label: "全部", stories: Array.isArray(stories) ? stories : [], offset: 0 }];
+  }
+
+  const groups: StorySubgroup[] = [];
+  for (let index = 0; index < stories.length; index += STORY_SUBGROUP_CHUNK_SIZE) {
+    const start = index;
+    const end = Math.min(stories.length, start + STORY_SUBGROUP_CHUNK_SIZE);
+    groups.push({
+      key: `part-${groups.length + 1}`,
+      label: `${start + 1}-${end}`,
+      stories: stories.slice(start, end),
+      offset: start,
+    });
+  }
+  return groups;
+}
+
 export function StoriesPage({
   activeBookKey,
   adminGeneratorNode,
@@ -129,6 +194,345 @@ export function StoriesPage({
   loadingStoryMetaEditor,
   savingStoryMetaEditor,
 }: StoriesPageProps): JSX.Element {
+  const [previewState, setPreviewState] = useState<StoryPreviewState | null>(null);
+  const [liftedStoryId, setLiftedStoryId] = useState<string | null>(null);
+  const [storyRailStateMap, setStoryRailStateMap] = useState<Record<string, StoryRailState>>({});
+  const [selectedStorySlotKey, setSelectedStorySlotKey] = useState<string | null>(null);
+  const [storySubgroupIndexMap, setStorySubgroupIndexMap] = useState<Record<string, number>>({});
+
+  const storyTrackRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const longPressTimerRef = useRef<number | null>(null);
+  const suppressClickUntilRef = useRef(0);
+  const touchMovedRef = useRef(false);
+  const touchStartPointRef = useRef<{ x: number; y: number } | null>(null);
+  const dragStateRef = useRef<{
+    railKey: string;
+    totalStoryCount: number;
+    pointerId: number;
+    startX: number;
+    startScrollLeft: number;
+    moved: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, []);
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+  };
+
+  const buildPreviewState = (story: StoryListItem, groupTitle: string): StoryPreviewState => {
+    const completed = Number(story.completed_levels || 0);
+    const total = Number(story.total_levels || 0);
+    const progressPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return {
+      story,
+      groupTitle,
+      completed,
+      total,
+      progressPercent,
+      isPlaceholder: Boolean(story.book_placeholder),
+    };
+  };
+
+  const openStoryPreview = (story: StoryListItem, groupTitle: string) => {
+    if (Boolean(openingStoryId)) {
+      return;
+    }
+    setPreviewState(buildPreviewState(story, groupTitle));
+  };
+
+  const closeStoryPreview = () => {
+    setPreviewState(null);
+  };
+
+  const getStoryRailModeClass = (storyCount: number): string => {
+    if (storyCount <= 5) {
+      return "mode-static";
+    }
+    if (storyCount <= 12) {
+      return "mode-rail";
+    }
+    return "mode-dense";
+  };
+
+  const getStoryRailKey = (bookKey: string, subgroupKey: string): string => `${bookKey}::${subgroupKey}`;
+
+  const updateStoryRailState = (railKey: string, totalStoryCount: number) => {
+    const trackNode = storyTrackRefs.current[railKey];
+    if (!trackNode) {
+      return;
+    }
+
+    const total = Math.max(1, Number(totalStoryCount || 0));
+    const maxScrollLeft = Math.max(0, trackNode.scrollWidth - trackNode.clientWidth);
+    const progress = maxScrollLeft > 0 ? Math.min(1, Math.max(0, trackNode.scrollLeft / maxScrollLeft)) : 0;
+    const slotNodes = Array.from(trackNode.querySelectorAll<HTMLElement>(":scope > .stories-story-slot"));
+
+    let activeIndex = total <= 1 ? 1 : Math.min(total, Math.max(1, Math.round(progress * (total - 1)) + 1));
+    if (slotNodes.length > 0) {
+      const viewportCenterX = trackNode.scrollLeft + trackNode.clientWidth / 2;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      let nearestIndex = 0;
+      slotNodes.forEach((slotNode, index) => {
+        const slotCenterX = slotNode.offsetLeft + slotNode.offsetWidth / 2;
+        const distance = Math.abs(slotCenterX - viewportCenterX);
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestIndex = index;
+        }
+      });
+      activeIndex = Math.min(total, Math.max(1, nearestIndex + 1));
+    }
+
+    setStoryRailStateMap((prev) => {
+      const existing = prev[railKey];
+      if (
+        existing
+        && existing.total === total
+        && existing.activeIndex === activeIndex
+        && Math.abs(existing.progress - progress) < 0.01
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [railKey]: {
+          total,
+          activeIndex,
+          progress,
+        },
+      };
+    });
+  };
+
+  const forceFocusStorySlot = (railKey: string, totalStoryCount: number, slotIndex: number) => {
+    const total = Math.max(1, Number(totalStoryCount || 0));
+    const activeIndex = Math.min(total, Math.max(1, Math.floor(Number(slotIndex || 1))));
+    setStoryRailStateMap((prev) => {
+      const existing = prev[railKey];
+      if (existing && existing.total === total && existing.activeIndex === activeIndex) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [railKey]: {
+          total,
+          activeIndex,
+          progress: existing?.progress ?? 0,
+        },
+      };
+    });
+  };
+
+  useEffect(() => {
+    if (!activeBookKey) {
+      return;
+    }
+
+    const group = storyBookGroups.find((item) => item.key === activeBookKey);
+    if (!group) {
+      return;
+    }
+    const subgroups = buildStorySubgroups(group.stories);
+    const currentSubgroupIndex = storySubgroupIndexMap[activeBookKey] || 0;
+    const normalizedSubgroupIndex = currentSubgroupIndex >= 0 && currentSubgroupIndex < subgroups.length
+      ? currentSubgroupIndex
+      : 0;
+    const activeSubgroup = subgroups[normalizedSubgroupIndex] || subgroups[0];
+    const railKey = getStoryRailKey(activeBookKey, activeSubgroup?.key || "all");
+
+    const rafId = window.requestAnimationFrame(() => {
+      updateStoryRailState(railKey, activeSubgroup?.stories.length || 0);
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [activeBookKey, storyBookGroups, storySubgroupIndexMap]);
+
+  useEffect(() => {
+    if (!activeBookKey) {
+      return;
+    }
+
+    const group = storyBookGroups.find((item) => item.key === activeBookKey);
+    if (!group) {
+      return;
+    }
+
+    const subgroups = buildStorySubgroups(group.stories);
+    const currentSubgroupIndex = storySubgroupIndexMap[activeBookKey] || 0;
+    const normalizedSubgroupIndex = currentSubgroupIndex >= 0 && currentSubgroupIndex < subgroups.length
+      ? currentSubgroupIndex
+      : 0;
+    const activeSubgroup = subgroups[normalizedSubgroupIndex] || subgroups[0];
+    const railKey = getStoryRailKey(activeBookKey, activeSubgroup?.key || "all");
+    const stories = Array.isArray(activeSubgroup?.stories) ? activeSubgroup.stories : [];
+    if (stories.length <= 0) {
+      if (selectedStorySlotKey !== null) {
+        setSelectedStorySlotKey(null);
+      }
+      return;
+    }
+
+    const slotKeys = stories.map((_, index) => `${railKey}::${index + 1}`);
+    if (!selectedStorySlotKey || !slotKeys.includes(selectedStorySlotKey)) {
+      setSelectedStorySlotKey(slotKeys[0]);
+    }
+  }, [activeBookKey, selectedStorySlotKey, storyBookGroups, storySubgroupIndexMap]);
+
+  const handleTrackPointerDown = (railKey: string, totalStoryCount: number, event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "mouse" || event.button !== 0) {
+      return;
+    }
+
+    const targetNode = event.target instanceof HTMLElement ? event.target : null;
+    if (targetNode?.closest(".stories-story-card-open") || targetNode?.closest(".stories-story-edit-btn")) {
+      return;
+    }
+
+    const target = event.currentTarget;
+    dragStateRef.current = {
+      railKey,
+      totalStoryCount,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: target.scrollLeft,
+      moved: false,
+    };
+    target.classList.add("is-dragging");
+    target.setPointerCapture(event.pointerId);
+  };
+
+  const handleTrackPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const target = event.currentTarget;
+    const delta = event.clientX - dragState.startX;
+    if (Math.abs(delta) > 4) {
+      dragState.moved = true;
+    }
+    target.scrollLeft = dragState.startScrollLeft - delta * 1.12;
+  };
+
+  const handleTrackPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const target = event.currentTarget;
+    target.classList.remove("is-dragging");
+    if (dragState.moved) {
+      suppressClickUntilRef.current = Date.now() + 160;
+    }
+    dragStateRef.current = null;
+    updateStoryRailState(dragState.railKey, dragState.totalStoryCount);
+  };
+
+  const handleTrackPointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    dragStateRef.current = null;
+    event.currentTarget.classList.remove("is-dragging");
+  };
+
+  const handleStoryTouchStart = (event: ReactTouchEvent<HTMLButtonElement>, story: StoryListItem, groupTitle: string) => {
+    const touch = event.touches[0] || event.changedTouches[0];
+    touchMovedRef.current = false;
+    touchStartPointRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+    setLiftedStoryId(story.id);
+    clearLongPressTimer();
+    void groupTitle;
+  };
+
+  const handleStoryTouchMove = (event: ReactTouchEvent<HTMLButtonElement>) => {
+    if (touchMovedRef.current) {
+      return;
+    }
+
+    const touch = event.touches[0] || event.changedTouches[0];
+    const startPoint = touchStartPointRef.current;
+    if (!touch || !startPoint) {
+      return;
+    }
+
+    const deltaX = touch.clientX - startPoint.x;
+    const deltaY = touch.clientY - startPoint.y;
+    const movedFarEnough = Math.hypot(deltaX, deltaY) >= STORY_TOUCH_MOVE_THRESHOLD_PX;
+    if (!movedFarEnough) {
+      return;
+    }
+
+    touchMovedRef.current = true;
+    clearLongPressTimer();
+  };
+
+  const handleStoryTouchEnd = (
+    event?: ReactTouchEvent<HTMLButtonElement>,
+    story?: StoryListItem,
+    groupTitle?: string,
+    isPlaceholder?: boolean,
+  ) => {
+    clearLongPressTimer();
+
+    const startPoint = touchStartPointRef.current;
+    let moved = touchMovedRef.current;
+    if (!moved && event && startPoint) {
+      const touch = event.changedTouches[0] || event.touches[0];
+      if (touch) {
+        const deltaX = touch.clientX - startPoint.x;
+        const deltaY = touch.clientY - startPoint.y;
+        moved = Math.hypot(deltaX, deltaY) >= STORY_TOUCH_MOVE_THRESHOLD_PX;
+      }
+    }
+
+    touchMovedRef.current = false;
+    touchStartPointRef.current = null;
+    if (moved) {
+      setLiftedStoryId(null);
+      return;
+    }
+
+    if (!story || !groupTitle || isPlaceholder || Boolean(openingStoryId)) {
+      return;
+    }
+
+    suppressClickUntilRef.current = Date.now() + 280;
+    openStoryPreview(story, groupTitle);
+  };
+
+  const handleStoryCardClick = (story: StoryListItem, _groupTitle: string, isPlaceholder: boolean) => {
+    if (Date.now() < suppressClickUntilRef.current) {
+      return;
+    }
+    if (isPlaceholder) {
+      return;
+    }
+    openStoryPreview(story, _groupTitle);
+  };
+
+  const handlePreviewOpenStory = () => {
+    if (!previewState || previewState.isPlaceholder) {
+      return;
+    }
+    closeStoryPreview();
+    onOpenStory(previewState.story);
+  };
+
   return (
     <div className={`hub-shell stories-shell stories-home-shell role-shell role-${roleKey}`}>
       <header className="stories-home-nav">
@@ -269,6 +673,13 @@ export function StoriesPage({
         <main className="stories-home-main">
           {storyBookGroups.map((group, groupIndex) => {
             const isOpen = activeBookKey === group.key;
+            const storySubgroups = buildStorySubgroups(group.stories);
+            const subgroupCount = storySubgroups.length;
+            const storedSubgroupIndex = Number(storySubgroupIndexMap[group.key] || 0);
+            const activeSubgroupIndex = storedSubgroupIndex >= 0 && storedSubgroupIndex < subgroupCount ? storedSubgroupIndex : 0;
+            const activeSubgroup = storySubgroups[activeSubgroupIndex] || storySubgroups[0];
+            const railModeClass = getStoryRailModeClass(activeSubgroup?.stories.length || group.storyCount);
+            const railKey = getStoryRailKey(group.key, activeSubgroup?.key || "all");
             const bookProgressPercent = group.totalLevels > 0 ? Math.round((group.completedLevels / group.totalLevels) * 100) : 0;
             const coverStory = group.stories.find((story) => !story.book_placeholder && Boolean(story.cover))
               || group.stories.find((story) => !story.book_placeholder)
@@ -336,71 +747,160 @@ export function StoriesPage({
                         : "该书已入库，暂未生成故事关卡。请在管理后台先生成故事。"}
                     </p>
 
+                    {subgroupCount > 1 && (
+                      <div className="stories-story-subgroups" role="tablist" aria-label="故事分组">
+                        {storySubgroups.map((subgroup, subgroupIndex) => (
+                          <button
+                            key={`${group.key}-${subgroup.key}`}
+                            type="button"
+                            className={`stories-story-subgroup-btn ${subgroupIndex === activeSubgroupIndex ? "is-active" : ""}`}
+                            onClick={() => {
+                              setStorySubgroupIndexMap((prev) => ({
+                                ...prev,
+                                [group.key]: subgroupIndex,
+                              }));
+                              const nextRailKey = getStoryRailKey(group.key, subgroup.key);
+                              window.requestAnimationFrame(() => {
+                                updateStoryRailState(nextRailKey, subgroup.stories.length);
+                              });
+                            }}
+                          >
+                            第{subgroupIndex + 1}组 · {subgroup.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
                     <div className={`stories-story-grid ${openingStoryId ? "has-opening" : ""}`}>
-                      {group.stories.map((story) => {
+                      <div className={`stories-story-grid-viewport ${railModeClass}`}>
+                        <div
+                          className={`stories-story-fan-track ${railModeClass}`}
+                          ref={(node) => {
+                            storyTrackRefs.current[railKey] = node;
+                          }}
+                          onScroll={() => updateStoryRailState(railKey, activeSubgroup?.stories.length || 0)}
+                          onPointerDown={(event) => handleTrackPointerDown(railKey, activeSubgroup?.stories.length || 0, event)}
+                          onPointerMove={handleTrackPointerMove}
+                          onPointerUp={handleTrackPointerUp}
+                          onPointerCancel={handleTrackPointerCancel}
+                        >
+                          {activeSubgroup?.stories.map((story, index) => {
                         const isPlaceholder = Boolean(story.book_placeholder);
                         const completed = Number(story.completed_levels || 0);
                         const total = Number(story.total_levels || 0);
                         const progressPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
                         const statusClass = completed >= total && total > 0 ? "done" : completed > 0 ? "current" : "none";
                         const showEditButton = isAdmin && showAdminGenerator && !isPlaceholder;
+                        const coverLabel = isPlaceholder ? "待生成" : `关卡 ${Math.max(0, completed)}/${Math.max(0, total)}`;
+                        const isLifted = liftedStoryId === story.id;
+                        const slotKey = `${railKey}::${index + 1}`;
+                        const isSelected = selectedStorySlotKey === slotKey;
+                        const slotStyle = {
+                          ["--story-tilt" as string]: `${getStoryFanTiltDegrees(index, activeSubgroup?.stories.length || 0)}deg`,
+                        } as CSSProperties;
 
                         return (
                           <div
                             key={story.id}
-                            className={`stories-story-card status-${statusClass} ${openingStoryId === story.id ? "is-opening" : ""} ${showEditButton ? "has-edit" : ""}`.trim()}
+                            className={`stories-story-slot ${isSelected ? "is-selected" : ""} ${isLifted ? "is-lifted" : ""}`.trim()}
+                            style={slotStyle}
+                            onMouseEnter={() => {
+                              setSelectedStorySlotKey(slotKey);
+                              forceFocusStorySlot(railKey, activeSubgroup?.stories.length || 0, index + 1);
+                              setLiftedStoryId(story.id);
+                            }}
+                            onMouseLeave={() => {
+                              setLiftedStoryId((current) => (current === story.id ? null : current));
+                            }}
                           >
-                            <button
-                              type="button"
-                              className="stories-story-card-open"
-                              disabled={Boolean(openingStoryId) || isPlaceholder}
-                              onClick={() => onOpenStory(story)}
+                            <div
+                              className={`stories-story-card status-${statusClass} ${openingStoryId === story.id ? "is-opening" : ""} ${showEditButton ? "has-edit" : ""}`.trim()}
                             >
-                              <div className="stories-story-cover">
-                                <img
-                                  ref={(node) => {
-                                    onStoryCoverRefChange(story.id, node);
-                                  }}
-                                  src={onCoverOrFallback(story.cover)}
-                                  alt={story.title}
-                                  onError={onCoverError}
-                                />
-                                {statusClass === "current" && <span className="stories-story-badge current">进行中</span>}
-                                {statusClass === "done" && <span className="stories-story-badge done">已完成</span>}
-                                {isPlaceholder && <span className="stories-story-badge">待生成</span>}
-                              </div>
-                              <div className="stories-story-info">
-                                <h3>{story.title}</h3>
-                                <p>{story.description}</p>
-                                <div className="stories-story-progress-row">
-                                  {isPlaceholder ? (
-                                    <span>尚未生成</span>
-                                  ) : (
-                                    <span className={completed > 0 ? "has-progress" : ""}>
-                                      完成度 {completed}/{total}
-                                    </span>
-                                  )}
-                                  <div className="stories-story-mini-bar">
-                                    <i style={{ width: `${progressPercent}%` }} />
-                                  </div>
-                                </div>
-                                <div className="stories-story-cta">{isPlaceholder ? "请先生成故事" : completed > 0 ? "继续翻开" : "打开这本故事"} →</div>
-                              </div>
-                            </button>
-
-                            {showEditButton && (
                               <button
                                 type="button"
-                                className="stories-story-edit-btn"
-                                disabled={Boolean(openingStoryId) || loadingStoryMetaEditor || savingStoryMetaEditor}
-                                onClick={() => onOpenStoryMetaEditor(story)}
+                                className="stories-story-card-open"
+                                disabled={Boolean(openingStoryId)}
+                                onClick={(event) => {
+                                  setSelectedStorySlotKey(slotKey);
+                                  forceFocusStorySlot(railKey, activeSubgroup?.stories.length || 0, index + 1);
+                                  if (event.detail > 0) {
+                                    event.currentTarget.blur();
+                                  }
+                                  handleStoryCardClick(story, group.title, isPlaceholder);
+                                }}
+                                onTouchStart={(event) => handleStoryTouchStart(event, story, group.title)}
+                                onTouchMove={handleStoryTouchMove}
+                                onTouchEnd={(event) => handleStoryTouchEnd(event, story, group.title, isPlaceholder)}
+                                onTouchCancel={(event) => handleStoryTouchEnd(event)}
                               >
-                                编辑
+                                <div className="stories-story-cover">
+                                  <img
+                                    ref={(node) => {
+                                      onStoryCoverRefChange(story.id, node);
+                                    }}
+                                    src={onCoverOrFallback(story.cover)}
+                                    alt={story.title}
+                                    onError={onCoverError}
+                                  />
+                                  <span className="stories-story-cover-order">· {activeSubgroup.offset + index + 1}/{group.storyCount} ·</span>
+                                  {statusClass === "current" && <span className="stories-story-badge current">进行中</span>}
+                                  {statusClass === "done" && <span className="stories-story-badge done">已完成</span>}
+                                  {isPlaceholder && <span className="stories-story-badge">待生成</span>}
+                                  <strong className="stories-story-cover-title">{story.title}</strong>
+                                </div>
+                                <div className="stories-story-info">
+                                  <h3>{story.title}</h3>
+                                  <p>{story.description}</p>
+                                  <div className="stories-story-progress-row">
+                                    {isPlaceholder ? (
+                                      <span>尚未生成</span>
+                                    ) : (
+                                      <span className={completed > 0 ? "has-progress" : ""}>
+                                        完成度 {completed}/{total}
+                                      </span>
+                                    )}
+                                    <div className="stories-story-mini-bar">
+                                      <i style={{ width: `${progressPercent}%` }} />
+                                    </div>
+                                  </div>
+                                  <div className="stories-story-cta">{isPlaceholder ? "请先生成故事" : completed > 0 ? "继续翻开" : "打开这本故事"} →</div>
+                                </div>
                               </button>
-                            )}
+
+                              {showEditButton && (
+                                <button
+                                  type="button"
+                                  className="stories-story-edit-btn"
+                                  disabled={Boolean(openingStoryId) || loadingStoryMetaEditor || savingStoryMetaEditor}
+                                  onClick={() => onOpenStoryMetaEditor(story)}
+                                >
+                                  编辑
+                                </button>
+                              )}
+                            </div>
+                            <span className="stories-story-hover-label">{coverLabel}</span>
                           </div>
                         );
-                      })}
+                          })}
+                        </div>
+                      </div>
+
+                      {(activeSubgroup?.stories.length || 0) > 0 && (
+                        <div className="stories-story-rail-footer">
+                          <div className="stories-story-rail-progress">
+                            <i
+                              style={{
+                                width: `${Math.round((storyRailStateMap[railKey]?.progress ?? 0) * 100)}%`,
+                              }}
+                            />
+                          </div>
+                          <span>
+                            {storyRailStateMap[railKey]?.activeIndex || 1}
+                            {" / "}
+                            {storyRailStateMap[railKey]?.total || activeSubgroup?.stories.length || group.storyCount}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -410,6 +910,57 @@ export function StoriesPage({
         </main>
       ) : (
         <div className="screen-message">暂无可展示的故事内容</div>
+      )}
+
+      {previewState && (
+        <div className="stories-story-preview-mask" role="dialog" aria-modal="true" onClick={closeStoryPreview}>
+          <div className="stories-story-preview-card" onClick={(event) => event.stopPropagation()}>
+            <div className="stories-story-preview-cover">
+              <img
+                src={onCoverOrFallback(previewState.story.cover)}
+                alt={previewState.story.title}
+                onError={onCoverError}
+              />
+              <div className="stories-story-preview-cover-overlay" />
+              <div className="stories-story-preview-cover-title-wrap">
+                <p>{previewState.groupTitle}</p>
+                <h4>{previewState.story.title}</h4>
+              </div>
+            </div>
+
+            <div className="stories-story-preview-body">
+              <p className="stories-story-preview-description">{previewState.story.description}</p>
+              <div className="stories-story-preview-progress-row">
+                <div className="stories-story-preview-progress-bar">
+                  <i style={{ width: `${previewState.progressPercent}%` }} />
+                </div>
+                <span>
+                  {previewState.isPlaceholder
+                    ? "待生成"
+                    : `${previewState.completed}/${previewState.total} 关`}
+                </span>
+              </div>
+
+              <div className="stories-story-preview-actions">
+                <button
+                  type="button"
+                  className="primary-btn"
+                  disabled={Boolean(openingStoryId) || previewState.isPlaceholder}
+                  onClick={handlePreviewOpenStory}
+                >
+                  {previewState.isPlaceholder ? "请先生成故事" : "打开故事"}
+                </button>
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={closeStoryPreview}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {storyMetaEditor && (

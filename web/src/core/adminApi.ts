@@ -1,8 +1,11 @@
 export type {
   AdminBookChaptersQuery,
   AdminGenerateStoryPayload,
-  AdminUploadBookPayload,
+  AdminLlmProfilePatch,
+  AdminLlmProviderKeyPatch,
+  AdminLlmProviderPatch,
   AdminUsersQuery,
+  AdminUploadBookPayload,
 } from "./api";
 
 export {
@@ -17,6 +20,16 @@ export {
   apiGetAdminBookSummaryTask,
   apiGetAdminLevelConfig,
   apiGetAdminChapterText,
+  apiCreateAdminLlmProvider,
+  apiDeleteAdminLlmProvider,
+  apiGetAdminLlmGlobalProfile,
+  apiGetAdminLlmProvider,
+  apiGetAdminLlmUserProfile,
+  apiFetchAdminLlmProviderModels,
+  apiListAdminLlmEnvKeys,
+  apiListAdminLlmProviderModels,
+  apiListAdminLlmProviders,
+  apiTestAdminLlmProvider,
   apiListAdminBookSummaryTasks,
   apiListAdminBookUploadTasks,
   apiGetAdminBookUploadTask,
@@ -31,6 +44,10 @@ export {
   apiPublishRun,
   apiRevokeAdminUserRole,
   apiRunAdminLevelTest,
+  apiUpdateAdminLlmGlobalProfile,
   apiUpdateAdminLevelConfig,
+  apiUpdateAdminLlmProvider,
+  apiUpdateAdminLlmProviderKey,
+  apiUpdateAdminLlmUserProfile,
   apiUpdateRunScene,
 } from "./api";

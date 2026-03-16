@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
   AdminBookIngestTask,
@@ -12,6 +12,13 @@ import {
   AdminLevelConfigResponse,
   AdminLevelDifficulty,
   AdminLevelTestRunResponse,
+  AdminLlmApiKeyOption,
+  AdminLlmConnectionTestResult,
+  AdminLlmModelOption,
+  AdminLlmProfile,
+  AdminLlmProvider,
+  AdminLlmProviderModel,
+  AdminLlmRuntimeState,
   AdminManagedRole,
   AdminUserSummary,
   StoryListItem,
@@ -50,10 +57,31 @@ export function AdminStatusBanner({
   resumableJob,
   onViewJobProgress,
 }: AdminStatusBannerProps): JSX.Element {
+  const [displayError, setDisplayError] = useState("");
+  const [displayInfo, setDisplayInfo] = useState("");
+
+  useEffect(() => {
+    const nextError = String(panelError || "").trim();
+    if (!nextError) {
+      return;
+    }
+    setDisplayError(nextError);
+    setDisplayInfo("");
+  }, [panelError]);
+
+  useEffect(() => {
+    const nextInfo = String(panelInfo || "").trim();
+    if (!nextInfo) {
+      return;
+    }
+    setDisplayInfo(nextInfo);
+    setDisplayError("");
+  }, [panelInfo]);
+
   return (
     <>
-      {panelError && <div className="banner-error">{panelError}</div>}
-      {panelInfo && <div className="banner-info">{panelInfo}</div>}
+      {displayError && <div className="banner-error">{displayError}</div>}
+      {displayInfo && <div className="banner-info">{displayInfo}</div>}
       {resumableJob && !activeRunId && (
         <div className="banner-info admin-running-banner">
           <span>检测到未完成任务：{resumableJob.run_id}（{formatGenerationJobStateLabel(resumableJob)}）</span>
@@ -428,6 +456,1024 @@ export function AdminChapterSelectionSection({
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+type AdminLlmSettingsSectionProps = {
+  collapsed: boolean;
+  llmProviders: AdminLlmProvider[];
+  llmProfileUserOptions: AdminUserSummary[];
+  llmEnvKeyOptions: AdminLlmApiKeyOption[];
+  selectedLlmProviderId: number;
+  llmProviderDraft: {
+    id: number;
+    name: string;
+    provider_kind: "compatible";
+    api_base_url: string;
+    proxy_url: string;
+    no_proxy_hosts: string;
+    enabled: boolean;
+    key_source: "env" | "custom";
+    env_key_name: string;
+    custom_api_key: string;
+  } | null;
+  llmCreateProviderDraft: {
+    name: string;
+    api_base_url: string;
+    proxy_url: string;
+    no_proxy_hosts: string;
+    enabled: boolean;
+    key_source: "env" | "custom";
+    env_key_name: string;
+    custom_api_key: string;
+  };
+  llmProfileScope: "global" | "user";
+  llmProfileUserIdInput: string;
+  llmProfile: AdminLlmProfile | null;
+  llmEffectiveRuntime: AdminLlmRuntimeState | null;
+  llmProfileDraft: {
+    provider_id: number | null;
+    story_provider_id: number | null;
+    summary_provider_id: number | null;
+    text2image_provider_id: number | null;
+    story_prompt_model: string;
+    summary_model: string;
+    text2image_model: string;
+  };
+  llmCachedModels: AdminLlmProviderModel[];
+  loadingLlmConfig: boolean;
+  savingLlmConfig: boolean;
+  testingLlmConfig: boolean;
+  fetchingLlmModels: boolean;
+  fetchingLlmModelsProviderId: number;
+  fetchedModels: AdminLlmModelOption[];
+  llmFetchedModelsByProviderId: Record<number, AdminLlmModelOption[]>;
+  llmNoticeError: string;
+  llmNoticeInfo: string;
+  lastModelsFetchedAt: string;
+  llmLastModelsFetchedAtByProviderId: Record<number, string>;
+  lastLlmTest: AdminLlmConnectionTestResult | null;
+  llmProfileSavedAt: number;
+  llmProviderSavedAt: number;
+  onReload: () => void;
+  onProviderChange: (value: string) => void;
+  onProviderFieldChange: (patch: {
+    name?: string;
+    provider_kind?: "compatible";
+    api_base_url?: string;
+    proxy_url?: string;
+    no_proxy_hosts?: string;
+    enabled?: boolean;
+  }) => void;
+  onProviderKeyFieldChange: (patch: {
+    key_source?: "env" | "custom";
+    env_key_name?: string;
+    custom_api_key?: string;
+  }) => void;
+  onCreateProviderFieldChange: (patch: {
+    name?: string;
+    api_base_url?: string;
+    proxy_url?: string;
+    no_proxy_hosts?: string;
+    enabled?: boolean;
+    key_source?: "env" | "custom";
+    env_key_name?: string;
+    custom_api_key?: string;
+  }) => void;
+  onCreateProvider: () => void;
+  onDeleteProvider: (providerId: number) => void;
+  onProfileScopeChange: (scope: "global" | "user") => void;
+  onProfileUserIdInputChange: (value: string) => void;
+  onLoadUserProfile: () => void;
+  onProfileFieldChange: (patch: {
+    provider_id?: number | null;
+    story_provider_id?: number | null;
+    summary_provider_id?: number | null;
+    text2image_provider_id?: number | null;
+    story_prompt_model?: string;
+    summary_model?: string;
+    text2image_model?: string;
+  }) => void;
+  onSaveProvider: () => void;
+  onSaveProfile: () => void;
+  onTest: () => void;
+  onFetchModels: () => void;
+  onFetchProviderModels: (providerId: number) => void;
+  onToggleSection: () => void;
+};
+
+export function AdminLlmSettingsSection({
+  collapsed,
+  llmProviders,
+  llmProfileUserOptions,
+  llmEnvKeyOptions,
+  selectedLlmProviderId,
+  llmProviderDraft,
+  llmCreateProviderDraft,
+  llmProfileScope,
+  llmProfileUserIdInput,
+  llmProfile,
+  llmEffectiveRuntime,
+  llmProfileDraft,
+  llmCachedModels,
+  loadingLlmConfig,
+  savingLlmConfig,
+  testingLlmConfig,
+  fetchingLlmModels,
+  fetchingLlmModelsProviderId,
+  fetchedModels,
+  llmFetchedModelsByProviderId,
+  llmNoticeError,
+  llmNoticeInfo,
+  lastModelsFetchedAt,
+  llmLastModelsFetchedAtByProviderId,
+  lastLlmTest,
+  llmProfileSavedAt,
+  llmProviderSavedAt,
+  onReload,
+  onProviderChange,
+  onProviderFieldChange,
+  onProviderKeyFieldChange,
+  onCreateProviderFieldChange,
+  onCreateProvider,
+  onDeleteProvider,
+  onProfileScopeChange,
+  onProfileUserIdInputChange,
+  onLoadUserProfile,
+  onProfileFieldChange,
+  onSaveProvider,
+  onSaveProfile,
+  onTest,
+  onFetchModels,
+  onFetchProviderModels,
+  onToggleSection,
+}: AdminLlmSettingsSectionProps): JSX.Element {
+  const [providerModelKeyword, setProviderModelKeyword] = useState("");
+  const [providerModelTypeFilter, setProviderModelTypeFilter] = useState<"" | "text" | "image" | "summary">("");
+  const [showAddProviderModal, setShowAddProviderModal] = useState(false);
+  const [showRuntimeDebug, setShowRuntimeDebug] = useState(false);
+  const selectedProvider = llmProviders.find((item) => item.id === selectedLlmProviderId) || null;
+  const providerStatusLabel = llmProviderDraft?.enabled ? "Active" : "Disabled";
+
+  const profileProviderId = Number(llmProfileDraft.provider_id || 0);
+  const storyProviderId = Number(llmProfileDraft.story_provider_id || profileProviderId || 0);
+  const summaryProviderId = Number(llmProfileDraft.summary_provider_id || llmProfileDraft.story_provider_id || profileProviderId || 0);
+  const imageProviderId = Number(llmProfileDraft.text2image_provider_id || profileProviderId || 0);
+
+  const storyProviderValue = storyProviderId > 0 ? String(storyProviderId) : "";
+  const summaryProviderValue = Number(llmProfileDraft.summary_provider_id || 0) > 0
+    ? String(llmProfileDraft.summary_provider_id)
+    : "";
+  const imageProviderValue = imageProviderId > 0 ? String(imageProviderId) : "";
+
+  const getProviderFetchedModels = (providerId: number): AdminLlmModelOption[] => {
+    if (!providerId) {
+      return [];
+    }
+    return Array.isArray(llmFetchedModelsByProviderId[providerId]) ? llmFetchedModelsByProviderId[providerId] : [];
+  };
+
+  const storyTextModels = getProviderFetchedModels(storyProviderId).filter((item) => item.text);
+  const summaryModels = getProviderFetchedModels(summaryProviderId).filter((item) => item.summary || item.text);
+  const imageModels = getProviderFetchedModels(imageProviderId).filter((item) => item.image);
+
+  const filteredProviderModels = useMemo(() => {
+    const keyword = String(providerModelKeyword || "").trim().toLowerCase();
+    const type = String(providerModelTypeFilter || "").trim();
+    return llmCachedModels.filter((item) => {
+      if (type && String(item.model_type || "").trim() !== type) {
+        return false;
+      }
+      if (!keyword) {
+        return true;
+      }
+      return String(item.model_id || "").toLowerCase().includes(keyword);
+    });
+  }, [llmCachedModels, providerModelKeyword, providerModelTypeFilter]);
+
+  const [profileSavedUntil, setProfileSavedUntil] = useState(0);
+  const [providerSavedUntil, setProviderSavedUntil] = useState(0);
+
+  useEffect(() => {
+    if (!llmProfileSavedAt) {
+      return undefined;
+    }
+    const until = llmProfileSavedAt + 2000;
+    setProfileSavedUntil(until);
+    const timer = window.setTimeout(() => setProfileSavedUntil(0), 2100);
+    return () => window.clearTimeout(timer);
+  }, [llmProfileSavedAt]);
+
+  useEffect(() => {
+    if (!llmProviderSavedAt) {
+      return undefined;
+    }
+    const until = llmProviderSavedAt + 2000;
+    setProviderSavedUntil(until);
+    const timer = window.setTimeout(() => setProviderSavedUntil(0), 2100);
+    return () => window.clearTimeout(timer);
+  }, [llmProviderSavedAt]);
+
+  const normalizeProviderId = (value: number | null | undefined): number => {
+    const num = Number(value || 0);
+    return Number.isInteger(num) && num > 0 ? num : 0;
+  };
+  const trimModel = (value: string | null | undefined): string => String(value || "").trim();
+
+  const baselineProviderId = normalizeProviderId(llmProfile?.provider_id || llmEffectiveRuntime?.provider_id || 0);
+  const baselineStoryProviderId = normalizeProviderId(llmProfile?.story_provider_id || baselineProviderId);
+  const baselineImageProviderId = normalizeProviderId(llmProfile?.text2image_provider_id || baselineProviderId);
+  const baselineSummaryProviderId = normalizeProviderId(llmProfile?.summary_provider_id || baselineStoryProviderId || baselineProviderId);
+
+  const baselineStoryModel = trimModel(llmProfile?.story_prompt_model || llmProfile?.text_model || llmEffectiveRuntime?.text_model || "");
+  const baselineImageModel = trimModel(llmProfile?.text2image_model || llmProfile?.image_model || llmEffectiveRuntime?.image_model || "");
+  const baselineSummaryModel = trimModel(llmProfile?.summary_model || llmEffectiveRuntime?.summary_model || "");
+
+  const step1Dirty = storyProviderId !== baselineStoryProviderId
+    || trimModel(llmProfileDraft.story_prompt_model) !== baselineStoryModel;
+  const step2Dirty = imageProviderId !== baselineImageProviderId
+    || trimModel(llmProfileDraft.text2image_model) !== baselineImageModel;
+  const step3Dirty = summaryProviderId !== baselineSummaryProviderId
+    || trimModel(llmProfileDraft.summary_model) !== baselineSummaryModel;
+
+  const hasProfileDraftChanges = step1Dirty || step2Dirty || step3Dirty;
+  const showProfileSavedPill = profileSavedUntil > Date.now();
+  const showProviderSavedPill = providerSavedUntil > Date.now();
+
+  const formatFetchedAgoLabel = (iso: string): string => {
+    const value = String(iso || "").trim();
+    if (!value) {
+      return "未拉取";
+    }
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) {
+      return `fetched ${value}`;
+    }
+    const diffMinutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+    if (diffMinutes < 1) {
+      return "just now";
+    }
+    if (diffMinutes < 60) {
+      return `${diffMinutes}m ago`;
+    }
+    const diffHours = Math.round(diffMinutes / 60);
+    if (diffHours < 24) {
+      return `${diffHours}h ago`;
+    }
+    const diffDays = Math.round(diffHours / 24);
+    return `${diffDays}d ago`;
+  };
+
+  const getProviderModelMeta = (providerId: number): { count: number; fetchedLabel: string } => {
+    const normalizedProviderId = normalizeProviderId(providerId);
+    if (!normalizedProviderId) {
+      return {
+        count: 0,
+        fetchedLabel: "未选择 provider",
+      };
+    }
+    const count = getProviderFetchedModels(normalizedProviderId).length;
+    const fetchedAt = String(llmLastModelsFetchedAtByProviderId[normalizedProviderId] || "").trim();
+    return {
+      count,
+      fetchedLabel: formatFetchedAgoLabel(fetchedAt),
+    };
+  };
+
+  const storyProviderMeta = getProviderModelMeta(storyProviderId);
+  const imageProviderMeta = getProviderModelMeta(imageProviderId);
+  const summaryProviderMeta = getProviderModelMeta(summaryProviderId);
+  const storyProviderLoading = fetchingLlmModels && fetchingLlmModelsProviderId === storyProviderId;
+  const imageProviderLoading = fetchingLlmModels && fetchingLlmModelsProviderId === imageProviderId;
+  const summaryProviderLoading = fetchingLlmModels && fetchingLlmModelsProviderId === summaryProviderId;
+  const loadedUserId = Number(llmProfile?.user_id || 0);
+
+  return (
+    <div className="admin-run-box admin-collapsible-box">
+      <button type="button" className={`admin-collapse-head ${collapsed ? "collapsed" : ""}`} onClick={onToggleSection}>
+        <h4>LLM 管理</h4>
+        <span className="admin-collapse-icon" aria-hidden="true">▾</span>
+      </button>
+
+      {!collapsed && (
+        <div className="admin-llm-v2-shell">
+          <p className="progress-inline admin-llm-note">运行时优先级：run payload &gt; user profile &gt; global profile &gt; env。</p>
+
+          <section className="admin-llm-v2-card">
+            <div className="admin-llm-v2-card-head">
+              <strong>LLM Providers</strong>
+              <span className="inline-actions">
+                <span>{llmProviders.length} providers</span>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={() => setShowAddProviderModal(true)}
+                  disabled={savingLlmConfig}
+                >
+                  + Add provider
+                </button>
+              </span>
+            </div>
+
+            {llmProviders.length === 0 ? (
+              <div className="admin-llm-v2-empty">
+                <p>暂无 provider，请先创建。</p>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={() => setShowAddProviderModal(true)}
+                  disabled={savingLlmConfig}
+                >
+                  创建第一个 Provider
+                </button>
+              </div>
+            ) : (
+              <div className="admin-llm-v2-provider-list">
+                {llmProviders.map((provider) => {
+                  const selected = provider.id === selectedLlmProviderId;
+                  return (
+                    <div
+                      key={`llm-provider-row-${provider.id}`}
+                      className={`admin-llm-v2-provider-row ${selected ? "is-selected" : ""}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => onProviderChange(String(provider.id))}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          onProviderChange(String(provider.id));
+                        }
+                      }}
+                    >
+                      <div className="admin-llm-v2-provider-main">
+                        <div className="admin-llm-v2-provider-title">
+                          <b>{provider.name}</b>
+                          <span className={`level-state ${provider.enabled ? "done" : "todo"}`}>{provider.enabled ? "Active" : "Disabled"}</span>
+                          <span className="level-state">compatible</span>
+                        </div>
+                        <p>{provider.api_base_url || "(empty base url)"}</p>
+                      </div>
+                      <div className="admin-llm-v2-provider-side">
+                        <span className="progress-inline">{provider.models_count} models</span>
+                        <span className="inline-actions">
+                          <button
+                            type="button"
+                            className="link-btn"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onProviderChange(String(provider.id));
+                            }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="link-btn admin-llm-v2-danger-btn"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onDeleteProvider(provider.id);
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="admin-llm-v2-card">
+            <div className="admin-llm-v2-card-head">
+              <strong>Provider Detail</strong>
+              <span>{selectedProvider ? `#${selectedProvider.id}` : "未选择"}</span>
+            </div>
+
+            {!selectedProvider || !llmProviderDraft ? (
+              <div className="admin-llm-v2-empty">
+                <p>{llmProviders.length === 0 ? "请先创建 Provider" : "从上方列表选择 Provider 后可编辑详情"}</p>
+                {llmProviders.length === 0 && (
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={() => setShowAddProviderModal(true)}
+                    disabled={savingLlmConfig}
+                  >
+                    + Add provider
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="admin-config-actions inline-actions admin-llm-actions">
+                  <span className={`level-state ${llmProviderDraft.enabled ? "done" : "todo"}`}>{providerStatusLabel}</span>
+                  <button
+                    type="button"
+                    className={`admin-llm-v2-toggle ${llmProviderDraft.enabled ? "is-on" : "is-off"}`}
+                    onClick={() => onProviderFieldChange({ enabled: !llmProviderDraft.enabled })}
+                    disabled={savingLlmConfig}
+                    aria-label={llmProviderDraft.enabled ? "Disable provider" : "Enable provider"}
+                  >
+                    <span className="admin-llm-v2-toggle-thumb" />
+                    <b>{llmProviderDraft.enabled ? "Active" : "Disabled"}</b>
+                  </button>
+                  <button type="button" className="link-btn" onClick={onTest} disabled={testingLlmConfig}>
+                    {testingLlmConfig ? "测试中..." : "⚡ Test"}
+                  </button>
+                  <button type="button" className="nav-btn" onClick={onFetchModels} disabled={fetchingLlmModels}>
+                    {fetchingLlmModels ? "拉取中..." : "↓ Fetch models"}
+                  </button>
+                </div>
+
+                {llmNoticeError && <div className="banner-error">{llmNoticeError}</div>}
+                {llmNoticeInfo && <div className="banner-info">{llmNoticeInfo}</div>}
+
+                <div className="admin-config-grid admin-llm-grid">
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    Provider 名称
+                    <input
+                      value={llmProviderDraft.name}
+                      onChange={(event) => onProviderFieldChange({ name: event.currentTarget.value })}
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    Provider 类型
+                    <input value={llmProviderDraft.provider_kind} disabled />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    API Base URL
+                    <input
+                      value={llmProviderDraft.api_base_url}
+                      onChange={(event) => onProviderFieldChange({ api_base_url: event.currentTarget.value })}
+                      placeholder="https://xxx/v1"
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    Proxy URL
+                    <input
+                      value={llmProviderDraft.proxy_url}
+                      onChange={(event) => onProviderFieldChange({ proxy_url: event.currentTarget.value })}
+                      placeholder="http://host:port"
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    NO_PROXY
+                    <input
+                      value={llmProviderDraft.no_proxy_hosts}
+                      onChange={(event) => onProviderFieldChange({ no_proxy_hosts: event.currentTarget.value })}
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    API Key source
+                    <select
+                      value={llmProviderDraft.key_source}
+                      onChange={(event) => onProviderKeyFieldChange({ key_source: event.currentTarget.value === "custom" ? "custom" : "env" })}
+                    >
+                      <option value="env">Use env variable</option>
+                      <option value="custom">Custom key</option>
+                    </select>
+                  </label>
+
+                  {llmProviderDraft.key_source === "env" ? (
+                    <label className="form-field admin-llm-field admin-llm-provider-field">
+                      Env Key
+                      <select
+                        value={llmProviderDraft.env_key_name}
+                        onChange={(event) => onProviderKeyFieldChange({ env_key_name: event.currentTarget.value })}
+                      >
+                        {llmEnvKeyOptions.length === 0 ? (
+                          <option value="">未检测到 env key</option>
+                        ) : (
+                          llmEnvKeyOptions.map((item) => (
+                            <option key={`llm-env-key-${item.key}`} value={item.key}>{item.label}</option>
+                          ))
+                        )}
+                      </select>
+                    </label>
+                  ) : (
+                    <label className="form-field admin-llm-field admin-llm-provider-field">
+                      Custom API Key
+                      <input
+                        type="password"
+                        value={llmProviderDraft.custom_api_key}
+                        onChange={(event) => onProviderKeyFieldChange({ custom_api_key: event.currentTarget.value })}
+                        placeholder="留空表示保持当前 key"
+                      />
+                    </label>
+                  )}
+                </div>
+
+                <div className="admin-config-actions inline-actions admin-llm-actions">
+                  <button type="button" className="primary-btn" onClick={onSaveProvider} disabled={savingLlmConfig}>
+                    {savingLlmConfig ? "保存中..." : "Save provider"}
+                  </button>
+                  <button
+                    type="button"
+                    className="link-btn admin-llm-v2-danger-btn"
+                    onClick={() => onDeleteProvider(selectedProvider.id)}
+                    disabled={savingLlmConfig}
+                  >
+                    Delete
+                  </button>
+                  {showProviderSavedPill && <span className="admin-llm-v2-pill is-saved">saved</span>}
+                </div>
+
+                <p className="progress-inline admin-llm-fetched-meta">
+                  当前 provider：#{selectedProvider.id} · {selectedProvider.name}
+                  {selectedProvider.key?.key_masked ? ` · key=${selectedProvider.key.key_masked}` : " · 未配置 key"}
+                </p>
+
+                <p className="progress-inline admin-llm-fetched-meta">
+                  已拉取模型：{fetchedModels.length} 个 · 缓存模型：{llmCachedModels.length} 条
+                  {lastModelsFetchedAt ? ` · 最近拉取：${lastModelsFetchedAt}` : " · 尚未拉取"}
+                </p>
+
+                <div className="admin-llm-v2-model-filter-row">
+                  <input
+                    value={providerModelKeyword}
+                    onChange={(event) => setProviderModelKeyword(event.currentTarget.value)}
+                    placeholder="Search models…"
+                  />
+                  <select
+                    value={providerModelTypeFilter}
+                    onChange={(event) => {
+                      const next = String(event.currentTarget.value || "").trim();
+                      setProviderModelTypeFilter(next === "text" || next === "image" || next === "summary" ? next : "");
+                    }}
+                  >
+                    <option value="">All types</option>
+                    <option value="text">Text</option>
+                    <option value="image">Image</option>
+                    <option value="summary">Summary</option>
+                  </select>
+                </div>
+
+                <div className="admin-llm-v2-model-chips">
+                  {filteredProviderModels.length === 0 ? (
+                    <span className="type-empty">暂无匹配模型</span>
+                  ) : (
+                    filteredProviderModels.slice(0, 84).map((item) => (
+                      <span key={`llm-chip-${item.id}`} className={`type-${item.model_type}`}>{item.model_id}</span>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+
+          <section className="admin-llm-v2-card">
+            <div className="admin-llm-v2-card-head">
+              <strong>Model assignment</strong>
+              <span>{llmProfileScope === "user" ? "Current user" : "Global default"}</span>
+            </div>
+
+            <div className="admin-config-actions inline-actions admin-llm-actions admin-llm-v2-scope-row">
+              <span className="progress-inline">Scope:</span>
+              <div className="admin-llm-v2-scope-tabs" role="tablist" aria-label="Profile scope">
+                <button
+                  type="button"
+                  className={`admin-llm-v2-scope-tab ${llmProfileScope === "global" ? "is-active" : ""}`}
+                  onClick={() => onProfileScopeChange("global")}
+                >
+                  Global default
+                </button>
+                <button
+                  type="button"
+                  className={`admin-llm-v2-scope-tab ${llmProfileScope === "user" ? "is-active" : ""}`}
+                  onClick={() => onProfileScopeChange("user")}
+                >
+                  Current user
+                </button>
+              </div>
+
+              <label className="form-field admin-llm-field admin-llm-provider-field admin-llm-v2-scope-select">
+                目标用户（scope=user）
+                <select
+                  value={llmProfileUserIdInput}
+                  onChange={(event) => onProfileUserIdInputChange(event.currentTarget.value)}
+                  disabled={llmProfileScope !== "user"}
+                >
+                  <option value="">请选择用户</option>
+                  {llmProfileUserOptions.map((user) => (
+                    <option key={`llm-user-option-${user.id}`} value={String(user.id)}>
+                      #{user.id} · {user.username}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <button
+                type="button"
+                className={llmProfileScope === "user" ? "primary-btn admin-llm-v2-profile-load-btn" : "nav-btn admin-llm-v2-profile-load-btn"}
+                disabled={llmProfileScope !== "user" || loadingLlmConfig}
+                onClick={onLoadUserProfile}
+              >
+                {loadingLlmConfig && llmProfileScope === "user" ? "加载中..." : "加载用户 profile"}
+              </button>
+
+              {llmProfileScope === "user" && loadedUserId > 0 && (
+                <span className="progress-inline admin-llm-v2-scope-loaded">
+                  已加载用户 #{loadedUserId} profile
+                </span>
+              )}
+            </div>
+
+            <div className="admin-llm-v2-model-slot">
+              <div className="admin-llm-v2-slot-head">
+                <span className="level-state running">Step 1</span>
+                <strong>Story → image prompts JSON</strong>
+                <small>text model</small>
+                {step1Dirty ? <span className="admin-llm-v2-pill is-dirty">unsaved</span> : showProfileSavedPill ? <span className="admin-llm-v2-pill is-saved">saved</span> : null}
+              </div>
+              <div className="admin-llm-v2-model-row">
+                <label className="form-field admin-llm-field admin-llm-provider-field">
+                  Provider
+                  <select
+                    value={storyProviderValue}
+                    onChange={(event) => onProfileFieldChange({ story_provider_id: Number(event.currentTarget.value || 0) || null })}
+                  >
+                    <option value="">（留空使用默认 Provider）</option>
+                    {llmProviders.map((item) => (
+                      <option key={`llm-story-provider-${item.id}`} value={item.id}>#{item.id} · {item.name}</option>
+                    ))}
+                  </select>
+                  <span className="progress-inline admin-llm-v2-provider-meta">
+                    {storyProviderMeta.count} models · {storyProviderMeta.fetchedLabel}
+                  </span>
+                </label>
+
+                <label className="form-field admin-llm-field admin-llm-model-field">
+                  Model
+                  <input
+                    value={llmProfileDraft.story_prompt_model || ""}
+                    onChange={(event) => onProfileFieldChange({ story_prompt_model: event.currentTarget.value })}
+                    placeholder="gpt-4o"
+                  />
+                  {storyTextModels.length > 0 && (
+                    <select
+                      value={llmProfileDraft.story_prompt_model || ""}
+                      onChange={(event) => onProfileFieldChange({ story_prompt_model: event.currentTarget.value })}
+                    >
+                      <option value="">— pick from list —</option>
+                      {storyTextModels.map((item) => (
+                        <option key={`llm-story-model-${item.id}`} value={item.id}>{item.id}</option>
+                      ))}
+                    </select>
+                  )}
+                  {storyProviderId > 0 && storyTextModels.length === 0 && (
+                    <button
+                      type="button"
+                      className="nav-btn"
+                      onClick={() => onFetchProviderModels(storyProviderId)}
+                      disabled={storyProviderLoading}
+                    >
+                      {storyProviderLoading ? "拉取中..." : "Fetch Step 1 provider models"}
+                    </button>
+                  )}
+                  {storyTextModels.length > 0 && (
+                    <div className="admin-llm-v2-inline-chips">
+                      {storyTextModels.slice(0, 8).map((item) => (
+                        <button
+                          key={`llm-story-chip-${item.id}`}
+                          type="button"
+                          className={`admin-llm-v2-chip-btn ${llmProfileDraft.story_prompt_model === item.id ? "is-active" : ""}`}
+                          onClick={() => onProfileFieldChange({ story_prompt_model: item.id })}
+                        >
+                          {item.id}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </label>
+              </div>
+            </div>
+
+            <div className="admin-llm-v2-model-slot">
+              <div className="admin-llm-v2-slot-head">
+                <span className="level-state done">Step 2</span>
+                <strong>Text → image generation</strong>
+                <small>image model</small>
+                {step2Dirty ? <span className="admin-llm-v2-pill is-dirty">unsaved</span> : showProfileSavedPill ? <span className="admin-llm-v2-pill is-saved">saved</span> : null}
+              </div>
+              <div className="admin-llm-v2-model-row">
+                <label className="form-field admin-llm-field admin-llm-provider-field">
+                  Provider
+                  <select
+                    value={imageProviderValue}
+                    onChange={(event) => onProfileFieldChange({ text2image_provider_id: Number(event.currentTarget.value || 0) || null })}
+                  >
+                    <option value="">（留空使用默认 Provider）</option>
+                    {llmProviders.map((item) => (
+                      <option key={`llm-image-provider-${item.id}`} value={item.id}>#{item.id} · {item.name}</option>
+                    ))}
+                  </select>
+                  <span className="progress-inline admin-llm-v2-provider-meta">
+                    {imageProviderMeta.count} models · {imageProviderMeta.fetchedLabel}
+                  </span>
+                </label>
+
+                <label className="form-field admin-llm-field admin-llm-model-field">
+                  Model
+                  <input
+                    value={llmProfileDraft.text2image_model || ""}
+                    onChange={(event) => onProfileFieldChange({ text2image_model: event.currentTarget.value })}
+                    placeholder="doubao-seedream..."
+                  />
+                  {imageModels.length > 0 && (
+                    <select
+                      value={llmProfileDraft.text2image_model || ""}
+                      onChange={(event) => onProfileFieldChange({ text2image_model: event.currentTarget.value })}
+                    >
+                      <option value="">— pick from list —</option>
+                      {imageModels.map((item) => (
+                        <option key={`llm-image-model-${item.id}`} value={item.id}>{item.id}</option>
+                      ))}
+                    </select>
+                  )}
+                  {imageProviderId > 0 && imageModels.length === 0 && (
+                    <button
+                      type="button"
+                      className="nav-btn"
+                      onClick={() => onFetchProviderModels(imageProviderId)}
+                      disabled={imageProviderLoading}
+                    >
+                      {imageProviderLoading
+                        ? "拉取中..."
+                        : "Fetch Step 2 provider models"}
+                    </button>
+                  )}
+                  {imageModels.length > 0 && (
+                    <div className="admin-llm-v2-inline-chips">
+                      {imageModels.slice(0, 8).map((item) => (
+                        <button
+                          key={`llm-image-chip-${item.id}`}
+                          type="button"
+                          className={`admin-llm-v2-chip-btn ${llmProfileDraft.text2image_model === item.id ? "is-active" : ""}`}
+                          onClick={() => onProfileFieldChange({ text2image_model: item.id })}
+                        >
+                          {item.id}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </label>
+              </div>
+            </div>
+
+            <div className="admin-llm-v2-model-slot optional">
+              <div className="admin-llm-v2-slot-head">
+                <span className="level-state">Optional</span>
+                <strong>Book summarize</strong>
+                <small>留空=使用 Step 1 model</small>
+                {step3Dirty ? <span className="admin-llm-v2-pill is-dirty">unsaved</span> : showProfileSavedPill ? <span className="admin-llm-v2-pill is-saved">saved</span> : null}
+              </div>
+              <div className="admin-llm-v2-model-row">
+                <label className="form-field admin-llm-field admin-llm-provider-field admin-llm-optional-field">
+                  Provider
+                  <select
+                    value={summaryProviderValue}
+                    onChange={(event) => onProfileFieldChange({ summary_provider_id: Number(event.currentTarget.value || 0) || null })}
+                  >
+                    <option value="">（留空跟随 Step 1 Provider）</option>
+                    {llmProviders.map((item) => (
+                      <option key={`llm-summary-provider-${item.id}`} value={item.id}>#{item.id} · {item.name}</option>
+                    ))}
+                  </select>
+                  <span className="progress-inline admin-llm-v2-provider-meta">
+                    {summaryProviderMeta.count} models · {summaryProviderMeta.fetchedLabel}
+                  </span>
+                </label>
+
+                <label className="form-field admin-llm-field admin-llm-model-field admin-llm-optional-field">
+                  Model
+                  <input
+                    value={llmProfileDraft.summary_model || ""}
+                    onChange={(event) => onProfileFieldChange({ summary_model: event.currentTarget.value })}
+                    placeholder="留空 = 使用 Step 1 model"
+                  />
+                  {summaryModels.length > 0 && (
+                    <select
+                      value={llmProfileDraft.summary_model || ""}
+                      onChange={(event) => onProfileFieldChange({ summary_model: event.currentTarget.value })}
+                    >
+                      <option value="">— same as story model / pick from list —</option>
+                      {summaryModels.map((item) => (
+                        <option key={`llm-summary-model-${item.id}`} value={item.id}>{item.id}</option>
+                      ))}
+                    </select>
+                  )}
+                  {summaryProviderId > 0 && summaryModels.length === 0 && (
+                    <button
+                      type="button"
+                      className="nav-btn"
+                      onClick={() => onFetchProviderModels(summaryProviderId)}
+                      disabled={summaryProviderLoading}
+                    >
+                      {summaryProviderLoading
+                        ? "拉取中..."
+                        : Number(summaryProviderValue) > 0
+                          ? "Fetch summary provider models"
+                          : "Fetch Step 1 provider models"}
+                    </button>
+                  )}
+                  {summaryModels.length > 0 && (
+                    <div className="admin-llm-v2-inline-chips">
+                      {summaryModels.slice(0, 8).map((item) => (
+                        <button
+                          key={`llm-summary-chip-${item.id}`}
+                          type="button"
+                          className={`admin-llm-v2-chip-btn ${llmProfileDraft.summary_model === item.id ? "is-active" : ""}`}
+                          onClick={() => onProfileFieldChange({ summary_model: item.id })}
+                        >
+                          {item.id}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </label>
+              </div>
+            </div>
+
+            <div className="admin-llm-v2-draft-summary">
+              {hasProfileDraftChanges
+                ? <span className="admin-llm-v2-pill is-dirty">有未保存变更</span>
+                : <span className="progress-inline">No unsaved changes</span>}
+              {!hasProfileDraftChanges && showProfileSavedPill && <span className="admin-llm-v2-pill is-saved">saved</span>}
+            </div>
+
+            <div className="admin-config-actions inline-actions admin-llm-actions admin-llm-v2-save-bar">
+              <button type="button" className="nav-btn" onClick={onReload} disabled={loadingLlmConfig}>
+                {loadingLlmConfig ? "刷新中..." : "刷新数据"}
+              </button>
+              <button type="button" className="primary-btn" onClick={onSaveProfile} disabled={savingLlmConfig}>
+                {savingLlmConfig ? "保存中..." : `Save & Apply (${llmProfileScope})`}
+              </button>
+            </div>
+
+            <div className="admin-config-summary">
+              <div className="admin-llm-test-line">
+                <span className="level-state running">scope: {llmProfileScope}</span>
+                {llmProfile?.updated_at ? <span className="level-state done">profile updated: {llmProfile.updated_at}</span> : <span className="level-state todo">profile: 默认/未设置</span>}
+                {llmEffectiveRuntime?.provider_name ? <span className="level-state done">effective provider: {llmEffectiveRuntime.provider_name}</span> : null}
+                {llmEffectiveRuntime && (
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => setShowRuntimeDebug((prev) => !prev)}
+                  >
+                    {showRuntimeDebug ? "隐藏 Debug" : "显示 Debug"}
+                  </button>
+                )}
+              </div>
+              {showRuntimeDebug && llmEffectiveRuntime && <pre>{JSON.stringify(llmEffectiveRuntime, null, 2)}</pre>}
+            </div>
+          </section>
+
+          {lastLlmTest && (
+            <section className="admin-llm-v2-card admin-llm-test-summary">
+              <div className="admin-llm-v2-card-head">
+                <strong>Connection Test</strong>
+                <span>{selectedProvider ? `#${selectedProvider.id} · ${selectedProvider.name}` : "未选择 provider"}</span>
+              </div>
+              <div className="admin-config-summary">
+                <div className="admin-llm-test-line">
+                  <span className={`level-state ${lastLlmTest.key_available ? "done" : "failed"}`}>API Key: {lastLlmTest.key_available ? "可用" : "不可用"}</span>
+                  <span className={`level-state ${lastLlmTest.text_model_exists ? "done" : "failed"}`}>文本模型: {lastLlmTest.text_model_exists ? "存在" : "未找到"}</span>
+                  <span className={`level-state ${lastLlmTest.summary_model_exists ? "done" : "failed"}`}>摘要模型: {lastLlmTest.summary_model_exists ? "存在" : "未找到"}</span>
+                  <span className={`level-state ${lastLlmTest.image_model_exists ? "done" : "failed"}`}>图像模型: {lastLlmTest.image_model_exists ? "存在" : "未找到"}</span>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {showAddProviderModal && (
+            <div className="mask" role="dialog" aria-modal="true" onClick={() => setShowAddProviderModal(false)}>
+              <div className="mask-card admin-llm-v2-add-modal" onClick={(event) => event.stopPropagation()}>
+                <h4>Add provider</h4>
+
+                <div className="admin-config-grid admin-llm-grid admin-llm-v2-create-grid">
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    Provider 名称
+                    <input
+                      value={llmCreateProviderDraft.name}
+                      onChange={(event) => onCreateProviderFieldChange({ name: event.currentTarget.value })}
+                      placeholder="例如 aihubmix-prod"
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    API Base URL
+                    <input
+                      value={llmCreateProviderDraft.api_base_url}
+                      onChange={(event) => onCreateProviderFieldChange({ api_base_url: event.currentTarget.value })}
+                      placeholder="https://xxx/v1"
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    Proxy URL
+                    <input
+                      value={llmCreateProviderDraft.proxy_url}
+                      onChange={(event) => onCreateProviderFieldChange({ proxy_url: event.currentTarget.value })}
+                      placeholder="可选"
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    NO_PROXY
+                    <input
+                      value={llmCreateProviderDraft.no_proxy_hosts}
+                      onChange={(event) => onCreateProviderFieldChange({ no_proxy_hosts: event.currentTarget.value })}
+                      placeholder="可选"
+                    />
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    启用状态
+                    <select
+                      value={llmCreateProviderDraft.enabled ? "enabled" : "disabled"}
+                      onChange={(event) => onCreateProviderFieldChange({ enabled: event.currentTarget.value === "enabled" })}
+                    >
+                      <option value="enabled">enabled</option>
+                      <option value="disabled">disabled</option>
+                    </select>
+                  </label>
+
+                  <label className="form-field admin-llm-field admin-llm-provider-field">
+                    API Key source
+                    <select
+                      value={llmCreateProviderDraft.key_source}
+                      onChange={(event) => onCreateProviderFieldChange({ key_source: event.currentTarget.value === "custom" ? "custom" : "env" })}
+                    >
+                      <option value="env">Use env variable</option>
+                      <option value="custom">Custom key</option>
+                    </select>
+                  </label>
+
+                  {llmCreateProviderDraft.key_source === "env" ? (
+                    <label className="form-field admin-llm-field admin-llm-provider-field">
+                      Env Key
+                      <select
+                        value={llmCreateProviderDraft.env_key_name}
+                        onChange={(event) => onCreateProviderFieldChange({ env_key_name: event.currentTarget.value })}
+                      >
+                        <option value="">请选择 env key</option>
+                        {llmEnvKeyOptions.map((item) => (
+                          <option key={`llm-add-env-key-${item.key}`} value={item.key}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <label className="form-field admin-llm-field admin-llm-provider-field">
+                      Custom API Key
+                      <input
+                        type="password"
+                        value={llmCreateProviderDraft.custom_api_key}
+                        onChange={(event) => onCreateProviderFieldChange({ custom_api_key: event.currentTarget.value })}
+                        placeholder="sk-..."
+                      />
+                    </label>
+                  )}
+                </div>
+
+                <div className="admin-config-actions inline-actions admin-llm-actions admin-llm-v2-modal-actions">
+                  <button type="button" className="nav-btn" onClick={() => setShowAddProviderModal(false)} disabled={savingLlmConfig}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    onClick={() => {
+                      const hasName = String(llmCreateProviderDraft.name || "").trim().length > 0;
+                      const hasBaseUrl = String(llmCreateProviderDraft.api_base_url || "").trim().length > 0;
+                      const hasEnvKey = llmCreateProviderDraft.key_source !== "env"
+                        || String(llmCreateProviderDraft.env_key_name || "").trim().length > 0;
+                      const hasCustomKey = llmCreateProviderDraft.key_source !== "custom"
+                        || String(llmCreateProviderDraft.custom_api_key || "").trim().length > 0;
+
+                      onCreateProvider();
+                      if (hasName && hasBaseUrl && hasEnvKey && hasCustomKey) {
+                        setShowAddProviderModal(false);
+                      }
+                    }}
+                    disabled={savingLlmConfig}
+                  >
+                    {savingLlmConfig ? "创建中..." : "Add & Save"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

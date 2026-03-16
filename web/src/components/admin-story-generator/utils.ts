@@ -300,6 +300,10 @@ export function errorMessage(err: unknown): string {
     return err.message;
   }
   if (err instanceof Error) {
+    const message = String(err.message || "").trim();
+    if (/failed to fetch|networkerror|load failed|fetch failed/i.test(message)) {
+      return "网络请求失败：请检查后端服务、反向代理和当前浏览器网络连接";
+    }
     return err.message;
   }
   return "请求失败";

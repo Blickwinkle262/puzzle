@@ -512,6 +512,168 @@ export type AdminUsersResponse = {
   users: AdminUserSummary[];
 };
 
+export type AdminLlmApiKeyOption = {
+  key: string;
+  label: string;
+  configured: boolean;
+};
+
+export type AdminLlmConnectionTestResult = {
+  provider_kind: "compatible";
+  api_base_url: string;
+  resolved_base_url: string;
+  api_key_selector: string;
+  text_model: string;
+  summary_model: string;
+  image_model: string;
+  proxy_url: string;
+  no_proxy: string;
+  key_available: boolean;
+  text_model_exists: boolean;
+  summary_model_exists: boolean;
+  image_model_exists: boolean;
+  models_count: number;
+  models_preview: string[];
+};
+
+export type AdminLlmConnectionTestResponse = {
+  ok: boolean;
+  test: AdminLlmConnectionTestResult;
+};
+
+export type AdminLlmModelOption = {
+  id: string;
+  text: boolean;
+  image: boolean;
+  summary: boolean;
+};
+
+export type AdminLlmModelsFetchResult = {
+  provider_kind: "compatible";
+  api_base_url: string;
+  resolved_base_url: string;
+  api_key_selector: string;
+  text_model: string;
+  summary_model: string;
+  image_model: string;
+  proxy_url: string;
+  no_proxy: string;
+  key_available: boolean;
+  models_count: number;
+  fetched_at: string;
+  models: AdminLlmModelOption[];
+};
+
+export type AdminLlmModelsFetchResponse = {
+  ok: boolean;
+  fetch: AdminLlmModelsFetchResult;
+};
+
+export type AdminLlmProviderKeySource = "env" | "custom";
+
+export type AdminLlmProviderKey = {
+  id: number;
+  key_source: AdminLlmProviderKeySource;
+  env_key_name: string;
+  key_last4: string;
+  key_masked: string;
+  has_key: boolean;
+  is_active: boolean;
+};
+
+export type AdminLlmProvider = {
+  id: number;
+  name: string;
+  provider_kind: "compatible";
+  api_base_url: string;
+  proxy_url: string;
+  no_proxy_hosts: string;
+  enabled: boolean;
+  owner_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+  models_count: number;
+  key: AdminLlmProviderKey | null;
+};
+
+export type AdminLlmProviderModel = {
+  id: number;
+  provider_id: number;
+  model_id: string;
+  model_type: "text" | "summary" | "image";
+  enabled: boolean;
+  fetched_at: string;
+};
+
+export type AdminLlmRuntimeState = {
+  provider_id: number | null;
+  provider_name: string;
+  profile_scope: string;
+  provider_kind: "compatible";
+  api_base_url: string;
+  api_key_selector: string;
+  key_available: boolean;
+  text_model: string;
+  summary_model: string;
+  image_model: string;
+  proxy_url: string;
+  no_proxy: string;
+};
+
+export type AdminLlmProfile = {
+  id: number;
+  scope: "global" | "user";
+  user_id: number | null;
+  provider_id: number | null;
+  story_provider_id: number | null;
+  summary_provider_id: number | null;
+  text2image_provider_id: number | null;
+  provider_name: string;
+  story_provider_name: string;
+  summary_provider_name: string;
+  text2image_provider_name: string;
+  provider_kind: "compatible";
+  story_prompt_model: string;
+  text_model: string;
+  summary_model: string;
+  text2image_model: string;
+  image_model: string;
+  is_default: boolean;
+  updated_at: string;
+};
+
+export type AdminLlmEnvKeysResponse = {
+  ok: boolean;
+  key_options: AdminLlmApiKeyOption[];
+};
+
+export type AdminLlmProvidersResponse = {
+  ok: boolean;
+  providers: AdminLlmProvider[];
+};
+
+export type AdminLlmProviderResponse = {
+  ok: boolean;
+  provider: AdminLlmProvider;
+};
+
+export type AdminLlmProviderDeleteResponse = {
+  ok: boolean;
+  deleted_provider_id: number;
+};
+
+export type AdminLlmProviderModelsResponse = {
+  ok: boolean;
+  provider: AdminLlmProvider;
+  models: AdminLlmProviderModel[];
+};
+
+export type AdminLlmProfileResponse = {
+  ok: boolean;
+  profile: AdminLlmProfile | null;
+  effective: AdminLlmRuntimeState;
+};
+
 export type AdminLevelDifficulty = "easy" | "normal" | "hard" | "nightmare";
 
 export type AdminLevelEffectiveConfig = {

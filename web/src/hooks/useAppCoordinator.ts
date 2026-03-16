@@ -879,7 +879,7 @@ export function useAppCoordinator() {
     }
 
     if (!selectedBookKey) {
-      setSelectedBookKey(storyBookGroups[0].key);
+      setSelectedBookKey(COLLAPSED_BOOK_KEY);
       return;
     }
 
@@ -888,7 +888,7 @@ export function useAppCoordinator() {
     }
 
     if (!storyBookGroups.some((item) => item.key === selectedBookKey)) {
-      setSelectedBookKey(storyBookGroups[0].key);
+      setSelectedBookKey(COLLAPSED_BOOK_KEY);
     }
   }, [selectedBookKey, storyBookGroups]);
 

@@ -21,6 +21,7 @@ export function registerRunGenerateTextRoutes(app, deps) {
     nowIso,
     refreshGenerationRunState,
     replaceGenerationScenes,
+    resolveLlmRuntimeSettings,
     requireAdmin,
     requireAuth,
     requireCsrf,
@@ -125,11 +126,19 @@ export function registerRunGenerateTextRoutes(app, deps) {
     const eventLogFile = path.join(STORY_GENERATOR_LOG_DIR, `${runId}.events.jsonl`);
     const summaryPath = path.join(STORY_GENERATOR_SUMMARY_DIR, buildGenerationSummaryFileName(targetDate, runId));
 
+    const runtimeLlm = resolveLlmRuntimeSettings({
+      userId: req.authUser?.id,
+      purpose: "text",
+    });
+
     const mergedPayload = {
       ...existingPayload,
       run_id: runId,
       target_date: targetDate,
       story_file: storyFile,
+      base_url: String(req.body?.base_url || existingPayload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
+      text_model: String(req.body?.text_model || existingPayload.text_model || runtimeLlm.text_model || "").trim() || undefined,
+      image_model: String(req.body?.image_model || existingPayload.image_model || runtimeLlm.image_model || "").trim() || undefined,
       review_mode: true,
       dry_run: false,
       chapter_id: chapterSource?.chapter_id || chapterId || normalizePositiveInteger(existingPayload.chapter_id) || null,
@@ -172,12 +181,15 @@ export function registerRunGenerateTextRoutes(app, deps) {
         max_source_chars: normalizePositiveInteger(req.body?.max_source_chars)
           || normalizePositiveInteger(existingPayload.max_source_chars)
           || 12000,
-        base_url: String(req.body?.base_url || existingPayload.base_url || "").trim() || undefined,
-        text_model: String(req.body?.text_model || existingPayload.text_model || "").trim() || undefined,
+        base_url: String(req.body?.base_url || existingPayload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
+        text_model: String(req.body?.text_model || existingPayload.text_model || runtimeLlm.text_model || "").trim() || undefined,
         prompts_dir: String(req.body?.prompts_dir || existingPayload.prompts_dir || "").trim() || undefined,
         system_prompt_file: String(req.body?.system_prompt_file || existingPayload.system_prompt_file || "").trim() || undefined,
         user_prompt_template_file: String(req.body?.user_prompt_template_file || existingPayload.user_prompt_template_file || "").trim() || undefined,
         image_prompt_suffix_file: String(req.body?.image_prompt_suffix_file || existingPayload.image_prompt_suffix_file || "").trim() || undefined,
+      }, {
+        llmRuntime: runtimeLlm,
+        userId: req.authUser?.id,
       });
 
       const scenes = Array.isArray(atomicResult?.scenes)

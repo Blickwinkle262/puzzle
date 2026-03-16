@@ -676,6 +676,7 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
       void runBookSummaryCommand({
         bookId,
         runId,
+        userId: req.authUser?.id,
         force,
         chunkSize: normalizePositiveInteger(req.query?.chunk_size ?? req.body?.chunk_size) || 1000,
         summaryMaxChars: normalizePositiveInteger(req.query?.summary_max_chars ?? req.body?.summary_max_chars) || 200,

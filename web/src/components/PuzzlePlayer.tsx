@@ -656,9 +656,23 @@ export function PuzzlePlayer(props: PuzzlePlayerProps): JSX.Element {
 
       {phase === "countdown" && (
         <section className="puzzle-flow-screen puzzle-flow-countdown">
-          <p className="countdown-label">准备开始</p>
-          <p className="countdown-number">{countdownValue <= 0 ? "开始" : countdownValue}</p>
-          <p className="countdown-note">记住画面细节，马上进入拼图</p>
+          <div className="countdown-preview-wrap" aria-hidden="true">
+            <div className="wood-frame countdown-wood-frame">
+              <div className="frame-inner-border countdown-frame-inner" style={{ aspectRatio: introPreviewAspect }}>
+                <span className="frame-nail frame-nail-tl" aria-hidden="true" />
+                <span className="frame-nail frame-nail-tr" aria-hidden="true" />
+                <span className="frame-nail frame-nail-bl" aria-hidden="true" />
+                <span className="frame-nail frame-nail-br" aria-hidden="true" />
+                <img src={level.source_image} alt="" className="countdown-preview-image" />
+              </div>
+            </div>
+          </div>
+          <div className="countdown-backdrop" aria-hidden="true" />
+          <div className="countdown-content">
+            <p className="countdown-label">准备开始</p>
+            <p className="countdown-number">{countdownValue <= 0 ? "开始" : countdownValue}</p>
+            <p className="countdown-note">记住画面细节，马上进入拼图</p>
+          </div>
         </section>
       )}
 

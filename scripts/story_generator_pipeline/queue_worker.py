@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sqlite3
 import time
@@ -46,8 +47,20 @@ except ImportError:  # pragma: no cover - fallback for direct script execution
     from worker.types import GenerationJob, RetryImageTask, StopSignal
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_IMAGE_BASE_URL = "https://aihubmix.com/v1"
-DEFAULT_IMAGE_MODEL = "doubao/doubao-seedream-4-5-251128"
+DEFAULT_IMAGE_BASE_URL = (
+    os.environ.get("STORY_GENERATOR_BASE_URL")
+    or os.environ.get("STORY_GENERATION_BASE_URL")
+    or os.environ.get("AIHUBMIX_BASE_URL")
+    or os.environ.get("AIHUBMIX_OPENAI_BASE_URL")
+    or os.environ.get("OPENAI_BASE_URL")
+    or "https://aihubmix.com/v1"
+)
+DEFAULT_IMAGE_MODEL = (
+    os.environ.get("STORY_GENERATOR_IMAGE_MODEL")
+    or os.environ.get("STORY_GENERATION_IMAGE_MODEL")
+    or os.environ.get("AIHUBMIX_IMAGE_MODEL")
+    or "doubao/doubao-seedream-4-5-251128"
+)
 LOGGER = logging.getLogger("story_generator.queue_worker")
 
 

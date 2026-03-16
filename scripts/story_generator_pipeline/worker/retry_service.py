@@ -42,8 +42,20 @@ def run_retry_image_task(
         return False, "", "", "image_prompt is empty"
 
     api_key = get_required_api_key()
-    base_url = get_env("AIHUBMIX_BASE_URL", "AIHUBMIX_OPENAI_BASE_URL", "OPENAI_BASE_URL", default=default_image_base_url)
-    image_model = get_env("AIHUBMIX_IMAGE_MODEL", "STORY_GENERATOR_IMAGE_MODEL", default=default_image_model)
+    base_url = get_env(
+        "STORY_GENERATOR_BASE_URL",
+        "STORY_GENERATION_BASE_URL",
+        "AIHUBMIX_BASE_URL",
+        "AIHUBMIX_OPENAI_BASE_URL",
+        "OPENAI_BASE_URL",
+        default=default_image_base_url,
+    )
+    image_model = get_env(
+        "STORY_GENERATOR_IMAGE_MODEL",
+        "STORY_GENERATION_IMAGE_MODEL",
+        "AIHUBMIX_IMAGE_MODEL",
+        default=default_image_model,
+    )
 
     output_root = Path(task.output_root).expanduser().resolve() if task.output_root else (root_dir / "backend" / "data" / "generated" / "content" / "stories")
     output_root.mkdir(parents=True, exist_ok=True)

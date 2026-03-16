@@ -12,8 +12,10 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
-from .config import DEFAULT_BASE_URL, DEFAULT_TEXT_MODEL, get_required_api_key
+from .config import DEFAULT_BASE_URL, DEFAULT_IMAGE_MODEL, DEFAULT_TEXT_MODEL, get_required_api_key
 from .exceptions import PipelineError
 from .image_generator import generate_images_for_story
 from .models import SceneDraft
@@ -24,7 +26,7 @@ from .story_to_json import story_to_draft
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Atomic story generator commands")
-    parser.add_argument("command", choices=["generate-text", "generate-image", "generate-images"])
+    parser.add_argument("command", choices=["generate-text", "generate-image", "generate-images", "check-connection"])
     return parser.parse_args()
 
 
@@ -197,7 +199,7 @@ async def run_generate_images(payload: dict[str, Any], *, batch: bool) -> dict[s
 
     api_key = get_required_api_key(str(payload.get("api_key") or "").strip() or None)
     base_url = str(payload.get("base_url") or DEFAULT_BASE_URL).strip()
-    image_model = str(payload.get("image_model") or "doubao/doubao-seedream-4-5-251128").strip()
+    image_model = str(payload.get("image_model") or DEFAULT_IMAGE_MODEL).strip()
     image_size = str(payload.get("image_size") or "2K").strip()
     watermark = bool(payload.get("watermark"))
     concurrency = int(payload.get("concurrency") or (3 if batch else 1))
@@ -254,6 +256,152 @@ async def run_generate_images(payload: dict[str, Any], *, batch: bool) -> dict[s
     }
 
 
+async def run_check_connection(payload: dict[str, Any]) -> dict[str, Any]:
+    api_key = get_required_api_key(str(payload.get("api_key") or "").strip() or None)
+    base_url = str(payload.get("base_url") or DEFAULT_BASE_URL).strip()
+    text_model = str(payload.get("text_model") or DEFAULT_TEXT_MODEL).strip()
+    summary_model = str(payload.get("summary_model") or text_model).strip()
+    image_model = str(payload.get("image_model") or DEFAULT_IMAGE_MODEL).strip()
+
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as exc:  # pragma: no cover - dependency error path
+        raise PipelineError("openai package is required for check-connection") from exc
+
+    normalized_base_url = str(base_url or "").strip().rstrip("/")
+
+    def build_base_url_candidates(value: str) -> list[str]:
+        current = str(value or "").strip().rstrip("/")
+        if not current:
+            return []
+
+        candidates = [current]
+        parsed = urlsplit(current)
+        path = str(parsed.path or "").rstrip("/")
+        if not path.endswith("/v1"):
+            next_path = f"{path}/v1" if path else "/v1"
+            next_url = urlunsplit((parsed.scheme, parsed.netloc, next_path, parsed.query, parsed.fragment)).rstrip("/")
+            if next_url and next_url not in candidates:
+                candidates.append(next_url)
+        return candidates
+
+    def should_retry_with_v1(error: Exception) -> bool:
+        status_code = getattr(error, "status_code", None)
+        if status_code is None:
+            response_obj = getattr(error, "response", None)
+            status_code = getattr(response_obj, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code in (301, 302, 307, 308, 404, 405)
+
+        message = str(error or "").lower()
+        return "404" in message or "not found" in message
+
+    def extract_model_ids(raw: Any) -> list[str]:
+        rows: Any = None
+        if isinstance(raw, dict):
+            rows = raw.get("data")
+            if not isinstance(rows, list):
+                rows = raw.get("models")
+        elif isinstance(raw, list):
+            rows = raw
+        else:
+            rows = getattr(raw, "data", None)
+            if not isinstance(rows, list):
+                rows = getattr(raw, "models", None)
+
+        if not isinstance(rows, list):
+            return []
+
+        ids: list[str] = []
+        seen: set[str] = set()
+        for item in rows:
+            if isinstance(item, dict):
+                model_id = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
+            else:
+                model_id = str(getattr(item, "id", "") or getattr(item, "model", "") or "").strip()
+            if model_id and model_id not in seen:
+                seen.add(model_id)
+                ids.append(model_id)
+        return ids
+
+    async def fetch_models_via_http(base_url_candidate: str) -> list[str]:
+        endpoint = f"{base_url_candidate.rstrip('/')}/models"
+
+        def _request() -> Any:
+            request = Request(
+                endpoint,
+                method="GET",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "application/json",
+                },
+            )
+            with urlopen(request, timeout=25) as response_obj:
+                body = response_obj.read()
+                charset = response_obj.headers.get_content_charset() or "utf-8"
+                payload_text = body.decode(charset, errors="replace")
+                return json.loads(payload_text)
+
+        raw_payload = await asyncio.to_thread(_request)
+        return extract_model_ids(raw_payload)
+
+    model_ids: list[str] = []
+    models_loaded = False
+    resolved_base_url = normalized_base_url
+    last_error: Exception | None = None
+
+    candidates = build_base_url_candidates(normalized_base_url) or [normalized_base_url]
+    for index, candidate in enumerate(candidates):
+        client = AsyncOpenAI(api_key=api_key, base_url=candidate)
+        try:
+            response = await client.models.list()
+            model_ids = extract_model_ids(response)
+            if not model_ids:
+                try:
+                    model_ids = await fetch_models_via_http(candidate)
+                except Exception:
+                    pass
+            resolved_base_url = candidate
+            models_loaded = True
+            break
+        except Exception as sdk_error:
+            last_error = sdk_error
+            try:
+                model_ids = await fetch_models_via_http(candidate)
+                resolved_base_url = candidate
+                models_loaded = True
+                break
+            except Exception as http_error:
+                last_error = http_error
+                can_retry = index == 0 and len(candidates) > 1 and should_retry_with_v1(sdk_error)
+                if can_retry:
+                    continue
+                if index < len(candidates) - 1:
+                    continue
+                raise
+
+    if not models_loaded:
+        details = f": {last_error}" if last_error else ""
+        raise PipelineError(f"models list failed{details}")
+
+    text_model_exists = bool(text_model and text_model in model_ids)
+    summary_model_exists = bool(summary_model and summary_model in model_ids)
+    image_model_exists = bool(image_model and image_model in model_ids)
+
+    return {
+        "base_url": resolved_base_url,
+        "text_model": text_model,
+        "summary_model": summary_model,
+        "image_model": image_model,
+        "text_model_exists": text_model_exists,
+        "summary_model_exists": summary_model_exists,
+        "image_model_exists": image_model_exists,
+        "models_count": len(model_ids),
+        "models": model_ids,
+        "models_preview": model_ids[:40],
+    }
+
+
 async def run_command(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:
     if args.command == "generate-text":
         return await run_generate_text(payload)
@@ -267,6 +415,9 @@ async def run_command(args: argparse.Namespace, payload: dict[str, Any]) -> dict
 
     if args.command == "generate-images":
         return await run_generate_images(payload, batch=True)
+
+    if args.command == "check-connection":
+        return await run_check_connection(payload)
 
     raise PipelineError(f"unsupported command: {args.command}")
 

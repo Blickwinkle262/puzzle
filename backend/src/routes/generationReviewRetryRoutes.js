@@ -29,6 +29,7 @@ export function registerGenerationReviewRetryRoutes(app, deps) {
         runId,
         sceneIndex,
         requestedBy: req.authUser?.username || "",
+        requestedByUserId: req.authUser?.id || null,
       });
 
       res.json(payload);

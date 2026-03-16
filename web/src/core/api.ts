@@ -17,6 +17,14 @@ import {
   AdminLevelConfigPatch,
   AdminLevelConfigResponse,
   AdminLevelTestRunResponse,
+  AdminLlmConnectionTestResponse,
+  AdminLlmModelsFetchResponse,
+  AdminLlmEnvKeysResponse,
+  AdminLlmProfileResponse,
+  AdminLlmProviderDeleteResponse,
+  AdminLlmProviderModelsResponse,
+  AdminLlmProviderResponse,
+  AdminLlmProvidersResponse,
   AdminManagedRole,
   AdminUsersResponse,
   LevelProgress,
@@ -47,6 +55,41 @@ export type AuthRefreshResponse = {
 
 export type ForgotPasswordResponse = {
   message: string;
+};
+
+export type AdminLlmProviderPatch = {
+  name?: string;
+  provider_kind?: "compatible";
+  api_base_url?: string;
+  proxy_url?: string;
+  no_proxy_hosts?: string;
+  enabled?: boolean;
+};
+
+export type AdminLlmProviderKeyPatch = {
+  key_source?: "env" | "custom";
+  env_key_name?: string;
+  api_key?: string;
+};
+
+export type AdminLlmRuntimeOverridesPatch = {
+  api_base_url?: string;
+  proxy_url?: string;
+  no_proxy?: string;
+  api_key_selector?: string;
+  env_key_name?: string;
+  api_key?: string;
+};
+
+export type AdminLlmProfilePatch = {
+  provider_id?: number | null;
+  story_provider_id?: number | null;
+  summary_provider_id?: number | null;
+  text2image_provider_id?: number | null;
+  story_prompt_model?: string;
+  summary_model?: string;
+  text2image_model?: string;
+  reset?: boolean;
 };
 
 export type StoriesResponse = {
@@ -779,6 +822,91 @@ export function apiRunAdminLevelTest(
       body: payload,
     },
   );
+}
+
+export function apiListAdminLlmProviders(): Promise<AdminLlmProvidersResponse> {
+  return requestJson<AdminLlmProvidersResponse>("/admin/llm/providers");
+}
+
+export function apiCreateAdminLlmProvider(payload: AdminLlmProviderPatch): Promise<AdminLlmProviderResponse> {
+  return requestJson<AdminLlmProviderResponse>("/admin/llm/providers", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiGetAdminLlmProvider(providerId: number): Promise<AdminLlmProviderResponse> {
+  return requestJson<AdminLlmProviderResponse>(`/admin/llm/providers/${encodeURIComponent(String(providerId))}`);
+}
+
+export function apiUpdateAdminLlmProvider(providerId: number, payload: AdminLlmProviderPatch): Promise<AdminLlmProviderResponse> {
+  return requestJson<AdminLlmProviderResponse>(`/admin/llm/providers/${encodeURIComponent(String(providerId))}`, {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export function apiDeleteAdminLlmProvider(providerId: number): Promise<AdminLlmProviderDeleteResponse> {
+  return requestJson<AdminLlmProviderDeleteResponse>(`/admin/llm/providers/${encodeURIComponent(String(providerId))}`, {
+    method: "DELETE",
+  });
+}
+
+export function apiUpdateAdminLlmProviderKey(providerId: number, payload: AdminLlmProviderKeyPatch): Promise<AdminLlmProviderResponse> {
+  return requestJson<AdminLlmProviderResponse>(`/admin/llm/providers/${encodeURIComponent(String(providerId))}/key`, {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export function apiListAdminLlmProviderModels(providerId: number): Promise<AdminLlmProviderModelsResponse> {
+  return requestJson<AdminLlmProviderModelsResponse>(`/admin/llm/providers/${encodeURIComponent(String(providerId))}/models`);
+}
+
+export function apiFetchAdminLlmProviderModels(
+  providerId: number,
+  payload: AdminLlmRuntimeOverridesPatch = {},
+): Promise<AdminLlmModelsFetchResponse> {
+  return requestJson<AdminLlmModelsFetchResponse>(`/admin/llm/providers/${encodeURIComponent(String(providerId))}/models/fetch`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiTestAdminLlmProvider(
+  providerId: number,
+  payload: AdminLlmRuntimeOverridesPatch = {},
+): Promise<AdminLlmConnectionTestResponse> {
+  return requestJson<AdminLlmConnectionTestResponse>(`/admin/llm/providers/${encodeURIComponent(String(providerId))}/test`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiListAdminLlmEnvKeys(): Promise<AdminLlmEnvKeysResponse> {
+  return requestJson<AdminLlmEnvKeysResponse>("/admin/llm/env-keys");
+}
+
+export function apiGetAdminLlmGlobalProfile(): Promise<AdminLlmProfileResponse> {
+  return requestJson<AdminLlmProfileResponse>("/admin/llm/global/profile");
+}
+
+export function apiUpdateAdminLlmGlobalProfile(payload: AdminLlmProfilePatch): Promise<AdminLlmProfileResponse> {
+  return requestJson<AdminLlmProfileResponse>("/admin/llm/global/profile", {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export function apiGetAdminLlmUserProfile(userId: number): Promise<AdminLlmProfileResponse> {
+  return requestJson<AdminLlmProfileResponse>(`/admin/llm/users/${encodeURIComponent(String(userId))}/profile`);
+}
+
+export function apiUpdateAdminLlmUserProfile(userId: number, payload: AdminLlmProfilePatch): Promise<AdminLlmProfileResponse> {
+  return requestJson<AdminLlmProfileResponse>(`/admin/llm/users/${encodeURIComponent(String(userId))}/profile`, {
+    method: "PUT",
+    body: payload,
+  });
 }
 
 export { ApiError };

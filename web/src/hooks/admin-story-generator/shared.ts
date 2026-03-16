@@ -1,6 +1,6 @@
 export type PuzzleFlowStep = "select" | "generate" | "review";
 
-export type AdminSectionKey = "users" | "levelConfig" | "bookIngest" | "puzzle";
+export type AdminSectionKey = "users" | "levelConfig" | "llm" | "bookIngest" | "puzzle";
 
 export type ScenePreviewState = {
   run_id: string;

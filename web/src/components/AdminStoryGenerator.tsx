@@ -5,6 +5,7 @@ import {
   AdminBookUploadSection,
   AdminChapterSelectionSection,
   AdminGenerateDialogModal,
+  AdminLlmSettingsSection,
   AdminPuzzleGenerateStage,
   AdminPuzzleReviewStage,
   AdminPuzzleSelectStage,
@@ -77,6 +78,52 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setConfigStoryId,
       setLevelConfigSnapshot,
       setTestRunResult,
+    },
+    llmState: {
+      llmProviders,
+      llmProfileUserOptions,
+      llmEnvKeyOptions,
+      selectedLlmProviderId,
+      llmProviderDraft,
+      llmCreateProviderDraft,
+      llmProfileScope,
+      llmProfileUserIdInput,
+      llmProfile,
+      llmEffectiveRuntime,
+      llmProfileDraft,
+      llmCachedModels,
+      loadingLlmConfig,
+      savingLlmConfig,
+      testingLlmConfig,
+      fetchingLlmModels,
+      fetchingLlmModelsProviderId,
+      lastLlmTest,
+      llmFetchedModels,
+      llmFetchedModelsByProviderId,
+      llmNoticeError,
+      llmNoticeInfo,
+      lastLlmModelsFetchedAt,
+      llmLastModelsFetchedAtByProviderId,
+      llmProfileSavedAt,
+      llmProviderSavedAt,
+    },
+    llmActions: {
+      loadLlmConfig,
+      handleLlmProviderIdChange,
+      handleLlmProviderFieldChange,
+      handleLlmProviderKeyFieldChange,
+      handleLlmCreateProviderFieldChange,
+      handleCreateLlmProvider,
+      handleDeleteLlmProvider,
+      handleLlmProfileScopeChange,
+      handleLlmProfileUserIdInputChange,
+      handleLoadLlmUserProfile,
+      handleLlmProfileFieldChange,
+      handleSaveLlmProvider,
+      handleSaveLlmProfile,
+      handleTestLlmConfig,
+      handleFetchLlmModels,
+      handleFetchLlmModelsByProvider,
     },
     chapterState: {
       bookId,
@@ -269,6 +316,73 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         onSaveLevelConfig={() => void handleSaveLevelConfig()}
         onTestLevelConfig={() => void handleTestLevelConfig()}
         onToggleSection={() => toggleSection("levelConfig")}
+      />
+
+      <AdminLlmSettingsSection
+        collapsed={collapsedSections.llm}
+        llmProviders={llmProviders}
+        llmProfileUserOptions={llmProfileUserOptions}
+        llmEnvKeyOptions={llmEnvKeyOptions}
+        selectedLlmProviderId={selectedLlmProviderId}
+        llmProviderDraft={llmProviderDraft}
+        llmCreateProviderDraft={llmCreateProviderDraft}
+        llmProfileScope={llmProfileScope}
+        llmProfileUserIdInput={llmProfileUserIdInput}
+        llmProfile={llmProfile}
+        llmEffectiveRuntime={llmEffectiveRuntime}
+        llmProfileDraft={llmProfileDraft}
+        llmCachedModels={llmCachedModels}
+        loadingLlmConfig={loadingLlmConfig}
+        savingLlmConfig={savingLlmConfig}
+        testingLlmConfig={testingLlmConfig}
+        fetchingLlmModels={fetchingLlmModels}
+        fetchingLlmModelsProviderId={fetchingLlmModelsProviderId}
+        fetchedModels={llmFetchedModels}
+        llmFetchedModelsByProviderId={llmFetchedModelsByProviderId}
+        llmNoticeError={llmNoticeError}
+        llmNoticeInfo={llmNoticeInfo}
+        lastModelsFetchedAt={lastLlmModelsFetchedAt}
+        llmLastModelsFetchedAtByProviderId={llmLastModelsFetchedAtByProviderId}
+        lastLlmTest={lastLlmTest}
+        llmProfileSavedAt={llmProfileSavedAt}
+        llmProviderSavedAt={llmProviderSavedAt}
+        onReload={() => {
+          void loadLlmConfig();
+        }}
+        onProviderChange={handleLlmProviderIdChange}
+        onProviderFieldChange={handleLlmProviderFieldChange}
+        onProviderKeyFieldChange={handleLlmProviderKeyFieldChange}
+        onCreateProviderFieldChange={handleLlmCreateProviderFieldChange}
+        onCreateProvider={() => {
+          void handleCreateLlmProvider();
+        }}
+        onDeleteProvider={(providerId) => {
+          void handleDeleteLlmProvider(providerId);
+        }}
+        onProfileScopeChange={(scope) => {
+          handleLlmProfileScopeChange(scope);
+        }}
+        onProfileUserIdInputChange={handleLlmProfileUserIdInputChange}
+        onLoadUserProfile={() => {
+          void handleLoadLlmUserProfile();
+        }}
+        onProfileFieldChange={handleLlmProfileFieldChange}
+        onSaveProvider={() => {
+          void handleSaveLlmProvider();
+        }}
+        onSaveProfile={() => {
+          void handleSaveLlmProfile();
+        }}
+        onTest={() => {
+          void handleTestLlmConfig();
+        }}
+        onFetchModels={() => {
+          void handleFetchLlmModels();
+        }}
+        onFetchProviderModels={(providerId) => {
+          void handleFetchLlmModelsByProvider(providerId);
+        }}
+        onToggleSection={() => toggleSection("llm")}
       />
 
       <AdminBookUploadSection

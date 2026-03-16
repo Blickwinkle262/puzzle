@@ -17,6 +17,7 @@ export function registerRunGenerateImageRoutes(app, deps) {
     normalizeRunId,
     nowIso,
     refreshGenerationRunState,
+    resolveLlmRuntimeSettings,
     requireAdmin,
     requireAuth,
     requireCsrf,
@@ -54,6 +55,10 @@ export function registerRunGenerateImageRoutes(app, deps) {
     }
 
     const payload = writable.job?.payload && typeof writable.job.payload === "object" ? writable.job.payload : {};
+    const runtimeLlm = resolveLlmRuntimeSettings({
+      userId: req.authUser?.id,
+      purpose: "image",
+    });
     const now = nowIso();
     db.prepare(
       `
@@ -73,7 +78,7 @@ export function registerRunGenerateImageRoutes(app, deps) {
       runId,
       sceneIndex,
       provider: "atomic_cli",
-      model: String(req.body?.image_model || payload.image_model || "").trim(),
+      model: String(req.body?.image_model || payload.image_model || runtimeLlm.image_model || "").trim(),
       imagePrompt: scene.image_prompt,
     });
     const attemptNo = Number(attemptRow?.attempt_no || nextGenerationSceneAttemptNo(runId, sceneIndex));
@@ -85,8 +90,8 @@ export function registerRunGenerateImageRoutes(app, deps) {
       const atomicResult = await runStoryGeneratorAtomicCommand("generate-image", {
         target_date: writable.job?.target_date || now.slice(0, 10),
         images_dir: resolveGenerationRunImagesDir(runId),
-        base_url: String(req.body?.base_url || payload.base_url || "").trim() || undefined,
-        image_model: String(req.body?.image_model || payload.image_model || "").trim() || undefined,
+        base_url: String(req.body?.base_url || payload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
+        image_model: String(req.body?.image_model || payload.image_model || runtimeLlm.image_model || "").trim() || undefined,
         image_size: String(req.body?.image_size || payload.image_size || "").trim() || undefined,
         watermark: req.body?.watermark !== undefined ? normalizeBoolean(req.body?.watermark) : normalizeBoolean(payload.watermark),
         concurrency: 1,
@@ -106,6 +111,9 @@ export function registerRunGenerateImageRoutes(app, deps) {
           grid_cols: scene.grid_cols,
           time_limit_sec: scene.time_limit_sec,
         },
+      }, {
+        llmRuntime: runtimeLlm,
+        userId: req.authUser?.id,
       });
 
       const firstResult = Array.isArray(atomicResult?.results) && atomicResult.results.length > 0
@@ -190,6 +198,10 @@ export function registerRunGenerateImageRoutes(app, deps) {
     }
 
     const payload = writable.job?.payload && typeof writable.job.payload === "object" ? writable.job.payload : {};
+    const runtimeLlm = resolveLlmRuntimeSettings({
+      userId: req.authUser?.id,
+      purpose: "image",
+    });
     const sceneIndexList = Array.isArray(req.body?.scene_indexes)
       ? req.body.scene_indexes.map((item) => normalizePositiveInteger(item)).filter((item) => Boolean(item))
       : [];
@@ -227,7 +239,7 @@ export function registerRunGenerateImageRoutes(app, deps) {
         runId,
         sceneIndex: scene.scene_index,
         provider: "atomic_cli_batch",
-        model: String(req.body?.image_model || payload.image_model || "").trim(),
+        model: String(req.body?.image_model || payload.image_model || runtimeLlm.image_model || "").trim(),
         imagePrompt: scene.image_prompt,
       });
       attemptsBySceneIndex.set(scene.scene_index, Number(attemptRow?.attempt_no || 1));
@@ -240,8 +252,8 @@ export function registerRunGenerateImageRoutes(app, deps) {
       const atomicResult = await runStoryGeneratorAtomicCommand("generate-images", {
         target_date: writable.job?.target_date || now.slice(0, 10),
         images_dir: resolveGenerationRunImagesDir(runId),
-        base_url: String(req.body?.base_url || payload.base_url || "").trim() || undefined,
-        image_model: String(req.body?.image_model || payload.image_model || "").trim() || undefined,
+        base_url: String(req.body?.base_url || payload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
+        image_model: String(req.body?.image_model || payload.image_model || runtimeLlm.image_model || "").trim() || undefined,
         image_size: String(req.body?.image_size || payload.image_size || "").trim() || undefined,
         watermark: req.body?.watermark !== undefined ? normalizeBoolean(req.body?.watermark) : normalizeBoolean(payload.watermark),
         concurrency: normalizePositiveInteger(req.body?.concurrency) || normalizePositiveInteger(payload.concurrency) || 3,
@@ -261,6 +273,9 @@ export function registerRunGenerateImageRoutes(app, deps) {
           grid_cols: scene.grid_cols,
           time_limit_sec: scene.time_limit_sec,
         })),
+      }, {
+        llmRuntime: runtimeLlm,
+        userId: req.authUser?.id,
       });
 
       const resultRows = Array.isArray(atomicResult?.results) ? atomicResult.results : [];

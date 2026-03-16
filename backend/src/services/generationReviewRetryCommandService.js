@@ -19,6 +19,7 @@ export function createGenerationReviewRetryCommandService(options = {}) {
     normalizePositiveNumber,
     nowIso,
     refreshGenerationRunState,
+    resolveLlmRuntimeSettings,
     resolveGenerationRunImagesDir,
     resolveStoryAssetUrlFromFsPath,
     runStoryGeneratorAtomicCommand,
@@ -30,7 +31,7 @@ export function createGenerationReviewRetryCommandService(options = {}) {
     markGenerationJobAsRetryingImages,
   } = options;
 
-  async function retryGenerationCandidateImage({ runId, sceneIndex, requestedBy }) {
+  async function retryGenerationCandidateImage({ runId, sceneIndex, requestedBy, requestedByUserId }) {
     const job = getGenerationJobByRunId(runId);
     if (!job) {
       throw new AppError(404, "review_retry_run_not_found", "run_id 不存在");
@@ -55,6 +56,10 @@ export function createGenerationReviewRetryCommandService(options = {}) {
       }
 
       const payload = job.payload && typeof job.payload === "object" ? job.payload : {};
+      const runtimeLlm = resolveLlmRuntimeSettings({
+        userId: requestedByUserId,
+        purpose: "image",
+      });
       const now = nowIso();
       markGenerationJobAsRetryingImages({ runId, now });
 
@@ -62,7 +67,7 @@ export function createGenerationReviewRetryCommandService(options = {}) {
         runId,
         sceneIndex,
         provider: requestedBy || "admin_retry",
-        model: String(payload.image_model || "").trim(),
+        model: String(payload.image_model || runtimeLlm.image_model || "").trim(),
         imagePrompt: scene.image_prompt,
       });
       const attemptNo = Number(attemptRow?.attempt_no || nextGenerationSceneAttemptNo(runId, sceneIndex));
@@ -73,8 +78,8 @@ export function createGenerationReviewRetryCommandService(options = {}) {
         const atomicResult = await runStoryGeneratorAtomicCommand("generate-image", {
           target_date: job.target_date || now.slice(0, 10),
           images_dir: resolveGenerationRunImagesDir(runId),
-          base_url: String(payload.base_url || "").trim() || undefined,
-          image_model: String(payload.image_model || "").trim() || undefined,
+          base_url: String(payload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
+          image_model: String(payload.image_model || runtimeLlm.image_model || "").trim() || undefined,
           image_size: String(payload.image_size || "").trim() || undefined,
           watermark: normalizeBoolean(payload.watermark),
           concurrency: 1,
@@ -94,6 +99,9 @@ export function createGenerationReviewRetryCommandService(options = {}) {
             grid_cols: scene.grid_cols,
             time_limit_sec: scene.time_limit_sec,
           },
+        }, {
+          llmRuntime: runtimeLlm,
+          userId: requestedByUserId,
         });
 
         const firstResult = Array.isArray(atomicResult?.results) && atomicResult.results.length > 0

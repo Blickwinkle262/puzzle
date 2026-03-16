@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,7 @@ import {
 } from "./config/runtime.js";
 import { runMigrations } from "./migrate.js";
 import { registerAdminLevelRoutes } from "./routes/adminLevelRoutes.js";
+import { registerAdminLlmRoutes } from "./routes/adminLlmRoutes.js";
 import { registerAdminLegacyGenerationRoutes } from "./routes/adminLegacyGenerationRoutes.js";
 import { registerAdminStoryRoutes } from "./routes/adminStoryRoutes.js";
 import { registerAdminUserRoutes } from "./routes/adminUserRoutes.js";
@@ -212,6 +214,1942 @@ const RESOLVED_BOOK_INGEST_DB_PATH = BOOK_INGEST_DB_PATH;
 const BOOK_UPLOADS_DIR = path.join(path.dirname(RESOLVED_BOOK_INGEST_DB_PATH), "uploads");
 let booksDb = null;
 
+const LLM_RUNTIME_SETTING_KEY = "llm_runtime_v1";
+const LLM_PROVIDER_KIND = "compatible";
+const LLM_PROFILE_SCOPE_GLOBAL = "global";
+const LLM_PROFILE_SCOPE_USER = "user";
+const LLM_PROVIDER_KEY_SOURCE_ENV = "env";
+const LLM_PROVIDER_KEY_SOURCE_CUSTOM = "custom";
+const LLM_KEY_ENCRYPTION_PREFIX = "enc:v1";
+const LLM_KEY_ENCRYPTION_SECRET = String(
+  process.env.LLM_KEY_ENCRYPTION_SECRET
+    || process.env.APP_SECRET
+    || process.env.SESSION_SECRET
+    || "puzzle-llm-key-default",
+).trim();
+const LLM_KEY_ENCRYPTION_BUFFER = crypto.createHash("sha256").update(LLM_KEY_ENCRYPTION_SECRET).digest();
+
+function listLlmApiKeyCandidates() {
+  const preferredKeys = [
+    "AIHUBMIX_API_KEY",
+    "STORY_GENERATOR_API_KEY",
+    "STORY_GENERATION_API_KEY",
+    "OPENAI_API_KEY",
+  ];
+  const dynamicPrefixes = [
+    "AIHUBMIX_API_KEY_",
+    "STORY_GENERATOR_API_KEY_",
+    "STORY_GENERATION_API_KEY_",
+    "OPENAI_API_KEY_",
+  ];
+
+  const options = [];
+  const seen = new Set();
+
+  const pushEnvKey = (rawKey) => {
+    const key = String(rawKey || "").trim();
+    if (!key || seen.has(key)) {
+      return;
+    }
+
+    const value = String(process.env[key] || "").trim();
+    if (!value) {
+      return;
+    }
+
+    seen.add(key);
+    options.push({
+      key,
+      label: key,
+      configured: true,
+    });
+  };
+
+  const configuredCandidates = String(process.env.LLM_API_KEY_CANDIDATES || "")
+    .split(",")
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0);
+
+  configuredCandidates.forEach(pushEnvKey);
+  preferredKeys.forEach(pushEnvKey);
+
+  const envKeys = Object.keys(process.env || {}).sort((a, b) => a.localeCompare(b, "en"));
+  for (const key of envKeys) {
+    if (!dynamicPrefixes.some((prefix) => key.startsWith(prefix))) {
+      continue;
+    }
+    pushEnvKey(key);
+  }
+
+  return options;
+}
+
+function resolveDefaultLlmBaseUrl() {
+  return String(
+    process.env.STORY_GENERATOR_BASE_URL
+      || process.env.STORY_GENERATION_BASE_URL
+      || process.env.AIHUBMIX_BASE_URL
+      || process.env.AIHUBMIX_OPENAI_BASE_URL
+      || process.env.OPENAI_BASE_URL
+      || "https://aihubmix.com/v1",
+  ).trim();
+}
+
+function resolveDefaultLlmTextModel() {
+  return String(
+    process.env.STORY_GENERATOR_TEXT_MODEL
+      || process.env.STORY_GENERATION_TEXT_MODEL
+      || process.env.AIHUBMIX_TEXT_MODEL
+      || "qwen3-next-80b-a3b-instruct",
+  ).trim();
+}
+
+function resolveDefaultLlmSummaryModel() {
+  return String(
+    process.env.STORY_GENERATOR_SUMMARY_MODEL
+      || process.env.STORY_GENERATION_SUMMARY_MODEL
+      || process.env.AIHUBMIX_SUMMARY_MODEL
+      || resolveDefaultLlmTextModel(),
+  ).trim();
+}
+
+function resolveDefaultLlmImageModel() {
+  return String(
+    process.env.STORY_GENERATOR_IMAGE_MODEL
+      || process.env.STORY_GENERATION_IMAGE_MODEL
+      || process.env.AIHUBMIX_IMAGE_MODEL
+      || "doubao/doubao-seedream-4-5-251128",
+  ).trim();
+}
+
+function buildDefaultLlmConfig(keyOptions) {
+  const options = Array.isArray(keyOptions) ? keyOptions : listLlmApiKeyCandidates();
+  const defaultSelector = options.length > 0 ? String(options[0].key || "") : "";
+
+  return {
+    provider_kind: LLM_PROVIDER_KIND,
+    api_base_url: resolveDefaultLlmBaseUrl(),
+    api_key_selector: defaultSelector,
+    text_model: resolveDefaultLlmTextModel(),
+    summary_model: resolveDefaultLlmSummaryModel(),
+    image_model: resolveDefaultLlmImageModel(),
+    proxy_url: String(process.env.STORY_GENERATOR_PROXY_URL || process.env.HTTP_PROXY || "").trim(),
+    no_proxy: String(process.env.STORY_GENERATOR_NO_PROXY || process.env.NO_PROXY || "").trim(),
+  };
+}
+
+function normalizeLlmConfig(rawConfig, options = {}) {
+  const source = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
+  const keyOptions = Array.isArray(options.keyOptions) ? options.keyOptions : listLlmApiKeyCandidates();
+  const fallback = options.fallback && typeof options.fallback === "object"
+    ? options.fallback
+    : buildDefaultLlmConfig(keyOptions);
+  const keyOptionSet = new Set(keyOptions.map((item) => String(item.key || "").trim()).filter((item) => item.length > 0));
+
+  const normalized = {
+    provider_kind: String(source.provider_kind || fallback.provider_kind || LLM_PROVIDER_KIND).trim() || LLM_PROVIDER_KIND,
+    api_base_url: String(source.api_base_url || fallback.api_base_url || "").trim(),
+    api_key_selector: String(source.api_key_selector || fallback.api_key_selector || "").trim(),
+    text_model: String(source.text_model || fallback.text_model || "").trim(),
+    summary_model: String(source.summary_model || fallback.summary_model || "").trim(),
+    image_model: String(source.image_model || fallback.image_model || "").trim(),
+    proxy_url: String(source.proxy_url || fallback.proxy_url || "").trim(),
+    no_proxy: String(source.no_proxy || fallback.no_proxy || "").trim(),
+  };
+
+  if (normalized.provider_kind !== LLM_PROVIDER_KIND) {
+    normalized.provider_kind = LLM_PROVIDER_KIND;
+  }
+
+  if (normalized.api_key_selector && !keyOptionSet.has(normalized.api_key_selector)) {
+    normalized.api_key_selector = "";
+  }
+
+  if (!normalized.api_key_selector && keyOptions.length > 0) {
+    normalized.api_key_selector = String(keyOptions[0].key || "").trim();
+  }
+
+  if (!normalized.api_base_url) {
+    normalized.api_base_url = fallback.api_base_url;
+  }
+  if (!normalized.text_model) {
+    normalized.text_model = fallback.text_model;
+  }
+  if (!normalized.summary_model) {
+    normalized.summary_model = fallback.summary_model || normalized.text_model;
+  }
+  if (!normalized.image_model) {
+    normalized.image_model = fallback.image_model;
+  }
+
+  return normalized;
+}
+
+function readSystemSettingJson(key, fallbackValue = null) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) {
+    return fallbackValue;
+  }
+
+  try {
+    const row = db.prepare("SELECT value_json FROM system_settings WHERE key = ? LIMIT 1").get(normalizedKey);
+    if (!row || typeof row.value_json !== "string" || !row.value_json.trim()) {
+      return fallbackValue;
+    }
+    const parsed = safeParseJsonObject(row.value_json);
+    return parsed && typeof parsed === "object" ? parsed : fallbackValue;
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function writeSystemSettingJson(key, valueObject, updatedByUserId = null) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) {
+    throw new Error("setting key 不能为空");
+  }
+
+  const payload = valueObject && typeof valueObject === "object" ? valueObject : {};
+
+  db.prepare(
+    `
+      INSERT INTO system_settings (key, value_json, updated_by_user_id, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value_json = excluded.value_json,
+        updated_by_user_id = excluded.updated_by_user_id,
+        updated_at = excluded.updated_at
+    `,
+  ).run(normalizedKey, JSON.stringify(payload), normalizePositiveInteger(updatedByUserId) || null, nowIso());
+}
+
+function getAdminLlmConfigState() {
+  const keyOptions = listLlmApiKeyCandidates();
+  const fallback = buildDefaultLlmConfig(keyOptions);
+  const stored = readSystemSettingJson(LLM_RUNTIME_SETTING_KEY, null);
+  const config = normalizeLlmConfig(stored, { fallback, keyOptions });
+
+  return {
+    ok: true,
+    provider_kind: LLM_PROVIDER_KIND,
+    config,
+    key_options: keyOptions,
+    selected_key_configured: Boolean(config.api_key_selector && keyOptions.some((item) => item.key === config.api_key_selector)),
+  };
+}
+
+function saveAdminLlmConfig(patch, updatedByUserId = null) {
+  const currentState = getAdminLlmConfigState();
+  const mergedRaw = {
+    ...currentState.config,
+    ...(patch && typeof patch === "object" ? patch : {}),
+  };
+  const config = normalizeLlmConfig(mergedRaw, {
+    fallback: currentState.config,
+    keyOptions: currentState.key_options,
+  });
+
+  writeSystemSettingJson(LLM_RUNTIME_SETTING_KEY, config, updatedByUserId);
+  return getAdminLlmConfigState();
+}
+
+function hasLlmProviderTables() {
+  try {
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'llm_providers' LIMIT 1",
+    ).get();
+    return Boolean(row?.name);
+  } catch {
+    return false;
+  }
+}
+
+function hasLlmProfileTable() {
+  try {
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'llm_user_profiles' LIMIT 1",
+    ).get();
+    return Boolean(row?.name);
+  } catch {
+    return false;
+  }
+}
+
+function hasLlmModelTable() {
+  try {
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'llm_provider_models' LIMIT 1",
+    ).get();
+    return Boolean(row?.name);
+  } catch {
+    return false;
+  }
+}
+
+function hasLlmAuditTable() {
+  try {
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'llm_audit_logs' LIMIT 1",
+    ).get();
+    return Boolean(row?.name);
+  } catch {
+    return false;
+  }
+}
+
+function appendLlmAuditLog({ userId = null, providerId = null, action = "", diff = {} }) {
+  if (!hasLlmAuditTable()) {
+    return;
+  }
+
+  const normalizedAction = String(action || "").trim().slice(0, 120);
+  if (!normalizedAction) {
+    return;
+  }
+
+  const payload = diff && typeof diff === "object" ? diff : {};
+  try {
+    db.prepare(
+      `
+      INSERT INTO llm_audit_logs (user_id, provider_id, action, diff_json, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    ).run(
+      normalizePositiveInteger(userId) || null,
+      normalizePositiveInteger(providerId) || null,
+      normalizedAction,
+      JSON.stringify(payload),
+      nowIso(),
+    );
+  } catch {
+    // ignore audit failures
+  }
+}
+
+function encryptLlmApiKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", LLM_KEY_ENCRYPTION_BUFFER, iv);
+  const encrypted = Buffer.concat([cipher.update(raw, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+
+  return [
+    LLM_KEY_ENCRYPTION_PREFIX,
+    iv.toString("base64"),
+    authTag.toString("base64"),
+    encrypted.toString("base64"),
+  ].join(":");
+}
+
+function decryptLlmApiKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (!raw.startsWith(`${LLM_KEY_ENCRYPTION_PREFIX}:`)) {
+    return raw;
+  }
+
+  const parts = raw.split(":");
+  if (parts.length !== 4) {
+    return "";
+  }
+
+  try {
+    const iv = Buffer.from(parts[1], "base64");
+    const authTag = Buffer.from(parts[2], "base64");
+    const encrypted = Buffer.from(parts[3], "base64");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", LLM_KEY_ENCRYPTION_BUFFER, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    return decrypted.toString("utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeLlmProviderKind(value) {
+  return String(value || "").trim() === LLM_PROVIDER_KIND ? LLM_PROVIDER_KIND : LLM_PROVIDER_KIND;
+}
+
+function normalizeLlmProviderWritePatch(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const enabledRaw = source.enabled;
+  const enabled = enabledRaw === undefined ? null : normalizeBoolean(enabledRaw);
+
+  return {
+    name: String(source.name || "").trim().slice(0, 80),
+    provider_kind: normalizeLlmProviderKind(source.provider_kind),
+    api_base_url: String(source.api_base_url || source.base_url || "").trim().slice(0, 400),
+    proxy_url: String(source.proxy_url || "").trim().slice(0, 400),
+    no_proxy_hosts: String(source.no_proxy_hosts || source.no_proxy || "").trim().slice(0, 500),
+    enabled,
+  };
+}
+
+function normalizeLlmProviderKeyWritePatch(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const rawKeySource = String(source.key_source || source.api_key_source || "").trim();
+  const keySource = rawKeySource === LLM_PROVIDER_KEY_SOURCE_CUSTOM
+    ? LLM_PROVIDER_KEY_SOURCE_CUSTOM
+    : LLM_PROVIDER_KEY_SOURCE_ENV;
+
+  return {
+    key_source: keySource,
+    env_key_name: String(source.env_key_name || source.api_key_selector || "").trim().slice(0, 120),
+    api_key: String(source.api_key || source.custom_api_key || "").trim().slice(0, 5000),
+  };
+}
+
+function normalizeLlmProfileWritePatch(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const legacyProviderId = normalizePositiveInteger(source.provider_id || source.providerId);
+  const storyProviderId = normalizePositiveInteger(source.story_provider_id || source.storyProviderId || source.text_provider_id || source.textProviderId) || legacyProviderId;
+  const summaryProviderId = normalizePositiveInteger(source.summary_provider_id || source.summaryProviderId)
+    || storyProviderId
+    || legacyProviderId;
+  const imageProviderId = normalizePositiveInteger(source.text2image_provider_id || source.text2imageProviderId || source.image_provider_id || source.imageProviderId)
+    || legacyProviderId;
+
+  return {
+    provider_id: storyProviderId || imageProviderId || summaryProviderId || legacyProviderId,
+    story_provider_id: storyProviderId,
+    summary_provider_id: summaryProviderId,
+    text2image_provider_id: imageProviderId,
+    story_prompt_model: String(source.story_prompt_model || source.text_model || "").trim().slice(0, 220),
+    summary_model: String(source.summary_model || "").trim().slice(0, 220),
+    text2image_model: String(source.text2image_model || source.image_model || "").trim().slice(0, 220),
+  };
+}
+
+function maskLlmKeyLast4(last4) {
+  const value = String(last4 || "").trim();
+  if (!value) {
+    return "";
+  }
+  return `****${value.slice(-4)}`;
+}
+
+function serializeLlmProviderRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: Number(row.id),
+    name: String(row.name || ""),
+    provider_kind: normalizeLlmProviderKind(row.provider_kind),
+    api_base_url: String(row.api_base_url || ""),
+    proxy_url: String(row.proxy_url || ""),
+    no_proxy_hosts: String(row.no_proxy_hosts || ""),
+    enabled: Number(row.enabled || 0) === 1,
+    owner_user_id: normalizePositiveInteger(row.owner_user_id) || null,
+    created_at: String(row.created_at || ""),
+    updated_at: String(row.updated_at || ""),
+    models_count: normalizePositiveInteger(row.models_count) || 0,
+    key: row.key_id
+      ? {
+        id: Number(row.key_id),
+        key_source: String(row.key_source || LLM_PROVIDER_KEY_SOURCE_ENV),
+        env_key_name: String(row.env_key_name || ""),
+        key_last4: String(row.key_last4 || ""),
+        key_masked: maskLlmKeyLast4(row.key_last4),
+        has_key: Boolean(String(row.env_key_name || "").trim() || String(row.encrypted_key || "").trim()),
+        is_active: Number(row.key_is_active || 0) === 1,
+      }
+      : null,
+  };
+}
+
+function serializeLlmProfileRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: Number(row.id),
+    scope: String(row.scope || ""),
+    user_id: normalizePositiveInteger(row.user_id) || null,
+    provider_id: normalizePositiveInteger(row.provider_id) || null,
+    story_provider_id: normalizePositiveInteger(row.story_provider_id) || normalizePositiveInteger(row.provider_id) || null,
+    summary_provider_id: normalizePositiveInteger(row.summary_provider_id) || normalizePositiveInteger(row.story_provider_id) || normalizePositiveInteger(row.provider_id) || null,
+    text2image_provider_id: normalizePositiveInteger(row.text2image_provider_id) || normalizePositiveInteger(row.provider_id) || null,
+    provider_name: String(row.provider_name || ""),
+    story_provider_name: String(row.story_provider_name || row.provider_name || ""),
+    summary_provider_name: String(row.summary_provider_name || row.story_provider_name || row.provider_name || ""),
+    text2image_provider_name: String(row.text2image_provider_name || row.provider_name || ""),
+    provider_kind: String(row.provider_kind || LLM_PROVIDER_KIND),
+    story_prompt_model: String(row.story_prompt_model || ""),
+    text_model: String(row.story_prompt_model || ""),
+    summary_model: String(row.summary_model || ""),
+    text2image_model: String(row.text2image_model || ""),
+    image_model: String(row.text2image_model || ""),
+    is_default: Number(row.is_default || 0) === 1,
+    updated_at: String(row.updated_at || ""),
+  };
+}
+
+function serializeLlmProviderModelRow(row) {
+  return {
+    id: Number(row.id),
+    provider_id: Number(row.provider_id),
+    model_id: String(row.model_id || ""),
+    model_type: String(row.model_type || "text"),
+    enabled: Number(row.enabled || 0) === 1,
+    fetched_at: String(row.fetched_at || ""),
+  };
+}
+
+function findFirstConfiguredApiKeySelector(keyOptions) {
+  const options = Array.isArray(keyOptions) ? keyOptions : [];
+  const first = options.find((item) => {
+    const key = String(item?.key || "").trim();
+    return key.length > 0 && String(process.env[key] || "").trim().length > 0;
+  });
+  return first ? String(first.key || "") : "";
+}
+
+function buildEnvLlmRuntimeSettings() {
+  const keyOptions = listLlmApiKeyCandidates();
+  const fallback = buildDefaultLlmConfig(keyOptions);
+  const preferredSelector = String(fallback.api_key_selector || "").trim();
+  const configuredSelector = preferredSelector && String(process.env[preferredSelector] || "").trim()
+    ? preferredSelector
+    : findFirstConfiguredApiKeySelector(keyOptions);
+
+  return {
+    provider_id: null,
+    provider_name: "env",
+    profile_scope: "env",
+    provider_kind: LLM_PROVIDER_KIND,
+    api_base_url: String(fallback.api_base_url || "").trim(),
+    api_key_selector: String(configuredSelector || "").trim(),
+    api_key: configuredSelector ? String(process.env[configuredSelector] || "").trim() : "",
+    text_model: String(fallback.text_model || "").trim(),
+    summary_model: String(fallback.summary_model || fallback.text_model || "").trim(),
+    image_model: String(fallback.image_model || "").trim(),
+    proxy_url: String(fallback.proxy_url || "").trim(),
+    no_proxy: String(fallback.no_proxy || "").trim(),
+  };
+}
+
+function buildLegacyLlmRuntimePatch() {
+  const state = getAdminLlmConfigState();
+  const keyOptions = Array.isArray(state.key_options) ? state.key_options : [];
+  const config = state.config && typeof state.config === "object" ? state.config : {};
+
+  let apiKeySelector = String(config.api_key_selector || "").trim();
+  let apiKey = apiKeySelector ? String(process.env[apiKeySelector] || "").trim() : "";
+  if (!apiKey) {
+    const fallbackSelector = findFirstConfiguredApiKeySelector(keyOptions);
+    if (fallbackSelector) {
+      apiKeySelector = fallbackSelector;
+      apiKey = String(process.env[fallbackSelector] || "").trim();
+    }
+  }
+
+  return {
+    provider_kind: LLM_PROVIDER_KIND,
+    api_base_url: String(config.api_base_url || "").trim(),
+    api_key_selector: apiKeySelector,
+    api_key: apiKey,
+    text_model: String(config.text_model || "").trim(),
+    summary_model: String(config.summary_model || config.text_model || "").trim(),
+    image_model: String(config.image_model || "").trim(),
+    proxy_url: String(config.proxy_url || "").trim(),
+    no_proxy: String(config.no_proxy || "").trim(),
+  };
+}
+
+function applyLlmRuntimePatch(runtimeState, patch) {
+  const runtime = runtimeState && typeof runtimeState === "object" ? runtimeState : {};
+  const source = patch && typeof patch === "object" ? patch : {};
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(source, key);
+
+  const assignNonEmpty = (key) => {
+    if (!hasOwn(key)) {
+      return;
+    }
+    const value = String(source[key] || "").trim();
+    if (value) {
+      runtime[key] = value;
+    }
+  };
+
+  const assignMaybeEmpty = (key) => {
+    if (!hasOwn(key)) {
+      return;
+    }
+    runtime[key] = String(source[key] || "").trim();
+  };
+
+  if (hasOwn("provider_id")) {
+    runtime.provider_id = normalizePositiveInteger(source.provider_id) || null;
+  }
+
+  assignNonEmpty("provider_name");
+  assignNonEmpty("profile_scope");
+  assignNonEmpty("provider_kind");
+  assignNonEmpty("api_base_url");
+  assignMaybeEmpty("api_key_selector");
+  assignMaybeEmpty("api_key");
+  assignNonEmpty("text_model");
+  assignNonEmpty("summary_model");
+  assignNonEmpty("image_model");
+  assignMaybeEmpty("proxy_url");
+  assignMaybeEmpty("no_proxy");
+
+  return runtime;
+}
+
+function extractLlmRuntimeInput(overrides) {
+  const raw = overrides && typeof overrides === "object" ? overrides : {};
+  const rootUserId = normalizePositiveInteger(raw.userId || raw.user_id);
+  const rootProviderId = normalizePositiveInteger(raw.providerId || raw.provider_id);
+  const nestedOverrides = raw.overrides && typeof raw.overrides === "object" ? raw.overrides : {};
+
+  const flatOverrides = { ...raw };
+  delete flatOverrides.userId;
+  delete flatOverrides.user_id;
+  delete flatOverrides.providerId;
+  delete flatOverrides.provider_id;
+  delete flatOverrides.overrides;
+
+  const mergedOverrides = {
+    ...flatOverrides,
+    ...nestedOverrides,
+  };
+
+  const normalizedOverrides = {
+    provider_id: normalizePositiveInteger(mergedOverrides.provider_id || mergedOverrides.providerId),
+    provider_kind: String(mergedOverrides.provider_kind || "").trim(),
+    api_base_url: String(mergedOverrides.api_base_url || mergedOverrides.base_url || "").trim(),
+    api_key_selector: String(mergedOverrides.api_key_selector || mergedOverrides.env_key_name || "").trim(),
+    api_key: String(mergedOverrides.api_key || "").trim(),
+    text_model: String(mergedOverrides.text_model || mergedOverrides.story_prompt_model || "").trim(),
+    summary_model: String(mergedOverrides.summary_model || "").trim(),
+    image_model: String(mergedOverrides.image_model || mergedOverrides.text2image_model || "").trim(),
+    proxy_url: String(mergedOverrides.proxy_url || "").trim(),
+    no_proxy: String(mergedOverrides.no_proxy || mergedOverrides.no_proxy_hosts || "").trim(),
+  };
+
+  return {
+    userId: rootUserId,
+    providerId: rootProviderId,
+    overrides: normalizedOverrides,
+  };
+}
+
+function getLlmProviderWithActiveKeyRow(providerId, options = {}) {
+  if (!hasLlmProviderTables()) {
+    return null;
+  }
+
+  const id = normalizePositiveInteger(providerId);
+  if (!id) {
+    return null;
+  }
+
+  const allowDisabled = Boolean(options.allowDisabled);
+  const row = db.prepare(
+    `
+      SELECT p.id, p.name, p.provider_kind, p.api_base_url, p.proxy_url, p.no_proxy_hosts,
+             p.enabled, p.owner_user_id, p.created_at, p.updated_at,
+             k.id AS key_id, k.key_source, k.env_key_name, k.encrypted_key, k.key_last4,
+             k.is_active AS key_is_active
+      FROM llm_providers p
+      LEFT JOIN llm_provider_keys k
+        ON k.id = (
+          SELECT k2.id
+          FROM llm_provider_keys k2
+          WHERE k2.provider_id = p.id
+            AND k2.is_active = 1
+          ORDER BY k2.updated_at DESC, k2.id DESC
+          LIMIT 1
+        )
+      WHERE p.id = ?
+      LIMIT 1
+    `,
+  ).get(id);
+
+  if (!row) {
+    return null;
+  }
+  if (!allowDisabled && Number(row.enabled || 0) !== 1) {
+    return null;
+  }
+
+  return row;
+}
+
+function resolveLlmApiKeyFromProviderRow(providerRow) {
+  if (!providerRow) {
+    return {
+      selector: "",
+      apiKey: "",
+    };
+  }
+
+  const keySource = String(providerRow.key_source || "").trim();
+  if (keySource === LLM_PROVIDER_KEY_SOURCE_CUSTOM) {
+    return {
+      selector: "custom",
+      apiKey: decryptLlmApiKey(providerRow.encrypted_key),
+    };
+  }
+
+  const envKeyName = String(providerRow.env_key_name || "").trim();
+  return {
+    selector: envKeyName,
+    apiKey: envKeyName ? String(process.env[envKeyName] || "").trim() : "",
+  };
+}
+
+function resolveLlmProviderRuntimeSettings(providerId, options = {}) {
+  const row = getLlmProviderWithActiveKeyRow(providerId, options);
+  if (!row) {
+    return null;
+  }
+
+  const resolvedKey = resolveLlmApiKeyFromProviderRow(row);
+  return {
+    provider_id: Number(row.id),
+    provider_name: String(row.name || "").trim(),
+    provider_kind: normalizeLlmProviderKind(row.provider_kind),
+    api_base_url: String(row.api_base_url || "").trim(),
+    api_key_selector: resolvedKey.selector,
+    api_key: resolvedKey.apiKey,
+    proxy_url: String(row.proxy_url || "").trim(),
+    no_proxy: String(row.no_proxy_hosts || "").trim(),
+  };
+}
+
+function getLlmProfileRow(scope, userId = null) {
+  if (!hasLlmProfileTable()) {
+    return null;
+  }
+
+  const normalizedScope = String(scope || "").trim() === LLM_PROFILE_SCOPE_USER
+    ? LLM_PROFILE_SCOPE_USER
+    : LLM_PROFILE_SCOPE_GLOBAL;
+
+  if (normalizedScope === LLM_PROFILE_SCOPE_GLOBAL) {
+    return db.prepare(
+      `
+        SELECT p.id, p.user_id, p.provider_id, p.story_prompt_model, p.text2image_model,
+               p.summary_model, p.story_provider_id, p.summary_provider_id, p.text2image_provider_id,
+               p.is_default, p.scope, p.created_at, p.updated_at,
+               lp.name AS provider_name,
+               lp.provider_kind AS provider_kind,
+               lps.name AS story_provider_name,
+               lpsum.name AS summary_provider_name,
+               lpi.name AS text2image_provider_name
+        FROM llm_user_profiles p
+        LEFT JOIN llm_providers lp ON lp.id = p.provider_id
+        LEFT JOIN llm_providers lps ON lps.id = COALESCE(p.story_provider_id, p.provider_id)
+        LEFT JOIN llm_providers lpsum ON lpsum.id = COALESCE(p.summary_provider_id, p.story_provider_id, p.provider_id)
+        LEFT JOIN llm_providers lpi ON lpi.id = COALESCE(p.text2image_provider_id, p.provider_id)
+        WHERE p.scope = ?
+        ORDER BY p.is_default DESC, p.updated_at DESC, p.id DESC
+        LIMIT 1
+      `,
+    ).get(LLM_PROFILE_SCOPE_GLOBAL);
+  }
+
+  const normalizedUserId = normalizePositiveInteger(userId);
+  if (!normalizedUserId) {
+    return null;
+  }
+
+  return db.prepare(
+    `
+      SELECT p.id, p.user_id, p.provider_id, p.story_prompt_model, p.text2image_model,
+             p.summary_model, p.story_provider_id, p.summary_provider_id, p.text2image_provider_id,
+             p.is_default, p.scope, p.created_at, p.updated_at,
+             lp.name AS provider_name,
+             lp.provider_kind AS provider_kind,
+             lps.name AS story_provider_name,
+             lpsum.name AS summary_provider_name,
+             lpi.name AS text2image_provider_name
+      FROM llm_user_profiles p
+      LEFT JOIN llm_providers lp ON lp.id = p.provider_id
+      LEFT JOIN llm_providers lps ON lps.id = COALESCE(p.story_provider_id, p.provider_id)
+      LEFT JOIN llm_providers lpsum ON lpsum.id = COALESCE(p.summary_provider_id, p.story_provider_id, p.provider_id)
+      LEFT JOIN llm_providers lpi ON lpi.id = COALESCE(p.text2image_provider_id, p.provider_id)
+      WHERE p.scope = ? AND p.user_id = ?
+      ORDER BY p.is_default DESC, p.updated_at DESC, p.id DESC
+      LIMIT 1
+    `,
+  ).get(LLM_PROFILE_SCOPE_USER, normalizedUserId);
+}
+
+function resolveLlmRuntimeFromProfileRow(profileRow, options = {}) {
+  if (!profileRow) {
+    return null;
+  }
+
+  const purpose = String(options.purpose || "text").trim();
+  const storyProviderId = normalizePositiveInteger(profileRow.story_provider_id) || normalizePositiveInteger(profileRow.provider_id);
+  const summaryProviderId = normalizePositiveInteger(profileRow.summary_provider_id) || storyProviderId || normalizePositiveInteger(profileRow.provider_id);
+  const imageProviderId = normalizePositiveInteger(profileRow.text2image_provider_id) || normalizePositiveInteger(profileRow.provider_id);
+
+  const providerId = purpose === "image"
+    ? imageProviderId
+    : purpose === "summary"
+      ? summaryProviderId
+      : storyProviderId;
+
+  if (!providerId) {
+    return null;
+  }
+
+  const providerRuntime = resolveLlmProviderRuntimeSettings(providerId, {
+    allowDisabled: Boolean(options.allowDisabled),
+  });
+  if (!providerRuntime) {
+    return null;
+  }
+
+  return {
+    ...providerRuntime,
+    profile_scope: String(profileRow.scope || "").trim(),
+    text_model: String(profileRow.story_prompt_model || "").trim(),
+    summary_model: String(profileRow.summary_model || "").trim(),
+    image_model: String(profileRow.text2image_model || "").trim(),
+  };
+}
+
+function resolveLlmRuntimeSettings(overrides = null) {
+  const input = extractLlmRuntimeInput(overrides);
+  const purpose = String(input.overrides.purpose || "text").trim() === "image"
+    ? "image"
+    : String(input.overrides.purpose || "text").trim() === "summary"
+      ? "summary"
+      : "text";
+
+  const runtime = buildEnvLlmRuntimeSettings();
+  applyLlmRuntimePatch(runtime, buildLegacyLlmRuntimePatch());
+
+  const globalProfileRow = getLlmProfileRow(LLM_PROFILE_SCOPE_GLOBAL, null);
+  const globalRuntimePatch = resolveLlmRuntimeFromProfileRow(globalProfileRow, { purpose });
+  if (globalRuntimePatch) {
+    applyLlmRuntimePatch(runtime, globalRuntimePatch);
+  }
+
+  if (input.userId) {
+    const userProfileRow = getLlmProfileRow(LLM_PROFILE_SCOPE_USER, input.userId);
+    const userRuntimePatch = resolveLlmRuntimeFromProfileRow(userProfileRow, { purpose });
+    if (userRuntimePatch) {
+      applyLlmRuntimePatch(runtime, userRuntimePatch);
+    }
+  }
+
+  if (input.providerId) {
+    const providerRuntimePatch = resolveLlmProviderRuntimeSettings(input.providerId, { allowDisabled: true });
+    if (providerRuntimePatch) {
+      applyLlmRuntimePatch(runtime, {
+        ...providerRuntimePatch,
+        profile_scope: "run_payload",
+      });
+    }
+  }
+
+  if (input.overrides.provider_id) {
+    const providerRuntimePatch = resolveLlmProviderRuntimeSettings(input.overrides.provider_id, { allowDisabled: true });
+    if (providerRuntimePatch) {
+      applyLlmRuntimePatch(runtime, {
+        ...providerRuntimePatch,
+        profile_scope: "run_payload",
+      });
+    }
+  }
+
+  const stageProviderId = purpose === "image"
+    ? normalizePositiveInteger(input.overrides.text2image_provider_id || input.overrides.image_provider_id)
+    : purpose === "summary"
+      ? normalizePositiveInteger(input.overrides.summary_provider_id)
+      : normalizePositiveInteger(input.overrides.story_provider_id || input.overrides.text_provider_id);
+
+  if (stageProviderId) {
+    const providerRuntimePatch = resolveLlmProviderRuntimeSettings(stageProviderId, { allowDisabled: true });
+    if (providerRuntimePatch) {
+      applyLlmRuntimePatch(runtime, {
+        ...providerRuntimePatch,
+        profile_scope: "run_payload",
+      });
+    }
+  }
+
+  applyLlmRuntimePatch(runtime, input.overrides);
+
+  runtime.provider_kind = normalizeLlmProviderKind(runtime.provider_kind);
+  runtime.summary_model = String(runtime.summary_model || runtime.text_model || "").trim();
+  runtime.api_base_url = String(runtime.api_base_url || "").trim();
+  runtime.text_model = String(runtime.text_model || "").trim();
+  runtime.image_model = String(runtime.image_model || "").trim();
+  runtime.proxy_url = String(runtime.proxy_url || "").trim();
+  runtime.no_proxy = String(runtime.no_proxy || "").trim();
+
+  return runtime;
+}
+
+function buildLlmProxyEnv(runtimeSettings) {
+  const runtime = runtimeSettings && typeof runtimeSettings === "object" ? runtimeSettings : {};
+  const proxyUrl = String(runtime.proxy_url || "").trim();
+  const noProxy = String(runtime.no_proxy || "").trim();
+
+  const env = {};
+  if (proxyUrl) {
+    env.HTTP_PROXY = proxyUrl;
+    env.HTTPS_PROXY = proxyUrl;
+    env.ALL_PROXY = proxyUrl;
+    env.http_proxy = proxyUrl;
+    env.https_proxy = proxyUrl;
+    env.all_proxy = proxyUrl;
+  }
+  if (noProxy) {
+    env.NO_PROXY = noProxy;
+    env.no_proxy = noProxy;
+  }
+  return env;
+}
+
+async function testAdminLlmConnection(patch = null) {
+  const runtime = resolveLlmRuntimeSettings(patch);
+  if (!runtime.api_base_url) {
+    throw new Error("api_base_url 不能为空");
+  }
+  if (!runtime.api_key) {
+    throw new Error("未找到可用 API Key，请检查 env 与 api_key_selector");
+  }
+
+  const result = await runStoryGeneratorAtomicCommand("check-connection", {
+    base_url: runtime.api_base_url,
+    api_key: runtime.api_key,
+    text_model: runtime.text_model,
+    summary_model: runtime.summary_model,
+    image_model: runtime.image_model,
+  }, {
+    llmRuntime: runtime,
+  });
+
+  return {
+    provider_kind: runtime.provider_kind,
+    api_base_url: runtime.api_base_url,
+    api_key_selector: runtime.api_key_selector,
+    text_model: runtime.text_model,
+    summary_model: runtime.summary_model,
+    image_model: runtime.image_model,
+    proxy_url: runtime.proxy_url,
+    no_proxy: runtime.no_proxy,
+    key_available: Boolean(runtime.api_key),
+    text_model_exists: Boolean(result?.text_model_exists),
+    summary_model_exists: Boolean(result?.summary_model_exists),
+    image_model_exists: Boolean(result?.image_model_exists),
+    models_count: Number(result?.models_count || 0),
+    models_preview: Array.isArray(result?.models_preview)
+      ? result.models_preview.map((item) => String(item || "")).filter((item) => item.length > 0).slice(0, 12)
+      : [],
+  };
+}
+
+function inferLlmModelTypes(modelId) {
+  const raw = String(modelId || "").trim().toLowerCase();
+  if (!raw) {
+    return {
+      text: false,
+      image: false,
+      summary: false,
+    };
+  }
+
+  const maybeImage = /(dall|seedream|flux|stable-diffusion|sdxl|image|vision-image|mj|midjourney)/.test(raw);
+  const maybeText = /(gpt|qwen|claude|deepseek|glm|llama|gemini|chat|instruct|o\d)/.test(raw) || !maybeImage;
+
+  return {
+    text: maybeText,
+    image: maybeImage,
+    summary: maybeText,
+  };
+}
+
+async function fetchAdminLlmModels(patch = null) {
+  const runtime = resolveLlmRuntimeSettings(patch);
+  if (!runtime.api_base_url) {
+    throw new Error("api_base_url 不能为空");
+  }
+  if (!runtime.api_key) {
+    throw new Error("未找到可用 API Key，请检查 env 与 api_key_selector");
+  }
+
+  const result = await runStoryGeneratorAtomicCommand("check-connection", {
+    base_url: runtime.api_base_url,
+    api_key: runtime.api_key,
+    text_model: runtime.text_model,
+    summary_model: runtime.summary_model,
+    image_model: runtime.image_model,
+  }, {
+    llmRuntime: runtime,
+  });
+
+  const modelIds = Array.isArray(result?.models)
+    ? result.models.map((item) => String(item || "").trim()).filter((item) => item.length > 0)
+    : [];
+  const models = modelIds.map((id) => {
+    const types = inferLlmModelTypes(id);
+    return {
+      id,
+      text: types.text,
+      image: types.image,
+      summary: types.summary,
+    };
+  });
+
+  return {
+    provider_kind: runtime.provider_kind,
+    api_base_url: runtime.api_base_url,
+    api_key_selector: runtime.api_key_selector,
+    text_model: runtime.text_model,
+    summary_model: runtime.summary_model,
+    image_model: runtime.image_model,
+    proxy_url: runtime.proxy_url,
+    no_proxy: runtime.no_proxy,
+    key_available: Boolean(runtime.api_key),
+    models_count: Number(result?.models_count || models.length),
+    fetched_at: nowIso(),
+    models,
+  };
+}
+
+function serializeRuntimeLlmState(runtimeSettings) {
+  const runtime = runtimeSettings && typeof runtimeSettings === "object" ? runtimeSettings : {};
+  return {
+    provider_id: normalizePositiveInteger(runtime.provider_id) || null,
+    provider_name: String(runtime.provider_name || ""),
+    profile_scope: String(runtime.profile_scope || ""),
+    provider_kind: normalizeLlmProviderKind(runtime.provider_kind),
+    api_base_url: String(runtime.api_base_url || ""),
+    api_key_selector: String(runtime.api_key_selector || ""),
+    key_available: Boolean(String(runtime.api_key || "").trim()),
+    text_model: String(runtime.text_model || ""),
+    summary_model: String(runtime.summary_model || ""),
+    image_model: String(runtime.image_model || ""),
+    proxy_url: String(runtime.proxy_url || ""),
+    no_proxy: String(runtime.no_proxy || ""),
+  };
+}
+
+function listAdminLlmEnvKeys() {
+  return listLlmApiKeyCandidates();
+}
+
+function deriveLlmProviderNameFromBaseUrl(apiBaseUrl) {
+  const baseUrl = String(apiBaseUrl || "").trim();
+  if (!baseUrl) {
+    return "system-default";
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    const host = String(parsed.host || "").trim().toLowerCase();
+    if (!host) {
+      return "system-default";
+    }
+    if (host.includes("aihubmix")) {
+      return "aihubmix-default";
+    }
+    if (host.includes("openai")) {
+      return "openai-default";
+    }
+    return host.replace(/[^a-z0-9.-]+/g, "-").replace(/^-+|-+$/g, "") || "system-default";
+  } catch {
+    return "system-default";
+  }
+}
+
+function ensureLlmDefaultProviderBackfill() {
+  if (!hasLlmProviderTables()) {
+    return;
+  }
+
+  const now = nowIso();
+  const keyOptions = listLlmApiKeyCandidates();
+  const legacyState = getAdminLlmConfigState();
+  const fallbackConfig = normalizeLlmConfig(legacyState?.config || {}, {
+    keyOptions,
+    fallback: buildDefaultLlmConfig(keyOptions),
+  });
+  const fallbackName = deriveLlmProviderNameFromBaseUrl(fallbackConfig.api_base_url);
+  const fallbackEnvKey = String(fallbackConfig.api_key_selector || "").trim();
+
+  const transaction = db.transaction(() => {
+    const providerRows = db.prepare(
+      "SELECT id, name, api_base_url, enabled, owner_user_id FROM llm_providers ORDER BY id ASC",
+    ).all();
+
+    const updateProviderStmt = db.prepare(
+      "UPDATE llm_providers SET name = ?, api_base_url = ?, updated_at = ? WHERE id = ?",
+    );
+
+    let defaultProviderId = 0;
+    if (providerRows.length === 0) {
+      const insertResult = db.prepare(
+        `
+          INSERT INTO llm_providers (
+            name, provider_kind, api_base_url, proxy_url, no_proxy_hosts,
+            enabled, owner_user_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 1, NULL, ?, ?)
+        `,
+      ).run(
+        fallbackName,
+        LLM_PROVIDER_KIND,
+        String(fallbackConfig.api_base_url || "").trim(),
+        String(fallbackConfig.proxy_url || "").trim(),
+        String(fallbackConfig.no_proxy || "").trim(),
+        now,
+        now,
+      );
+
+      defaultProviderId = normalizePositiveInteger(insertResult?.lastInsertRowid);
+      if (defaultProviderId && fallbackEnvKey) {
+        db.prepare(
+          `
+            INSERT INTO llm_provider_keys (
+              provider_id, key_source, env_key_name, encrypted_key,
+              key_last4, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, '', '', 1, ?, ?)
+          `,
+        ).run(defaultProviderId, LLM_PROVIDER_KEY_SOURCE_ENV, fallbackEnvKey, now, now);
+      }
+    } else {
+      defaultProviderId = normalizePositiveInteger(providerRows[0]?.id);
+      for (const row of providerRows) {
+        const rowId = normalizePositiveInteger(row?.id);
+        if (!rowId) {
+          continue;
+        }
+        const currentName = String(row?.name || "").trim();
+        const currentBaseUrl = String(row?.api_base_url || "").trim();
+        const nextBaseUrl = currentBaseUrl || String(fallbackConfig.api_base_url || "").trim();
+        const nextName = currentName || deriveLlmProviderNameFromBaseUrl(nextBaseUrl);
+
+        if (nextName !== currentName || nextBaseUrl !== currentBaseUrl) {
+          updateProviderStmt.run(nextName, nextBaseUrl, now, rowId);
+        }
+      }
+    }
+
+    if (!hasLlmProfileTable() || !defaultProviderId) {
+      return;
+    }
+
+    const globalProfileRow = db.prepare(
+      `
+        SELECT id, provider_id, story_provider_id, summary_provider_id, text2image_provider_id
+        FROM llm_user_profiles
+        WHERE scope = ?
+        ORDER BY is_default DESC, updated_at DESC, id DESC
+        LIMIT 1
+      `,
+    ).get(LLM_PROFILE_SCOPE_GLOBAL);
+
+    if (!globalProfileRow) {
+      db.prepare(
+        `
+          INSERT INTO llm_user_profiles (
+            user_id, provider_id, story_provider_id, summary_provider_id, text2image_provider_id,
+            story_prompt_model, text2image_model, summary_model,
+            is_default, scope, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        `,
+      ).run(
+        null,
+        defaultProviderId,
+        defaultProviderId,
+        defaultProviderId,
+        defaultProviderId,
+        String(fallbackConfig.text_model || "").trim(),
+        String(fallbackConfig.image_model || "").trim(),
+        String(fallbackConfig.summary_model || fallbackConfig.text_model || "").trim(),
+        LLM_PROFILE_SCOPE_GLOBAL,
+        now,
+        now,
+      );
+      return;
+    }
+
+    const profileId = normalizePositiveInteger(globalProfileRow.id);
+    if (!profileId) {
+      return;
+    }
+
+    const providerId = normalizePositiveInteger(globalProfileRow.provider_id);
+    const storyProviderId = normalizePositiveInteger(globalProfileRow.story_provider_id);
+    const summaryProviderId = normalizePositiveInteger(globalProfileRow.summary_provider_id);
+    const imageProviderId = normalizePositiveInteger(globalProfileRow.text2image_provider_id);
+    if (providerId && storyProviderId && summaryProviderId && imageProviderId) {
+      return;
+    }
+
+    const nextProviderId = providerId || defaultProviderId;
+    const nextStoryProviderId = storyProviderId || nextProviderId;
+    const nextSummaryProviderId = summaryProviderId || nextStoryProviderId || nextProviderId;
+    const nextImageProviderId = imageProviderId || nextProviderId;
+    db.prepare(
+      `
+        UPDATE llm_user_profiles
+        SET provider_id = ?,
+            story_provider_id = ?,
+            summary_provider_id = ?,
+            text2image_provider_id = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+    ).run(nextProviderId, nextStoryProviderId, nextSummaryProviderId, nextImageProviderId, now, profileId);
+  });
+
+  try {
+    transaction();
+  } catch (error) {
+    console.warn("[llm] ensure default provider backfill failed:", asMessage(error));
+  }
+}
+
+function listLlmProviders() {
+  if (!hasLlmProviderTables()) {
+    return [];
+  }
+
+  const rows = hasLlmModelTable()
+    ? db.prepare(
+      `
+        SELECT p.id, p.name, p.provider_kind, p.api_base_url, p.proxy_url, p.no_proxy_hosts,
+               p.enabled, p.owner_user_id, p.created_at, p.updated_at,
+               k.id AS key_id, k.key_source, k.env_key_name, k.encrypted_key, k.key_last4,
+               k.is_active AS key_is_active,
+               COALESCE(mc.model_count, 0) AS models_count
+        FROM llm_providers p
+        LEFT JOIN llm_provider_keys k
+          ON k.id = (
+            SELECT k2.id
+            FROM llm_provider_keys k2
+            WHERE k2.provider_id = p.id
+              AND k2.is_active = 1
+            ORDER BY k2.updated_at DESC, k2.id DESC
+            LIMIT 1
+          )
+        LEFT JOIN (
+          SELECT provider_id, COUNT(*) AS model_count
+          FROM llm_provider_models
+          WHERE enabled = 1
+          GROUP BY provider_id
+        ) mc ON mc.provider_id = p.id
+        ORDER BY p.updated_at DESC, p.id DESC
+      `,
+    ).all()
+    : db.prepare(
+      `
+        SELECT p.id, p.name, p.provider_kind, p.api_base_url, p.proxy_url, p.no_proxy_hosts,
+               p.enabled, p.owner_user_id, p.created_at, p.updated_at,
+               k.id AS key_id, k.key_source, k.env_key_name, k.encrypted_key, k.key_last4,
+               k.is_active AS key_is_active,
+               0 AS models_count
+        FROM llm_providers p
+        LEFT JOIN llm_provider_keys k
+          ON k.id = (
+            SELECT k2.id
+            FROM llm_provider_keys k2
+            WHERE k2.provider_id = p.id
+              AND k2.is_active = 1
+            ORDER BY k2.updated_at DESC, k2.id DESC
+            LIMIT 1
+          )
+        ORDER BY p.updated_at DESC, p.id DESC
+      `,
+    ).all();
+
+  return rows.map(serializeLlmProviderRow).filter(Boolean);
+}
+
+function getLlmProviderById(providerId, options = {}) {
+  const row = getLlmProviderWithActiveKeyRow(providerId, {
+    allowDisabled: options.allowDisabled,
+  });
+  if (!row) {
+    return null;
+  }
+
+  const modelsCount = hasLlmModelTable()
+    ? db.prepare(
+      "SELECT COUNT(*) AS total FROM llm_provider_models WHERE provider_id = ? AND enabled = 1",
+    ).get(Number(row.id))
+    : { total: 0 };
+
+  return serializeLlmProviderRow({
+    ...row,
+    models_count: Number(modelsCount?.total || 0),
+  });
+}
+
+function createLlmProvider(payload, actorUserId = null) {
+  if (!hasLlmProviderTables()) {
+    throw new Error("llm provider 表尚未就绪，请先执行数据库迁移");
+  }
+
+  const patch = normalizeLlmProviderWritePatch(payload);
+  if (!patch.name) {
+    throw new Error("provider name 不能为空");
+  }
+  if (!patch.api_base_url) {
+    throw new Error("api_base_url 不能为空");
+  }
+
+  const now = nowIso();
+  const ownerUserId = normalizePositiveInteger(actorUserId) || null;
+  const result = db.prepare(
+    `
+      INSERT INTO llm_providers (
+        name, provider_kind, api_base_url, proxy_url, no_proxy_hosts,
+        enabled, owner_user_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+  ).run(
+    patch.name,
+    patch.provider_kind,
+    patch.api_base_url,
+    patch.proxy_url,
+    patch.no_proxy_hosts,
+    patch.enabled === null ? 1 : (patch.enabled ? 1 : 0),
+    ownerUserId,
+    now,
+    now,
+  );
+
+  const providerId = normalizePositiveInteger(result?.lastInsertRowid);
+  if (!providerId) {
+    throw new Error("创建 provider 失败");
+  }
+
+  const keyPatch = normalizeLlmProviderKeyWritePatch(payload?.key || payload);
+  const hasKeyPatch = Boolean(keyPatch.env_key_name || keyPatch.api_key);
+  if (hasKeyPatch) {
+    saveLlmProviderKey(providerId, payload?.key || payload, actorUserId);
+  }
+
+  appendLlmAuditLog({
+    userId: actorUserId,
+    providerId,
+    action: "llm.provider.create",
+    diff: {
+      name: patch.name,
+      provider_kind: patch.provider_kind,
+    },
+  });
+
+  return getLlmProviderById(providerId, { allowDisabled: true });
+}
+
+function updateLlmProvider(providerId, payload, actorUserId = null) {
+  if (!hasLlmProviderTables()) {
+    throw new Error("llm provider 表尚未就绪，请先执行数据库迁移");
+  }
+
+  const id = normalizePositiveInteger(providerId);
+  if (!id) {
+    throw new Error("provider_id 不合法");
+  }
+
+  const currentRow = db.prepare(
+    "SELECT id, name, provider_kind, api_base_url, proxy_url, no_proxy_hosts, enabled FROM llm_providers WHERE id = ? LIMIT 1",
+  ).get(id);
+  if (!currentRow) {
+    throw new Error("provider 不存在");
+  }
+
+  const patch = normalizeLlmProviderWritePatch(payload);
+  const nextName = patch.name || String(currentRow.name || "").trim();
+  const nextBaseUrl = patch.api_base_url || String(currentRow.api_base_url || "").trim();
+  if (!nextName) {
+    throw new Error("provider name 不能为空");
+  }
+  if (!nextBaseUrl) {
+    throw new Error("api_base_url 不能为空");
+  }
+
+  db.prepare(
+    `
+      UPDATE llm_providers
+      SET name = ?,
+          provider_kind = ?,
+          api_base_url = ?,
+          proxy_url = ?,
+          no_proxy_hosts = ?,
+          enabled = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+  ).run(
+    nextName,
+    patch.provider_kind || normalizeLlmProviderKind(currentRow.provider_kind),
+    nextBaseUrl,
+    patch.proxy_url || String(currentRow.proxy_url || ""),
+    patch.no_proxy_hosts || String(currentRow.no_proxy_hosts || ""),
+    patch.enabled === null ? (Number(currentRow.enabled || 0) === 1 ? 1 : 0) : (patch.enabled ? 1 : 0),
+    nowIso(),
+    id,
+  );
+
+  const keyPatch = normalizeLlmProviderKeyWritePatch(payload?.key || payload);
+  const shouldUpdateKey = Boolean(keyPatch.env_key_name || keyPatch.api_key || payload?.key_source || payload?.api_key_source);
+  if (shouldUpdateKey) {
+    saveLlmProviderKey(id, payload?.key || payload, actorUserId);
+  }
+
+  appendLlmAuditLog({
+    userId: actorUserId,
+    providerId: id,
+    action: "llm.provider.update",
+    diff: {
+      name: nextName,
+      provider_kind: patch.provider_kind,
+      api_base_url: nextBaseUrl,
+    },
+  });
+
+  return getLlmProviderById(id, { allowDisabled: true });
+}
+
+function deleteLlmProvider(providerId, actorUserId = null) {
+  if (!hasLlmProviderTables()) {
+    throw new Error("llm provider 表尚未就绪，请先执行数据库迁移");
+  }
+
+  const id = normalizePositiveInteger(providerId);
+  if (!id) {
+    throw new Error("provider_id 不合法");
+  }
+
+  const providerRow = db.prepare(
+    "SELECT id, name FROM llm_providers WHERE id = ? LIMIT 1",
+  ).get(id);
+  if (!providerRow) {
+    throw new Error("provider 不存在");
+  }
+
+  if (hasLlmProfileTable()) {
+    const profileRef = db.prepare(
+      `
+        SELECT id, scope, user_id
+        FROM llm_user_profiles
+        WHERE provider_id = ?
+           OR story_provider_id = ?
+           OR summary_provider_id = ?
+           OR text2image_provider_id = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `,
+    ).get(id, id, id, id);
+
+    if (profileRef) {
+      const scopeLabel = String(profileRef.scope || "") === LLM_PROFILE_SCOPE_GLOBAL
+        ? "global"
+        : `user:${normalizePositiveInteger(profileRef.user_id) || "unknown"}`;
+      throw new Error(`provider 正在被 profile(${scopeLabel}) 引用，请先解绑后再删除`);
+    }
+  }
+
+  const now = nowIso();
+  const runDelete = db.transaction(() => {
+    if (hasLlmModelTable()) {
+      db.prepare("DELETE FROM llm_provider_models WHERE provider_id = ?").run(id);
+    }
+    db.prepare("DELETE FROM llm_provider_keys WHERE provider_id = ?").run(id);
+    db.prepare("UPDATE generation_jobs SET effective_provider_id = NULL WHERE effective_provider_id = ?").run(id);
+    db.prepare("DELETE FROM llm_providers WHERE id = ?").run(id);
+  });
+  runDelete();
+
+  appendLlmAuditLog({
+    userId: actorUserId,
+    providerId: id,
+    action: "llm.provider.delete",
+    diff: {
+      id,
+      name: String(providerRow.name || ""),
+      deleted_at: now,
+    },
+  });
+
+  return {
+    id,
+    name: String(providerRow.name || ""),
+  };
+}
+
+function saveLlmProviderKey(providerId, payload, actorUserId = null) {
+  if (!hasLlmProviderTables()) {
+    throw new Error("llm provider 表尚未就绪，请先执行数据库迁移");
+  }
+
+  const id = normalizePositiveInteger(providerId);
+  if (!id) {
+    throw new Error("provider_id 不合法");
+  }
+
+  const providerRow = db.prepare("SELECT id FROM llm_providers WHERE id = ? LIMIT 1").get(id);
+  if (!providerRow) {
+    throw new Error("provider 不存在");
+  }
+
+  const patch = normalizeLlmProviderKeyWritePatch(payload);
+  if (patch.key_source === LLM_PROVIDER_KEY_SOURCE_ENV) {
+    if (!patch.env_key_name) {
+      throw new Error("env_key_name 不能为空");
+    }
+  } else if (!patch.api_key) {
+    throw new Error("custom key 不能为空");
+  }
+
+  const now = nowIso();
+  const last4 = patch.key_source === LLM_PROVIDER_KEY_SOURCE_CUSTOM
+    ? String(patch.api_key).slice(-4)
+    : String(process.env[patch.env_key_name] || "").trim().slice(-4);
+
+  const encryptedKey = patch.key_source === LLM_PROVIDER_KEY_SOURCE_CUSTOM
+    ? encryptLlmApiKey(patch.api_key)
+    : "";
+
+  const transaction = db.transaction(() => {
+    db.prepare("UPDATE llm_provider_keys SET is_active = 0, updated_at = ? WHERE provider_id = ?").run(now, id);
+    db.prepare(
+      `
+        INSERT INTO llm_provider_keys (
+          provider_id, key_source, env_key_name, encrypted_key,
+          key_last4, is_active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      `,
+    ).run(
+      id,
+      patch.key_source,
+      patch.key_source === LLM_PROVIDER_KEY_SOURCE_ENV ? patch.env_key_name : "",
+      encryptedKey,
+      String(last4 || "").slice(-4),
+      now,
+      now,
+    );
+  });
+  transaction();
+
+  appendLlmAuditLog({
+    userId: actorUserId,
+    providerId: id,
+    action: "llm.provider.key.update",
+    diff: {
+      key_source: patch.key_source,
+      env_key_name: patch.key_source === LLM_PROVIDER_KEY_SOURCE_ENV ? patch.env_key_name : "",
+      key_last4: String(last4 || "").slice(-4),
+    },
+  });
+
+  return getLlmProviderById(id, { allowDisabled: true });
+}
+
+function listLlmProviderModels(providerId, modelType = "") {
+  if (!hasLlmModelTable()) {
+    return [];
+  }
+
+  const id = normalizePositiveInteger(providerId);
+  if (!id) {
+    return [];
+  }
+
+  const normalizedType = ["text", "summary", "image"].includes(String(modelType || "").trim())
+    ? String(modelType || "").trim()
+    : "";
+
+  const rows = normalizedType
+    ? db.prepare(
+      `
+        SELECT id, provider_id, model_id, model_type, enabled, fetched_at
+        FROM llm_provider_models
+        WHERE provider_id = ? AND enabled = 1 AND model_type = ?
+        ORDER BY fetched_at DESC, model_id ASC
+      `,
+    ).all(id, normalizedType)
+    : db.prepare(
+      `
+        SELECT id, provider_id, model_id, model_type, enabled, fetched_at
+        FROM llm_provider_models
+        WHERE provider_id = ? AND enabled = 1
+        ORDER BY fetched_at DESC, model_type ASC, model_id ASC
+      `,
+    ).all(id);
+
+  return rows.map(serializeLlmProviderModelRow);
+}
+
+function upsertLlmProfile(scope, userId, payload, actorUserId = null) {
+  if (!hasLlmProfileTable()) {
+    throw new Error("llm profile 表尚未就绪，请先执行数据库迁移");
+  }
+
+  const normalizedScope = String(scope || "").trim() === LLM_PROFILE_SCOPE_USER
+    ? LLM_PROFILE_SCOPE_USER
+    : LLM_PROFILE_SCOPE_GLOBAL;
+  const normalizedUserId = normalizedScope === LLM_PROFILE_SCOPE_USER
+    ? normalizePositiveInteger(userId)
+    : null;
+  if (normalizedScope === LLM_PROFILE_SCOPE_USER && !normalizedUserId) {
+    throw new Error("user_id 不合法");
+  }
+
+  const patch = normalizeLlmProfileWritePatch(payload);
+  const providerId = normalizePositiveInteger(patch.provider_id);
+  const storyProviderId = normalizePositiveInteger(patch.story_provider_id);
+  const summaryProviderId = normalizePositiveInteger(patch.summary_provider_id);
+  const imageProviderId = normalizePositiveInteger(patch.text2image_provider_id);
+
+  const removeProfile = !providerId && !storyProviderId && !summaryProviderId && !imageProviderId;
+  const now = nowIso();
+
+  const runWrite = db.transaction(() => {
+    if (removeProfile) {
+      if (normalizedScope === LLM_PROFILE_SCOPE_GLOBAL) {
+        db.prepare("DELETE FROM llm_user_profiles WHERE scope = ?").run(LLM_PROFILE_SCOPE_GLOBAL);
+      } else {
+        db.prepare("DELETE FROM llm_user_profiles WHERE scope = ? AND user_id = ?").run(LLM_PROFILE_SCOPE_USER, normalizedUserId);
+      }
+      return;
+    }
+
+    const stageProviderIds = [storyProviderId, summaryProviderId, imageProviderId, providerId]
+      .map((item) => normalizePositiveInteger(item))
+      .filter((item, index, arr) => item && arr.indexOf(item) === index);
+    for (const stageProviderId of stageProviderIds) {
+      const providerRow = db.prepare("SELECT id FROM llm_providers WHERE id = ? LIMIT 1").get(stageProviderId);
+      if (!providerRow) {
+        throw new Error(`provider 不存在: ${stageProviderId}`);
+      }
+    }
+
+    const normalizedStoryProviderId = storyProviderId || providerId;
+    const normalizedSummaryProviderId = summaryProviderId || normalizedStoryProviderId || providerId;
+    const normalizedImageProviderId = imageProviderId || providerId;
+    const canonicalProviderId = providerId || normalizedStoryProviderId || normalizedImageProviderId || normalizedSummaryProviderId;
+
+    if (normalizedScope === LLM_PROFILE_SCOPE_GLOBAL) {
+      db.prepare("UPDATE llm_user_profiles SET is_default = 0, updated_at = ? WHERE scope = ?").run(now, LLM_PROFILE_SCOPE_GLOBAL);
+      const existing = db.prepare(
+        "SELECT id FROM llm_user_profiles WHERE scope = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+      ).get(LLM_PROFILE_SCOPE_GLOBAL);
+
+      if (existing?.id) {
+        db.prepare(
+          `
+            UPDATE llm_user_profiles
+            SET provider_id = ?,
+                story_provider_id = ?,
+                summary_provider_id = ?,
+                text2image_provider_id = ?,
+                story_prompt_model = ?,
+                text2image_model = ?,
+                summary_model = ?,
+                is_default = 1,
+                updated_at = ?
+            WHERE id = ?
+          `,
+        ).run(
+          canonicalProviderId,
+          normalizedStoryProviderId,
+          normalizedSummaryProviderId,
+          normalizedImageProviderId,
+          patch.story_prompt_model,
+          patch.text2image_model,
+          patch.summary_model,
+          now,
+          Number(existing.id),
+        );
+      } else {
+        db.prepare(
+          `
+            INSERT INTO llm_user_profiles (
+              user_id, provider_id, story_provider_id, summary_provider_id, text2image_provider_id,
+              story_prompt_model, text2image_model,
+              summary_model, is_default, scope, created_at, updated_at
+            ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          `,
+        ).run(
+          canonicalProviderId,
+          normalizedStoryProviderId,
+          normalizedSummaryProviderId,
+          normalizedImageProviderId,
+          patch.story_prompt_model,
+          patch.text2image_model,
+          patch.summary_model,
+          LLM_PROFILE_SCOPE_GLOBAL,
+          now,
+          now,
+        );
+      }
+      return;
+    }
+
+    db.prepare(
+      "UPDATE llm_user_profiles SET is_default = 0, updated_at = ? WHERE scope = ? AND user_id = ?",
+    ).run(now, LLM_PROFILE_SCOPE_USER, normalizedUserId);
+
+    const existing = db.prepare(
+      "SELECT id FROM llm_user_profiles WHERE scope = ? AND user_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+    ).get(LLM_PROFILE_SCOPE_USER, normalizedUserId);
+
+    if (existing?.id) {
+      db.prepare(
+        `
+          UPDATE llm_user_profiles
+          SET provider_id = ?,
+              story_provider_id = ?,
+              summary_provider_id = ?,
+              text2image_provider_id = ?,
+              story_prompt_model = ?,
+              text2image_model = ?,
+              summary_model = ?,
+              is_default = 1,
+              updated_at = ?
+          WHERE id = ?
+        `,
+      ).run(
+        canonicalProviderId,
+        normalizedStoryProviderId,
+        normalizedSummaryProviderId,
+        normalizedImageProviderId,
+        patch.story_prompt_model,
+        patch.text2image_model,
+        patch.summary_model,
+        now,
+        Number(existing.id),
+      );
+    } else {
+      db.prepare(
+        `
+          INSERT INTO llm_user_profiles (
+            user_id, provider_id, story_provider_id, summary_provider_id, text2image_provider_id,
+            story_prompt_model, text2image_model,
+            summary_model, is_default, scope, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        `,
+      ).run(
+        normalizedUserId,
+        canonicalProviderId,
+        normalizedStoryProviderId,
+        normalizedSummaryProviderId,
+        normalizedImageProviderId,
+        patch.story_prompt_model,
+        patch.text2image_model,
+        patch.summary_model,
+        LLM_PROFILE_SCOPE_USER,
+        now,
+        now,
+      );
+    }
+  });
+
+  runWrite();
+
+  appendLlmAuditLog({
+    userId: actorUserId,
+    providerId: providerId || null,
+    action: normalizedScope === LLM_PROFILE_SCOPE_GLOBAL ? "llm.profile.global.update" : "llm.profile.user.update",
+    diff: {
+      scope: normalizedScope,
+      user_id: normalizedUserId,
+      provider_id: providerId,
+      story_provider_id: storyProviderId,
+      summary_provider_id: summaryProviderId,
+      text2image_provider_id: imageProviderId,
+      story_prompt_model: patch.story_prompt_model,
+      summary_model: patch.summary_model,
+      text2image_model: patch.text2image_model,
+      reset: removeProfile,
+    },
+  });
+}
+
+function getLlmGlobalProfile() {
+  return serializeLlmProfileRow(getLlmProfileRow(LLM_PROFILE_SCOPE_GLOBAL, null));
+}
+
+function getLlmUserProfile(userId) {
+  const normalizedUserId = normalizePositiveInteger(userId);
+  if (!normalizedUserId) {
+    throw new Error("user_id 不合法");
+  }
+
+  const userRow = db.prepare("SELECT id FROM users WHERE id = ? LIMIT 1").get(normalizedUserId);
+  if (!userRow) {
+    throw new Error("用户不存在");
+  }
+
+  return serializeLlmProfileRow(getLlmProfileRow(LLM_PROFILE_SCOPE_USER, normalizedUserId));
+}
+
+function saveLlmGlobalProfile(payload, actorUserId = null) {
+  upsertLlmProfile(LLM_PROFILE_SCOPE_GLOBAL, null, payload, actorUserId);
+  return getLlmGlobalProfile();
+}
+
+function saveLlmUserProfile(userId, payload, actorUserId = null) {
+  const normalizedUserId = normalizePositiveInteger(userId);
+  if (!normalizedUserId) {
+    throw new Error("user_id 不合法");
+  }
+  const userRow = db.prepare("SELECT id FROM users WHERE id = ? LIMIT 1").get(normalizedUserId);
+  if (!userRow) {
+    throw new Error("用户不存在");
+  }
+
+  upsertLlmProfile(LLM_PROFILE_SCOPE_USER, normalizedUserId, payload, actorUserId);
+  return getLlmUserProfile(normalizedUserId);
+}
+
+function resolveProviderRuntimeForTest(providerId, payload = null) {
+  const providerRuntime = resolveLlmProviderRuntimeSettings(providerId, { allowDisabled: true });
+  if (!providerRuntime) {
+    throw new Error("provider 不存在");
+  }
+
+  const runtime = buildEnvLlmRuntimeSettings();
+  applyLlmRuntimePatch(runtime, providerRuntime);
+  applyLlmRuntimePatch(runtime, extractLlmRuntimeInput(payload).overrides);
+  if (!String(runtime.api_key || "").trim()) {
+    const selector = String(runtime.api_key_selector || "").trim();
+    if (selector) {
+      runtime.api_key = String(process.env[selector] || "").trim();
+    }
+  }
+  runtime.summary_model = String(runtime.summary_model || runtime.text_model || "").trim();
+  return runtime;
+}
+
+async function testLlmProviderConnection(providerId, payload = null) {
+  const runtime = resolveProviderRuntimeForTest(providerId, payload);
+  if (!runtime.api_base_url) {
+    throw new Error("api_base_url 不能为空");
+  }
+  if (!runtime.api_key) {
+    throw new Error("未找到可用 API Key，请检查 provider key 配置");
+  }
+
+  const result = await runStoryGeneratorAtomicCommand("check-connection", {
+    base_url: runtime.api_base_url,
+    api_key: runtime.api_key,
+    text_model: runtime.text_model,
+    summary_model: runtime.summary_model,
+    image_model: runtime.image_model,
+  }, {
+    llmRuntime: runtime,
+  });
+
+  return {
+    ...serializeRuntimeLlmState(runtime),
+    resolved_base_url: String(result?.base_url || runtime.api_base_url || "").trim(),
+    text_model_exists: Boolean(result?.text_model_exists),
+    summary_model_exists: Boolean(result?.summary_model_exists),
+    image_model_exists: Boolean(result?.image_model_exists),
+    models_count: Number(result?.models_count || 0),
+    models_preview: Array.isArray(result?.models_preview)
+      ? result.models_preview.map((item) => String(item || "").trim()).filter((item) => item.length > 0).slice(0, 12)
+      : [],
+  };
+}
+
+async function fetchLlmProviderModels(providerId, payload = null, actorUserId = null) {
+  if (!hasLlmModelTable()) {
+    throw new Error("llm provider models 表尚未就绪，请先执行数据库迁移");
+  }
+
+  const runtime = resolveProviderRuntimeForTest(providerId, payload);
+  if (!runtime.api_base_url) {
+    throw new Error("api_base_url 不能为空");
+  }
+  if (!runtime.api_key) {
+    throw new Error("未找到可用 API Key，请检查 provider key 配置");
+  }
+
+  const result = await runStoryGeneratorAtomicCommand("check-connection", {
+    base_url: runtime.api_base_url,
+    api_key: runtime.api_key,
+    text_model: runtime.text_model,
+    summary_model: runtime.summary_model,
+    image_model: runtime.image_model,
+  }, {
+    llmRuntime: runtime,
+  });
+
+  const modelIds = Array.isArray(result?.models)
+    ? result.models.map((item) => String(item || "").trim()).filter((item) => item.length > 0)
+    : [];
+  const providerIdInt = normalizePositiveInteger(providerId);
+
+  const now = nowIso();
+  const transaction = db.transaction(() => {
+    db.prepare("UPDATE llm_provider_models SET enabled = 0 WHERE provider_id = ?").run(providerIdInt);
+    const upsertStmt = db.prepare(
+      `
+        INSERT INTO llm_provider_models (provider_id, model_id, model_type, enabled, fetched_at)
+        VALUES (?, ?, ?, 1, ?)
+        ON CONFLICT(provider_id, model_id, model_type) DO UPDATE SET
+          enabled = excluded.enabled,
+          fetched_at = excluded.fetched_at
+      `,
+    );
+
+    for (const modelId of modelIds) {
+      const types = inferLlmModelTypes(modelId);
+      if (types.text) {
+        upsertStmt.run(providerIdInt, modelId, "text", now);
+      }
+      if (types.summary) {
+        upsertStmt.run(providerIdInt, modelId, "summary", now);
+      }
+      if (types.image) {
+        upsertStmt.run(providerIdInt, modelId, "image", now);
+      }
+    }
+  });
+  transaction();
+
+  appendLlmAuditLog({
+    userId: actorUserId,
+    providerId: providerIdInt,
+    action: "llm.provider.models.fetch",
+    diff: {
+      models_count: modelIds.length,
+    },
+  });
+
+  return {
+    ...serializeRuntimeLlmState(runtime),
+    resolved_base_url: String(result?.base_url || runtime.api_base_url || "").trim(),
+    models_count: Number(result?.models_count || modelIds.length),
+    fetched_at: now,
+    models: modelIds.map((id) => {
+      const types = inferLlmModelTypes(id);
+      return {
+        id,
+        text: types.text,
+        summary: types.summary,
+        image: types.image,
+      };
+    }),
+    cached_models: listLlmProviderModels(providerIdInt),
+  };
+}
+
 const {
   doesAssetExist,
   resolvePublicAssetFsPath,
@@ -236,6 +2174,7 @@ db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
 initializeSchema(db);
 runMigrations(db);
+ensureLlmDefaultProviderBackfill();
 
 if (LEGACY_GENERATE_STORY_CREATE_ENABLED) {
   console.warn(
@@ -459,6 +2398,7 @@ const {
   normalizePositiveNumber,
   nowIso,
   refreshGenerationRunState,
+  resolveLlmRuntimeSettings,
   resolveGenerationRunImagesDir,
   resolveStoryAssetUrlFromFsPath,
   runStoryGeneratorAtomicCommand,
@@ -681,6 +2621,29 @@ registerAuthRoutes(app, {
   upgradeGuestUserCredentials,
 });
 
+registerAdminLlmRoutes(app, {
+  asMessage,
+  createLlmProvider,
+  deleteLlmProvider,
+  fetchLlmProviderModels,
+  getLlmGlobalProfile,
+  getLlmProviderById,
+  getLlmUserProfile,
+  listAdminLlmEnvKeys,
+  listLlmProviderModels,
+  listLlmProviders,
+  requireAdmin,
+  requireAuth,
+  requireCsrf,
+  resolveLlmRuntimeSettings,
+  saveLlmGlobalProfile,
+  saveLlmProviderKey,
+  saveLlmUserProfile,
+  serializeRuntimeLlmState,
+  testLlmProviderConnection,
+  updateLlmProvider,
+});
+
 registerAdminLegacyGenerationRoutes(app, {
   BOOK_UPLOADS_DIR,
   LEGACY_GENERATE_STORY_CREATE_ENABLED,
@@ -793,6 +2756,7 @@ registerRunGenerateTextRoutes(app, {
   runStoryGeneratorAtomicCommand,
   summarizeGenerationScenes,
   writeJsonAtomic,
+  resolveLlmRuntimeSettings,
 });
 
 registerRunGenerateImageRoutes(app, {
@@ -819,6 +2783,7 @@ registerRunGenerateImageRoutes(app, {
   resolveGenerationRunImagesDir,
   resolveStoryAssetUrlFromFsPath,
   runStoryGeneratorAtomicCommand,
+  resolveLlmRuntimeSettings,
   setGenerationSceneImageResult,
   setGenerationSceneImageRunning,
   summarizeGenerationScenes,
@@ -1464,6 +3429,24 @@ function runBookSummaryCommand(options = {}) {
     ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
     : 1000 * 60 * 20;
 
+  const runtimeInput = options.llmRuntime && typeof options.llmRuntime === "object"
+    ? { ...options.llmRuntime }
+    : {};
+  if (!String(runtimeInput.purpose || "").trim()) {
+    runtimeInput.purpose = "summary";
+  }
+  if (!runtimeInput.userId && normalizePositiveInteger(options.userId)) {
+    runtimeInput.userId = normalizePositiveInteger(options.userId);
+  }
+  const runtime = resolveLlmRuntimeSettings(runtimeInput);
+  const resolvedBaseUrl = String(options.baseUrl || runtime.api_base_url || "").trim();
+  const resolvedSummaryModel = String(options.summaryModel || options.textModel || runtime.summary_model || runtime.text_model || "").trim();
+  const resolvedApiKey = String(options.apiKey || runtime.api_key || "").trim();
+  const proxyEnv = buildLlmProxyEnv({
+    proxy_url: String(options.proxyUrl || runtime.proxy_url || "").trim(),
+    no_proxy: String(options.noProxy || runtime.no_proxy || "").trim(),
+  });
+
   const pythonCommand = Array.isArray(STORY_GENERATOR_PYTHON_CMD) && STORY_GENERATOR_PYTHON_CMD.length > 0
     ? STORY_GENERATOR_PYTHON_CMD
     : [STORY_GENERATOR_PYTHON_BIN || "python3"];
@@ -1494,12 +3477,22 @@ function runBookSummaryCommand(options = {}) {
   if (force) {
     args.push("--force");
   }
+  if (resolvedBaseUrl) {
+    args.push("--base-url", resolvedBaseUrl);
+  }
+  if (resolvedSummaryModel) {
+    args.push("--text-model", resolvedSummaryModel);
+  }
+  if (resolvedApiKey) {
+    args.push("--api-key", resolvedApiKey);
+  }
 
   return new Promise((resolve, reject) => {
     const child = spawn(pythonExec, args, {
       cwd: ROOT_DIR,
       env: {
         ...process.env,
+        ...proxyEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1566,7 +3559,7 @@ function runBookSummaryCommand(options = {}) {
 }
 
 function runStoryGeneratorAtomicCommand(command, payload, options = {}) {
-  const allowedCommands = new Set(["generate-text", "generate-image", "generate-images"]);
+  const allowedCommands = new Set(["generate-text", "generate-image", "generate-images", "check-connection"]);
   const normalizedCommand = String(command || "").trim();
   if (!allowedCommands.has(normalizedCommand)) {
     return Promise.reject(new Error(`不支持的原子命令: ${normalizedCommand}`));
@@ -1575,7 +3568,51 @@ function runStoryGeneratorAtomicCommand(command, payload, options = {}) {
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))
     ? Math.max(1000, Math.floor(Number(options.timeoutMs)))
     : STORY_GENERATOR_ATOMIC_TIMEOUT_MS;
-  const requestPayload = payload && typeof payload === "object" ? payload : {};
+  const incomingPayload = payload && typeof payload === "object" ? payload : {};
+  const runtimeInput = options.llmRuntime && typeof options.llmRuntime === "object"
+    ? { ...options.llmRuntime }
+    : {};
+  if (!String(runtimeInput.purpose || "").trim()) {
+    runtimeInput.purpose = normalizedCommand === "generate-image" || normalizedCommand === "generate-images"
+      ? "image"
+      : "text";
+  }
+  if (!runtimeInput.userId && normalizePositiveInteger(options.userId)) {
+    runtimeInput.userId = normalizePositiveInteger(options.userId);
+  }
+  const runtime = resolveLlmRuntimeSettings(runtimeInput);
+
+  const hasValue = (value) => String(value || "").trim().length > 0;
+  const requestPayload = {
+    ...incomingPayload,
+  };
+
+  if (!hasValue(requestPayload.base_url) && hasValue(runtime.api_base_url)) {
+    requestPayload.base_url = runtime.api_base_url;
+  }
+  if (!hasValue(requestPayload.text_model) && hasValue(runtime.text_model)) {
+    requestPayload.text_model = runtime.text_model;
+  }
+  if (!hasValue(requestPayload.summary_model) && hasValue(runtime.summary_model)) {
+    requestPayload.summary_model = runtime.summary_model;
+  }
+  if (!hasValue(requestPayload.image_model) && hasValue(runtime.image_model)) {
+    requestPayload.image_model = runtime.image_model;
+  }
+  if (!hasValue(requestPayload.api_key) && hasValue(runtime.api_key)) {
+    requestPayload.api_key = runtime.api_key;
+  }
+
+  const proxyEnv = buildLlmProxyEnv(runtime);
+  const childEnv = {
+    ...process.env,
+    ...proxyEnv,
+  };
+  if (hasValue(runtime.api_key)) {
+    childEnv.AIHUBMIX_API_KEY = runtime.api_key;
+    childEnv.STORY_GENERATOR_API_KEY = runtime.api_key;
+  }
+
   const pythonCommand = Array.isArray(STORY_GENERATOR_PYTHON_CMD) && STORY_GENERATOR_PYTHON_CMD.length > 0
     ? STORY_GENERATOR_PYTHON_CMD
     : [STORY_GENERATOR_PYTHON_BIN || "python3"];
@@ -1588,9 +3625,7 @@ function runStoryGeneratorAtomicCommand(command, payload, options = {}) {
       [...pythonArgs, "-m", STORY_GENERATOR_ATOMIC_MODULE, normalizedCommand],
       {
         cwd: ROOT_DIR,
-        env: {
-          ...process.env,
-        },
+        env: childEnv,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );

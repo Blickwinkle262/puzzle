@@ -1,22 +1,43 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  apiCreateAdminLlmProvider,
+  apiDeleteAdminLlmProvider,
   apiCreateAdminBookSummaryRun,
+  apiFetchAdminLlmProviderModels,
   apiGetAdminBookSummaryTask,
   apiGetAdminChapterText,
   apiGetAdminBookUploadTask,
+  apiGetAdminLlmGlobalProfile,
+  apiGetAdminLlmUserProfile,
   apiListAdminBookSummaryTasks,
   apiListAdminBookChapters,
   apiListAdminBookUploadTasks,
+  apiListAdminLlmEnvKeys,
+  apiListAdminLlmProviderModels,
+  apiListAdminLlmProviders,
   apiReparseAdminBook,
+  apiTestAdminLlmProvider,
+  apiUpdateAdminLlmGlobalProfile,
+  apiUpdateAdminLlmProvider,
+  apiUpdateAdminLlmProviderKey,
+  apiUpdateAdminLlmUserProfile,
   apiUploadAdminBook,
 } from "../core/adminApi";
 import { apiGetMe } from "../core/api";
 import {
+  AdminLlmApiKeyOption,
   AdminBookIngestTask,
   AdminBookSummaryTask,
   AdminBookUploadResponse,
   AdminLevelDifficulty,
+  AdminLlmConnectionTestResult,
+  AdminLlmModelOption,
+  AdminLlmProfile,
+  AdminLlmProvider,
+  AdminLlmProviderKeySource,
+  AdminLlmProviderModel,
+  AdminLlmRuntimeState,
   AdminManagedRole,
 } from "../core/types";
 import {
@@ -66,6 +87,150 @@ type ChapterTextPreviewState = {
   word_count: number;
   chapter_text: string;
 };
+
+type LlmProfileScope = "global" | "user";
+
+type LlmProviderDraftState = {
+  id: number;
+  name: string;
+  provider_kind: "compatible";
+  api_base_url: string;
+  proxy_url: string;
+  no_proxy_hosts: string;
+  enabled: boolean;
+  key_source: AdminLlmProviderKeySource;
+  env_key_name: string;
+  custom_api_key: string;
+};
+
+type LlmProfileDraftState = {
+  provider_id: number | null;
+  story_provider_id: number | null;
+  summary_provider_id: number | null;
+  text2image_provider_id: number | null;
+  story_prompt_model: string;
+  summary_model: string;
+  text2image_model: string;
+};
+
+type LlmProviderCreateDraftState = {
+  name: string;
+  api_base_url: string;
+  proxy_url: string;
+  no_proxy_hosts: string;
+  enabled: boolean;
+  key_source: AdminLlmProviderKeySource;
+  env_key_name: string;
+  custom_api_key: string;
+};
+
+const EMPTY_LLM_PROFILE_DRAFT: LlmProfileDraftState = {
+  provider_id: null,
+  story_provider_id: null,
+  summary_provider_id: null,
+  text2image_provider_id: null,
+  story_prompt_model: "",
+  summary_model: "",
+  text2image_model: "",
+};
+
+const EMPTY_LLM_PROVIDER_CREATE_DRAFT: LlmProviderCreateDraftState = {
+  name: "",
+  api_base_url: "",
+  proxy_url: "",
+  no_proxy_hosts: "",
+  enabled: true,
+  key_source: "env",
+  env_key_name: "",
+  custom_api_key: "",
+};
+
+function toProviderDraft(provider: AdminLlmProvider): LlmProviderDraftState {
+  return {
+    id: provider.id,
+    name: provider.name,
+    provider_kind: provider.provider_kind,
+    api_base_url: provider.api_base_url,
+    proxy_url: provider.proxy_url,
+    no_proxy_hosts: provider.no_proxy_hosts,
+    enabled: provider.enabled,
+    key_source: provider.key?.key_source || "env",
+    env_key_name: provider.key?.env_key_name || "",
+    custom_api_key: "",
+  };
+}
+
+function toProfileDraft(profile: AdminLlmProfile | null, effective: AdminLlmRuntimeState | null): LlmProfileDraftState {
+  if (profile) {
+    const providerId = profile.provider_id;
+    const storyProviderId = profile.story_provider_id || providerId;
+    const summaryProviderId = profile.summary_provider_id || storyProviderId || providerId;
+    const imageProviderId = profile.text2image_provider_id || providerId;
+
+    return {
+      provider_id: providerId,
+      story_provider_id: storyProviderId,
+      summary_provider_id: summaryProviderId,
+      text2image_provider_id: imageProviderId,
+      story_prompt_model: profile.story_prompt_model || profile.text_model || "",
+      summary_model: profile.summary_model || "",
+      text2image_model: profile.text2image_model || profile.image_model || "",
+    };
+  }
+
+  if (effective) {
+    return {
+      provider_id: effective.provider_id,
+      story_provider_id: effective.provider_id,
+      summary_provider_id: effective.provider_id,
+      text2image_provider_id: effective.provider_id,
+      story_prompt_model: effective.text_model || "",
+      summary_model: effective.summary_model || "",
+      text2image_model: effective.image_model || "",
+    };
+  }
+
+  return { ...EMPTY_LLM_PROFILE_DRAFT };
+}
+
+function aggregateModelOptions(rows: AdminLlmProviderModel[]): AdminLlmModelOption[] {
+  const map = new Map<string, AdminLlmModelOption>();
+  for (const row of rows) {
+    const modelId = String(row.model_id || "").trim();
+    if (!modelId) {
+      continue;
+    }
+    const existing = map.get(modelId) || {
+      id: modelId,
+      text: false,
+      summary: false,
+      image: false,
+    };
+    if (row.model_type === "text") {
+      existing.text = true;
+    }
+    if (row.model_type === "summary") {
+      existing.summary = true;
+    }
+    if (row.model_type === "image") {
+      existing.image = true;
+    }
+    map.set(modelId, existing);
+  }
+  return Array.from(map.values()).sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function collectProfileProviderIds(draft: LlmProfileDraftState): number[] {
+  const ids = [
+    draft.story_provider_id,
+    draft.summary_provider_id,
+    draft.text2image_provider_id,
+    draft.provider_id,
+  ]
+    .map((value) => Number(value || 0))
+    .filter((value, index, source) => Number.isInteger(value) && value > 0 && source.indexOf(value) === index);
+  return ids;
+}
 
 export const PUZZLE_FLOW_SEQUENCE: PuzzleFlowStep[] = ["select", "generate", "review"];
 
@@ -183,8 +348,22 @@ export function useAdminStoryGeneratorCoordinator({
     setScenePreview,
   } = useAdminPublishState();
 
-  const [panelError, setPanelError] = useState("");
-  const [panelInfo, setPanelInfo] = useState("");
+  const [panelError, setPanelErrorState] = useState("");
+  const [panelInfo, setPanelInfoState] = useState("");
+  const setPanelError = useCallback((message: string): void => {
+    const next = String(message || "");
+    setPanelErrorState(next);
+    if (next) {
+      setPanelInfoState("");
+    }
+  }, []);
+  const setPanelInfo = useCallback((message: string): void => {
+    const next = String(message || "");
+    setPanelInfoState(next);
+    if (next) {
+      setPanelErrorState("");
+    }
+  }, []);
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
   const [uploadingBook, setUploadingBook] = useState(false);
   const [bookUploadTasks, setBookUploadTasks] = useState<AdminBookIngestTask[]>([]);
@@ -197,6 +376,47 @@ export function useAdminStoryGeneratorCoordinator({
   const [pendingBookReplace, setPendingBookReplace] = useState<PendingBookReplaceState | null>(null);
   const [chapterTextPreview, setChapterTextPreview] = useState<ChapterTextPreviewState | null>(null);
   const [loadingChapterTextPreview, setLoadingChapterTextPreview] = useState(false);
+  const [llmProviders, setLlmProviders] = useState<AdminLlmProvider[]>([]);
+  const [llmEnvKeyOptions, setLlmEnvKeyOptions] = useState<AdminLlmApiKeyOption[]>([]);
+  const [selectedLlmProviderId, setSelectedLlmProviderId] = useState<number>(0);
+  const [llmProviderDraft, setLlmProviderDraft] = useState<LlmProviderDraftState | null>(null);
+  const [llmCreateProviderDraft, setLlmCreateProviderDraft] = useState<LlmProviderCreateDraftState>({ ...EMPTY_LLM_PROVIDER_CREATE_DRAFT });
+  const [llmCachedModels, setLlmCachedModels] = useState<AdminLlmProviderModel[]>([]);
+  const [llmCachedModelsByProviderId, setLlmCachedModelsByProviderId] = useState<Record<number, AdminLlmProviderModel[]>>({});
+  const [llmProfileScope, setLlmProfileScope] = useState<LlmProfileScope>("global");
+  const [llmProfileUserIdInput, setLlmProfileUserIdInput] = useState("");
+  const [llmProfile, setLlmProfile] = useState<AdminLlmProfile | null>(null);
+  const [llmEffectiveRuntime, setLlmEffectiveRuntime] = useState<AdminLlmRuntimeState | null>(null);
+  const [llmProfileDraft, setLlmProfileDraft] = useState<LlmProfileDraftState>({ ...EMPTY_LLM_PROFILE_DRAFT });
+  const [loadingLlmConfig, setLoadingLlmConfig] = useState(false);
+  const [savingLlmConfig, setSavingLlmConfig] = useState(false);
+  const [testingLlmConfig, setTestingLlmConfig] = useState(false);
+  const [fetchingLlmModels, setFetchingLlmModels] = useState(false);
+  const [fetchingLlmModelsProviderId, setFetchingLlmModelsProviderId] = useState(0);
+  const [lastLlmTest, setLastLlmTest] = useState<AdminLlmConnectionTestResult | null>(null);
+  const [llmFetchedModels, setLlmFetchedModels] = useState<AdminLlmModelOption[]>([]);
+  const [llmFetchedModelsByProviderId, setLlmFetchedModelsByProviderId] = useState<Record<number, AdminLlmModelOption[]>>({});
+  const [lastLlmModelsFetchedAt, setLastLlmModelsFetchedAt] = useState("");
+  const [llmLastModelsFetchedAtByProviderId, setLlmLastModelsFetchedAtByProviderId] = useState<Record<number, string>>({});
+  const [llmNoticeError, setLlmNoticeError] = useState("");
+  const [llmNoticeInfo, setLlmNoticeInfo] = useState("");
+  const [llmProfileSavedAt, setLlmProfileSavedAt] = useState(0);
+  const [llmProviderSavedAt, setLlmProviderSavedAt] = useState(0);
+
+  const clearLlmNotice = useCallback((): void => {
+    setLlmNoticeError("");
+    setLlmNoticeInfo("");
+  }, []);
+
+  const showLlmNoticeError = useCallback((message: string): void => {
+    setLlmNoticeError(String(message || ""));
+    setLlmNoticeInfo("");
+  }, []);
+
+  const showLlmNoticeInfo = useCallback((message: string): void => {
+    setLlmNoticeInfo(String(message || ""));
+    setLlmNoticeError("");
+  }, []);
 
   const {
     configLevelId,
@@ -363,6 +583,647 @@ export function useAdminStoryGeneratorCoordinator({
       }
     }
   }, [setPanelError]);
+
+  const loadLlmProviderModels = useCallback(async (
+    providerId: number,
+    options: { silent?: boolean; syncSelected?: boolean } = {},
+  ): Promise<void> => {
+    const silent = Boolean(options.silent);
+    const syncSelected = options.syncSelected;
+    if (!providerId) {
+      if (syncSelected !== false) {
+        setLlmCachedModels([]);
+        setLlmFetchedModels([]);
+        setLastLlmModelsFetchedAt("");
+      }
+      return;
+    }
+
+    try {
+      const response = await apiListAdminLlmProviderModels(providerId);
+      const rows = Array.isArray(response?.models) ? response.models : [];
+      const modelOptions = aggregateModelOptions(rows);
+      setLlmCachedModelsByProviderId((prev) => ({
+        ...prev,
+        [providerId]: rows,
+      }));
+      setLlmFetchedModelsByProviderId((prev) => ({
+        ...prev,
+        [providerId]: modelOptions,
+      }));
+      const fetchedAt = rows.reduce((latest, row) => {
+        const value = String(row.fetched_at || "").trim();
+        return value > latest ? value : latest;
+      }, "");
+
+      setLlmLastModelsFetchedAtByProviderId((prev) => ({
+        ...prev,
+        [providerId]: fetchedAt,
+      }));
+
+      const shouldSyncSelected = syncSelected === true
+        || (syncSelected !== false && providerId === Number(selectedLlmProviderId || 0));
+      if (shouldSyncSelected) {
+        setLlmCachedModels(rows);
+        setLlmFetchedModels(modelOptions);
+        setLastLlmModelsFetchedAt(fetchedAt);
+      }
+    } catch (err) {
+      if (!silent) {
+        setPanelError(errorMessage(err));
+      }
+    }
+  }, [selectedLlmProviderId, setPanelError]);
+
+  const applyLlmProfileResponse = useCallback((
+    profile: AdminLlmProfile | null,
+    effective: AdminLlmRuntimeState | null,
+    providersOverride: AdminLlmProvider[] | null = null,
+  ): void => {
+    const nextDraft = toProfileDraft(profile, effective);
+    const providers = Array.isArray(providersOverride) ? providersOverride : llmProviders;
+
+    setLlmProfile(profile);
+    setLlmEffectiveRuntime(effective);
+    setLlmProfileDraft(nextDraft);
+
+    const providerId = Number(nextDraft.story_provider_id || nextDraft.provider_id || effective?.provider_id || providers[0]?.id || 0);
+    if (!providerId) {
+      setSelectedLlmProviderId(0);
+      setLlmProviderDraft(null);
+      return;
+    }
+
+    setSelectedLlmProviderId(providerId);
+    setLlmProviderDraft((current) => {
+      if (current && current.id === providerId) {
+        return current;
+      }
+      const provider = providers.find((item) => item.id === providerId);
+      return provider ? toProviderDraft(provider) : null;
+    });
+
+    const providerIds = collectProfileProviderIds(nextDraft);
+    providerIds.forEach((id) => {
+      void loadLlmProviderModels(id, { silent: true, syncSelected: id === providerId });
+    });
+  }, [llmProviders, loadLlmProviderModels]);
+
+  const loadLlmProfileByScope = useCallback(async (
+    scope: LlmProfileScope,
+    options: { silent?: boolean; userIdInput?: string } = {},
+  ): Promise<void> => {
+    const silent = Boolean(options.silent);
+    const rawUserId = String(options.userIdInput ?? llmProfileUserIdInput).trim();
+    if (!silent) {
+      setPanelError("");
+    }
+
+    try {
+      if (scope === "global") {
+        const response = await apiGetAdminLlmGlobalProfile();
+        applyLlmProfileResponse(response?.profile || null, response?.effective || null);
+        return;
+      }
+
+      const userId = Number(rawUserId);
+      if (!Number.isInteger(userId) || userId <= 0) {
+        throw new Error("请先选择目标用户，再加载用户 profile");
+      }
+
+      const response = await apiGetAdminLlmUserProfile(userId);
+      applyLlmProfileResponse(response?.profile || null, response?.effective || null);
+    } catch (err) {
+      if (!silent) {
+        setPanelError(errorMessage(err));
+      }
+    }
+  }, [applyLlmProfileResponse, llmProfileUserIdInput, setPanelError]);
+
+  const loadLlmConfig = useCallback(async (options: { silent?: boolean } = {}): Promise<void> => {
+    const silent = Boolean(options.silent);
+    if (!silent) {
+      setLoadingLlmConfig(true);
+      setPanelError("");
+    }
+
+    try {
+      const [providersResponse, envKeysResponse, globalProfileResponse] = await Promise.all([
+        apiListAdminLlmProviders(),
+        apiListAdminLlmEnvKeys(),
+        apiGetAdminLlmGlobalProfile(),
+      ]);
+
+      const providers = Array.isArray(providersResponse?.providers) ? providersResponse.providers : [];
+      const envKeys = Array.isArray(envKeysResponse?.key_options) ? envKeysResponse.key_options : [];
+      setLlmProviders(providers);
+      setLlmEnvKeyOptions(envKeys);
+      setLlmCreateProviderDraft((prev) => {
+        const fallbackEnvKey = String(envKeys[0]?.key || "").trim();
+        if (prev.env_key_name || !fallbackEnvKey) {
+          return prev;
+        }
+        return {
+          ...prev,
+          env_key_name: fallbackEnvKey,
+        };
+      });
+      setLlmProfileScope("global");
+
+      const profile = globalProfileResponse?.profile || null;
+      const effective = globalProfileResponse?.effective || null;
+      applyLlmProfileResponse(profile, effective, providers);
+
+      setLastLlmTest(null);
+      if (providers.length === 0) {
+        setLlmCachedModels([]);
+        setLlmFetchedModels([]);
+        setLastLlmModelsFetchedAt("");
+      }
+    } catch (err) {
+      if (!silent) {
+        setPanelError(errorMessage(err));
+      }
+    } finally {
+      if (!silent) {
+        setLoadingLlmConfig(false);
+      }
+    }
+  }, [applyLlmProfileResponse, setPanelError]);
+
+  const handleLlmProviderIdChange = useCallback((value: string): void => {
+    const providerId = Number(value);
+    if (!Number.isInteger(providerId) || providerId <= 0) {
+      setSelectedLlmProviderId(0);
+      setLlmProviderDraft(null);
+      setLlmCachedModels([]);
+      setLlmFetchedModels([]);
+      setLastLlmModelsFetchedAt("");
+      return;
+    }
+
+    const provider = llmProviders.find((item) => item.id === providerId) || null;
+    const cachedRows = llmCachedModelsByProviderId[providerId] || [];
+    const cachedOptions = llmFetchedModelsByProviderId[providerId] || [];
+    setSelectedLlmProviderId(providerId);
+    setLlmProviderDraft(provider ? toProviderDraft(provider) : null);
+    setLlmCachedModels(cachedRows);
+    setLlmFetchedModels(cachedOptions);
+    setLastLlmModelsFetchedAt(llmLastModelsFetchedAtByProviderId[providerId] || "");
+    void loadLlmProviderModels(providerId, { silent: true, syncSelected: true });
+  }, [llmCachedModelsByProviderId, llmFetchedModelsByProviderId, llmLastModelsFetchedAtByProviderId, llmProviders, loadLlmProviderModels]);
+
+  const handleLlmProviderFieldChange = useCallback((patch: Partial<Omit<LlmProviderDraftState, "id" | "key_source" | "env_key_name" | "custom_api_key">>): void => {
+    setLlmProviderDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      return {
+        ...prev,
+        ...patch,
+      };
+    });
+  }, []);
+
+  const handleLlmProviderKeyFieldChange = useCallback((patch: Partial<Pick<LlmProviderDraftState, "key_source" | "env_key_name" | "custom_api_key">>): void => {
+    setLlmProviderDraft((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      return {
+        ...prev,
+        ...patch,
+      };
+    });
+  }, []);
+
+  const handleLlmCreateProviderFieldChange = useCallback((patch: Partial<LlmProviderCreateDraftState>): void => {
+    setLlmCreateProviderDraft((prev) => ({
+      ...prev,
+      ...patch,
+    }));
+  }, []);
+
+  const handleCreateLlmProvider = useCallback(async (): Promise<void> => {
+    const keySource: AdminLlmProviderKeySource = llmCreateProviderDraft.key_source === "custom" ? "custom" : "env";
+    const draft = {
+      ...llmCreateProviderDraft,
+      name: String(llmCreateProviderDraft.name || "").trim(),
+      api_base_url: String(llmCreateProviderDraft.api_base_url || "").trim(),
+      proxy_url: String(llmCreateProviderDraft.proxy_url || "").trim(),
+      no_proxy_hosts: String(llmCreateProviderDraft.no_proxy_hosts || "").trim(),
+      key_source: keySource,
+      env_key_name: String(llmCreateProviderDraft.env_key_name || "").trim(),
+      custom_api_key: String(llmCreateProviderDraft.custom_api_key || "").trim(),
+    };
+
+    if (!draft.name) {
+      setPanelError("请先填写 provider 名称");
+      return;
+    }
+    if (!draft.api_base_url) {
+      setPanelError("请先填写 API Base URL");
+      return;
+    }
+    if (draft.key_source === "env" && !draft.env_key_name) {
+      setPanelError("请先选择 Env Key，或切换为 Custom Key");
+      return;
+    }
+    if (draft.key_source === "custom" && !draft.custom_api_key) {
+      setPanelError("请先输入 Custom API Key");
+      return;
+    }
+
+    setSavingLlmConfig(true);
+    setPanelError("");
+    try {
+      const response = await apiCreateAdminLlmProvider({
+        name: draft.name,
+        provider_kind: "compatible",
+        api_base_url: draft.api_base_url,
+        proxy_url: draft.proxy_url,
+        no_proxy_hosts: draft.no_proxy_hosts,
+        enabled: draft.enabled,
+      });
+
+      const createdProvider = response?.provider || null;
+      let provider = createdProvider;
+      if (provider) {
+        const keyResponse = await apiUpdateAdminLlmProviderKey(provider.id, {
+          key_source: draft.key_source,
+          env_key_name: draft.key_source === "env" ? draft.env_key_name : "",
+          api_key: draft.key_source === "custom" ? draft.custom_api_key : "",
+        });
+        if (keyResponse?.provider) {
+          provider = keyResponse.provider;
+        }
+      }
+
+      if (provider) {
+        setLlmProviders((prev) => [provider, ...prev]);
+        setSelectedLlmProviderId(provider.id);
+        setLlmProviderDraft(toProviderDraft(provider));
+        setLlmProfileDraft((prev) => ({
+          ...prev,
+          provider_id: provider.id,
+        }));
+        setLlmCreateProviderDraft({
+          ...EMPTY_LLM_PROVIDER_CREATE_DRAFT,
+          api_base_url: draft.api_base_url,
+          env_key_name: String(llmEnvKeyOptions[0]?.key || "").trim(),
+        });
+      }
+      setPanelInfo("Provider 已创建并保存 Key");
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setSavingLlmConfig(false);
+    }
+  }, [llmCreateProviderDraft, llmEnvKeyOptions, setPanelError, setPanelInfo]);
+
+  const handleLlmProfileScopeChange = useCallback((scope: LlmProfileScope): void => {
+    setLlmProfileScope(scope);
+    setLastLlmTest(null);
+    setPanelError("");
+    if (scope === "global") {
+      void loadLlmProfileByScope("global", { silent: false });
+    }
+  }, [loadLlmProfileByScope, setPanelError]);
+
+  const handleLlmProfileUserIdInputChange = useCallback((value: string): void => {
+    setLlmProfileUserIdInput(value);
+  }, []);
+
+  const handleLoadLlmUserProfile = useCallback(async (): Promise<void> => {
+    setLoadingLlmConfig(true);
+    setPanelError("");
+    try {
+      await loadLlmProfileByScope("user", { userIdInput: llmProfileUserIdInput });
+    } finally {
+      setLoadingLlmConfig(false);
+    }
+  }, [llmProfileUserIdInput, loadLlmProfileByScope, setPanelError]);
+
+  const handleLlmProfileFieldChange = useCallback((patch: Partial<LlmProfileDraftState>): void => {
+    let nextDraft: LlmProfileDraftState | null = null;
+    setLlmProfileDraft((prev) => {
+      nextDraft = {
+        ...prev,
+        ...patch,
+      };
+      return nextDraft;
+    });
+
+    const draft = nextDraft;
+    if (!draft) {
+      return;
+    }
+    collectProfileProviderIds(draft).forEach((id) => {
+      void loadLlmProviderModels(id, { silent: true, syncSelected: false });
+    });
+  }, [loadLlmProviderModels]);
+
+  const handleSaveLlmProvider = useCallback(async (): Promise<void> => {
+    const draft = llmProviderDraft;
+    if (!draft) {
+      setPanelError("请先选择 provider");
+      return;
+    }
+
+    if (draft.key_source === "env" && !String(draft.env_key_name || "").trim()) {
+      setPanelError("请先选择 env key");
+      return;
+    }
+    if (draft.key_source === "custom") {
+      const hasInputCustomKey = String(draft.custom_api_key || "").trim().length > 0;
+      const currentProvider = llmProviders.find((item) => item.id === draft.id) || null;
+      const hasExistingCustomKey = Boolean(
+        currentProvider?.key
+        && currentProvider.key.key_source === "custom"
+        && currentProvider.key.has_key,
+      );
+      if (!hasInputCustomKey && !hasExistingCustomKey) {
+        setPanelError("请先输入 custom API Key");
+        return;
+      }
+    }
+
+    setSavingLlmConfig(true);
+    setPanelError("");
+    try {
+      const providerResponse = await apiUpdateAdminLlmProvider(draft.id, {
+        name: draft.name,
+        provider_kind: draft.provider_kind,
+        api_base_url: draft.api_base_url,
+        proxy_url: draft.proxy_url,
+        no_proxy_hosts: draft.no_proxy_hosts,
+        enabled: draft.enabled,
+      });
+      let provider = providerResponse?.provider || null;
+      const keyResponse = await apiUpdateAdminLlmProviderKey(draft.id, {
+        key_source: draft.key_source,
+        env_key_name: draft.key_source === "env" ? draft.env_key_name : "",
+        api_key: draft.key_source === "custom" ? draft.custom_api_key : "",
+      });
+      if (keyResponse?.provider) {
+        provider = keyResponse.provider;
+      }
+
+      if (provider) {
+        setLlmProviders((prev) => prev.map((item) => (item.id === provider.id ? provider : item)));
+        setLlmProviderDraft((current) => ({
+          ...(current ? { ...current } : toProviderDraft(provider)),
+          ...toProviderDraft(provider),
+          custom_api_key: "",
+        }));
+      }
+      setLlmProviderSavedAt(Date.now());
+      setPanelInfo("Provider 已保存（含 Key）");
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setSavingLlmConfig(false);
+    }
+  }, [llmProviderDraft, llmProviders, setPanelError, setPanelInfo]);
+
+  const handleDeleteLlmProvider = useCallback(async (providerId: number): Promise<void> => {
+    const targetId = Number(providerId || 0);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      setPanelError("请先选择有效的 provider");
+      return;
+    }
+
+    const targetProvider = llmProviders.find((item) => item.id === targetId) || null;
+    if (!targetProvider) {
+      setPanelError("provider 不存在或已删除");
+      return;
+    }
+
+    const confirmed = window.confirm(`确认删除 Provider「${targetProvider.name}」吗？`);
+    if (!confirmed) {
+      return;
+    }
+
+    setSavingLlmConfig(true);
+    setPanelError("");
+    try {
+      await apiDeleteAdminLlmProvider(targetId);
+
+      const nextProviders = llmProviders.filter((item) => item.id !== targetId);
+      setLlmProviders(nextProviders);
+
+      setLlmFetchedModelsByProviderId((prev) => {
+        const next = { ...prev };
+        delete next[targetId];
+        return next;
+      });
+      setLlmCachedModelsByProviderId((prev) => {
+        const next = { ...prev };
+        delete next[targetId];
+        return next;
+      });
+      setLlmLastModelsFetchedAtByProviderId((prev) => {
+        const next = { ...prev };
+        delete next[targetId];
+        return next;
+      });
+
+      const nextSelectedProvider = nextProviders[0] || null;
+      if (!nextSelectedProvider) {
+        setSelectedLlmProviderId(0);
+        setLlmProviderDraft(null);
+        setLlmCachedModels([]);
+        setLlmFetchedModels([]);
+        setLastLlmModelsFetchedAt("");
+      } else {
+        setSelectedLlmProviderId(nextSelectedProvider.id);
+        setLlmProviderDraft(toProviderDraft(nextSelectedProvider));
+        await loadLlmProviderModels(nextSelectedProvider.id, { silent: true, syncSelected: true });
+      }
+
+      setLlmProfileDraft((prev) => ({
+        ...prev,
+        provider_id: prev.provider_id === targetId ? null : prev.provider_id,
+        story_provider_id: prev.story_provider_id === targetId ? null : prev.story_provider_id,
+        summary_provider_id: prev.summary_provider_id === targetId ? null : prev.summary_provider_id,
+        text2image_provider_id: prev.text2image_provider_id === targetId ? null : prev.text2image_provider_id,
+      }));
+
+      setPanelInfo(`Provider 已删除：${targetProvider.name}`);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setSavingLlmConfig(false);
+    }
+  }, [llmProviders, loadLlmProviderModels, setPanelError, setPanelInfo]);
+
+  const handleSaveLlmProfile = useCallback(async (): Promise<void> => {
+    const scope = llmProfileScope;
+    const providerId = Number(llmProfileDraft.provider_id || 0);
+    const storyProviderId = Number(llmProfileDraft.story_provider_id || 0);
+    const summaryProviderId = Number(llmProfileDraft.summary_provider_id || 0);
+    const imageProviderId = Number(llmProfileDraft.text2image_provider_id || 0);
+    const canonicalProviderId = providerId > 0
+      ? providerId
+      : storyProviderId > 0
+        ? storyProviderId
+        : imageProviderId > 0
+          ? imageProviderId
+          : summaryProviderId > 0
+            ? summaryProviderId
+            : 0;
+
+    const payload = {
+      provider_id: canonicalProviderId > 0 ? canonicalProviderId : null,
+      story_provider_id: storyProviderId > 0 ? storyProviderId : null,
+      summary_provider_id: summaryProviderId > 0 ? summaryProviderId : null,
+      text2image_provider_id: imageProviderId > 0 ? imageProviderId : null,
+      story_prompt_model: llmProfileDraft.story_prompt_model,
+      summary_model: llmProfileDraft.summary_model,
+      text2image_model: llmProfileDraft.text2image_model,
+    };
+
+    setSavingLlmConfig(true);
+    setPanelError("");
+    try {
+      const response = scope === "user"
+        ? await (() => {
+          const userId = Number(llmProfileUserIdInput);
+          if (!Number.isInteger(userId) || userId <= 0) {
+            throw new Error("请先选择目标用户，再保存用户 profile");
+          }
+          return apiUpdateAdminLlmUserProfile(userId, payload);
+        })()
+        : await apiUpdateAdminLlmGlobalProfile(payload);
+
+      const profile = response?.profile || null;
+      const effective = response?.effective || null;
+      const nextDraft = toProfileDraft(profile, effective);
+      setLlmProfile(profile);
+      setLlmEffectiveRuntime(effective);
+      setLlmProfileDraft(nextDraft);
+      const providerIdFromRuntime = Number(nextDraft.story_provider_id || nextDraft.provider_id || effective?.provider_id || 0);
+      if (providerIdFromRuntime > 0) {
+        setSelectedLlmProviderId(providerIdFromRuntime);
+        const provider = llmProviders.find((item) => item.id === providerIdFromRuntime) || null;
+        if (provider) {
+          setLlmProviderDraft(toProviderDraft(provider));
+        }
+      }
+      const providerIds = collectProfileProviderIds(nextDraft);
+      await Promise.all(providerIds.map((id) => loadLlmProviderModels(id, {
+        silent: true,
+        syncSelected: id === providerIdFromRuntime,
+      })));
+      setLlmProfileSavedAt(Date.now());
+      setPanelInfo(scope === "user" ? "用户 profile 已保存" : "全局 profile 已保存");
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setSavingLlmConfig(false);
+    }
+  }, [llmProfileDraft, llmProfileScope, llmProfileUserIdInput, llmProviders, loadLlmProviderModels, setPanelError, setPanelInfo]);
+
+  const handleTestLlmConfig = useCallback(async (): Promise<void> => {
+    const providerId = Number(selectedLlmProviderId || 0);
+    if (!providerId) {
+      setPanelError("请先选择 provider");
+      return;
+    }
+
+    const provider = llmProviders.find((item) => item.id === providerId) || null;
+    const draft = llmProviderDraft && llmProviderDraft.id === providerId ? llmProviderDraft : null;
+    const keySource = String(draft?.key_source || provider?.key?.key_source || "env").trim();
+    const envKeyName = String(draft?.env_key_name || provider?.key?.env_key_name || "").trim();
+    const customApiKey = String(draft?.custom_api_key || "").trim();
+
+    setTestingLlmConfig(true);
+    clearLlmNotice();
+    showLlmNoticeInfo("正在执行 Provider 连接测试...");
+
+    try {
+      const response = await apiTestAdminLlmProvider(providerId, {
+        api_base_url: String(draft?.api_base_url || provider?.api_base_url || "").trim(),
+        proxy_url: String(draft?.proxy_url || provider?.proxy_url || "").trim(),
+        no_proxy: String(draft?.no_proxy_hosts || provider?.no_proxy_hosts || "").trim(),
+        env_key_name: keySource === "env" ? envKeyName : "",
+        api_key_selector: keySource === "env" ? envKeyName : "",
+        api_key: keySource === "custom" ? customApiKey : "",
+      });
+      const test = response?.test || null;
+      setLastLlmTest(test);
+      if (test) {
+        const textStatus = test.text_model_exists ? "文本模型可用" : "文本模型不存在";
+        const summaryStatus = test.summary_model_exists ? "摘要模型可用" : "摘要模型不存在";
+        const imageStatus = test.image_model_exists ? "图像模型可用" : "图像模型不存在";
+        const resolvedBaseUrl = String(test.resolved_base_url || test.api_base_url || "").trim();
+        const resolvedBaseUrlText = resolvedBaseUrl ? `，endpoint=${resolvedBaseUrl}/models` : "";
+        showLlmNoticeInfo(`连接测试完成：${textStatus}，${summaryStatus}，${imageStatus}，models=${test.models_count}${resolvedBaseUrlText}`);
+      } else {
+        showLlmNoticeInfo("连接测试完成，但返回结果为空");
+      }
+    } catch (err) {
+      showLlmNoticeError(errorMessage(err));
+    } finally {
+      setTestingLlmConfig(false);
+    }
+  }, [clearLlmNotice, llmProviderDraft, llmProviders, selectedLlmProviderId, showLlmNoticeError, showLlmNoticeInfo]);
+
+  const fetchLlmModelsByProviderId = useCallback(async (providerId: number): Promise<void> => {
+    const normalizedProviderId = Number(providerId || 0);
+    if (!Number.isInteger(normalizedProviderId) || normalizedProviderId <= 0) {
+      setPanelError("请先选择 provider");
+      return;
+    }
+
+    const selectedProvider = llmProviders.find((item) => item.id === normalizedProviderId) || null;
+    const draft = llmProviderDraft && llmProviderDraft.id === normalizedProviderId ? llmProviderDraft : null;
+    const keySource = String(draft?.key_source || selectedProvider?.key?.key_source || "env").trim();
+    const envKeyName = String(draft?.env_key_name || selectedProvider?.key?.env_key_name || "").trim();
+    const customApiKey = String(draft?.custom_api_key || "").trim();
+    if (selectedProvider) {
+      setSelectedLlmProviderId(normalizedProviderId);
+      setLlmProviderDraft(toProviderDraft(selectedProvider));
+    }
+
+    setFetchingLlmModels(true);
+    setFetchingLlmModelsProviderId(normalizedProviderId);
+    clearLlmNotice();
+    showLlmNoticeInfo("正在拉取 provider 模型列表...");
+
+    try {
+      const response = await apiFetchAdminLlmProviderModels(normalizedProviderId, {
+        api_base_url: String(draft?.api_base_url || selectedProvider?.api_base_url || "").trim(),
+        proxy_url: String(draft?.proxy_url || selectedProvider?.proxy_url || "").trim(),
+        no_proxy: String(draft?.no_proxy_hosts || selectedProvider?.no_proxy_hosts || "").trim(),
+        env_key_name: keySource === "env" ? envKeyName : "",
+        api_key_selector: keySource === "env" ? envKeyName : "",
+        api_key: keySource === "custom" ? customApiKey : "",
+      });
+      const fetchResult = response?.fetch || null;
+      const models = Array.isArray(fetchResult?.models) ? fetchResult.models : [];
+      setLlmFetchedModels(models);
+      setLastLlmModelsFetchedAt(String(fetchResult?.fetched_at || ""));
+      await loadLlmProviderModels(normalizedProviderId, { silent: true, syncSelected: true });
+      const resolvedBaseUrl = String(fetchResult?.resolved_base_url || fetchResult?.api_base_url || "").trim();
+      const resolvedBaseUrlText = resolvedBaseUrl ? `，endpoint=${resolvedBaseUrl}/models` : "";
+      showLlmNoticeInfo(`模型拉取完成：共 ${Number(fetchResult?.models_count || models.length)} 个${resolvedBaseUrlText}`);
+    } catch (err) {
+      showLlmNoticeError(errorMessage(err));
+    } finally {
+      setFetchingLlmModels(false);
+      setFetchingLlmModelsProviderId(0);
+    }
+  }, [clearLlmNotice, llmProviderDraft, llmProviders, loadLlmProviderModels, showLlmNoticeError, showLlmNoticeInfo]);
+
+  const handleFetchLlmModels = useCallback(async (): Promise<void> => {
+    const providerId = Number(selectedLlmProviderId || 0);
+    await fetchLlmModelsByProviderId(providerId);
+  }, [fetchLlmModelsByProviderId, selectedLlmProviderId]);
+
+  const handleFetchLlmModelsByProvider = useCallback(async (providerId: number): Promise<void> => {
+    await fetchLlmModelsByProviderId(providerId);
+  }, [fetchLlmModelsByProviderId]);
 
   const refreshChapterListAfterIngest = useCallback(async (): Promise<void> => {
     setChapterPage(1);
@@ -970,9 +1831,10 @@ export function useAdminStoryGeneratorCoordinator({
     void loadRecentJobs();
     void loadAdminUsers();
     void loadConfigStories();
+    void loadLlmConfig();
     void loadBookUploadTasks();
     void loadBookSummaryTasks();
-  }, [loadAdminUsers, loadBookSummaryTasks, loadBookUploadTasks, loadConfigStories, loadRecentJobs, visible]);
+  }, [loadAdminUsers, loadBookSummaryTasks, loadBookUploadTasks, loadConfigStories, loadLlmConfig, loadRecentJobs, visible]);
 
   useEffect(() => {
     if (!visible) {
@@ -1104,6 +1966,54 @@ export function useAdminStoryGeneratorCoordinator({
     setTestRunResult,
   };
 
+  const llmState = {
+    llmProviders,
+    llmProfileUserOptions: adminUsers,
+    llmEnvKeyOptions,
+    selectedLlmProviderId,
+    llmProviderDraft,
+    llmCreateProviderDraft,
+    llmProfileScope,
+    llmProfileUserIdInput,
+    llmProfile,
+    llmEffectiveRuntime,
+    llmProfileDraft,
+    llmCachedModels,
+    loadingLlmConfig,
+    savingLlmConfig,
+    testingLlmConfig,
+    fetchingLlmModels,
+    fetchingLlmModelsProviderId,
+    lastLlmTest,
+    llmFetchedModels,
+    llmFetchedModelsByProviderId,
+    llmNoticeError,
+    llmNoticeInfo,
+    lastLlmModelsFetchedAt,
+    llmLastModelsFetchedAtByProviderId,
+    llmProfileSavedAt,
+    llmProviderSavedAt,
+  };
+
+  const llmActions = {
+    loadLlmConfig,
+    handleLlmProviderIdChange,
+    handleLlmProviderFieldChange,
+    handleLlmProviderKeyFieldChange,
+    handleLlmCreateProviderFieldChange,
+    handleCreateLlmProvider,
+    handleDeleteLlmProvider,
+    handleLlmProfileScopeChange,
+    handleLlmProfileUserIdInputChange,
+    handleLoadLlmUserProfile,
+    handleLlmProfileFieldChange,
+    handleSaveLlmProvider,
+    handleSaveLlmProfile,
+    handleTestLlmConfig,
+    handleFetchLlmModels,
+    handleFetchLlmModelsByProvider,
+  };
+
   const chapterState = {
     bookId,
     books,
@@ -1232,6 +2142,8 @@ export function useAdminStoryGeneratorCoordinator({
     chapterActions,
     chapterState,
     constants,
+    llmActions,
+    llmState,
     levelConfigActions,
     levelConfigState,
     publishActions,

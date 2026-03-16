@@ -292,10 +292,13 @@ export function AppRouterShell(): JSX.Element {
             className={`story-jumper-item ${stateClass}${isLinked ? " is-linked" : ""}`}
             disabled={disabled}
             onClick={() => {
-              focusStoryLevel(level.id);
               if (closeAfterClick) {
+                openPlayAtIndex(index, 1);
                 setShowMobileJumper(false);
+                return;
               }
+
+              focusStoryLevel(level.id);
             }}
           >
             <span>{index + 1}</span>
