@@ -194,6 +194,30 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     };
   }
 
+  function serializeSummaryRunItem(row) {
+    if (!row || typeof row !== "object") {
+      return null;
+    }
+
+    const normalizedStatus = String(row.status || "").trim().toLowerCase();
+    const status = normalizedStatus === "failed"
+      ? "failed"
+      : normalizedStatus === "skipped"
+        ? "skipped"
+        : "succeeded";
+
+    return {
+      chapter_id: Number(row.chapter_id || 0),
+      chapter_index: Number(row.chapter_index || 0),
+      chapter_title: String(row.chapter_title || ""),
+      status,
+      source_chars: Number(row.source_chars || 0),
+      chunks_count: Number(row.chunks_count || 0),
+      error_message: String(row.error_message || ""),
+      updated_at: row.updated_at ? String(row.updated_at) : null,
+    };
+  }
+
   function getSummaryRunByRunId(runId) {
     const normalizedRunId = normalizeShortText(runId || "");
     if (!normalizedRunId) {
@@ -701,6 +725,65 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
       db_path: RESOLVED_BOOK_INGEST_DB_PATH,
       task,
     });
+  });
+
+  app.get("/api/admin/books/summaries/:runId/items", requireAuth, requireAdmin, (req, res) => {
+    const runId = normalizeShortText(req.params?.runId || "");
+    if (!runId) {
+      res.status(400).json({ message: "run_id 不能为空" });
+      return;
+    }
+
+    const task = getSummaryRunByRunId(runId);
+    if (!task) {
+      res.status(404).json({ message: "未找到摘要任务", code: "book_summary_run_not_found" });
+      return;
+    }
+
+    const limit = Math.min(500, normalizePositiveInteger(req.query?.limit) || 200);
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const rows = booksDb
+        .prepare(
+          `
+            SELECT
+              item.chapter_id,
+              c.chapter_index,
+              c.chapter_title,
+              item.status,
+              item.source_chars,
+              item.chunks_count,
+              item.error_message,
+              item.updated_at
+            FROM chapter_summary_run_items item
+            JOIN chapter_summary_runs run ON run.id = item.summary_run_id
+            LEFT JOIN chapters c ON c.id = item.chapter_id
+            WHERE run.run_id = ?
+            ORDER BY
+              CASE item.status
+                WHEN 'failed' THEN 0
+                WHEN 'skipped' THEN 1
+                ELSE 2
+              END ASC,
+              COALESCE(c.chapter_index, 0) ASC,
+              item.id ASC
+            LIMIT ?
+          `,
+        )
+        .all(runId, limit);
+
+      res.json({
+        ok: true,
+        run_id: runId,
+        limit,
+        task,
+        items: rows
+          .map((row) => serializeSummaryRunItem(row))
+          .filter((item) => item),
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "读取摘要任务明细失败") });
+    }
   });
 
   app.post("/api/admin/books/:bookId/summaries", requireAuth, requireCsrf, requireAdmin, async (req, res) => {

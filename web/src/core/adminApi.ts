@@ -19,6 +19,7 @@ export {
   apiGenerateRunSceneImagesBatch,
   apiGenerateRunText,
   apiGetAdminBookSummaryTask,
+  apiListAdminBookSummaryTaskItems,
   apiGetAdminLevelConfig,
   apiGetAdminChapterText,
   apiCreateAdminLlmProvider,

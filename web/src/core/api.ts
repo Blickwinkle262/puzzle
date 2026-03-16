@@ -1,6 +1,7 @@
 import {
   AdminBookChaptersResponse,
   AdminBookIngestTask,
+  AdminBookSummaryTaskItem,
   AdminBookSummaryTask,
   AdminChapterTextResponse,
   AdminBookUploadResponse,
@@ -563,6 +564,34 @@ export function apiListAdminBookSummaryTasks(limit = 10): Promise<{
     limit: number;
     tasks: AdminBookSummaryTask[];
   }>(`/admin/books/summaries${qs}`);
+}
+
+export function apiListAdminBookSummaryTaskItems(
+  runId: string,
+  limit = 200,
+): Promise<{
+  ok: boolean;
+  run_id: string;
+  limit: number;
+  task: AdminBookSummaryTask;
+  items: AdminBookSummaryTaskItem[];
+}> {
+  const normalizedRunId = String(runId || "").trim();
+  if (!normalizedRunId) {
+    throw new ApiError(400, "run_id 不能为空");
+  }
+
+  const normalizedLimit = Number.isFinite(limit)
+    ? Math.min(500, Math.max(1, Math.floor(limit)))
+    : 200;
+  const qs = buildQueryString({ limit: normalizedLimit });
+  return requestJson<{
+    ok: boolean;
+    run_id: string;
+    limit: number;
+    task: AdminBookSummaryTask;
+    items: AdminBookSummaryTaskItem[];
+  }>(`/admin/books/summaries/${encodeURIComponent(normalizedRunId)}/items${qs}`);
 }
 
 export function apiResumeAdminBookSummaryTask(

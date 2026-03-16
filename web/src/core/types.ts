@@ -241,6 +241,17 @@ export type AdminBookSummaryTask = {
   error_message: string;
 };
 
+export type AdminBookSummaryTaskItem = {
+  chapter_id: number;
+  chapter_index: number;
+  chapter_title: string;
+  status: "succeeded" | "failed" | "skipped";
+  source_chars: number;
+  chunks_count: number;
+  error_message: string;
+  updated_at: string | null;
+};
+
 export type AdminStoryBookOption = {
   book_id: string;
   book_title: string;

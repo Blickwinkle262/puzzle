@@ -12,6 +12,7 @@ import {
   apiGetAdminLlmGlobalProfile,
   apiGetAdminLlmUserProfile,
   apiListAdminBookSummaryTasks,
+  apiListAdminBookSummaryTaskItems,
   apiListAdminBookChapters,
   apiListAdminBookUploadTasks,
   apiListAdminLlmEnvKeys,
@@ -30,6 +31,7 @@ import { apiGetMe } from "../core/api";
 import {
   AdminLlmApiKeyOption,
   AdminBookIngestTask,
+  AdminBookSummaryTaskItem,
   AdminBookSummaryTask,
   AdminBookUploadResponse,
   AdminLevelDifficulty,
@@ -424,6 +426,9 @@ export function useAdminStoryGeneratorCoordinator({
   const [bookSummaryTaskActionRunId, setBookSummaryTaskActionRunId] = useState("");
   const [bookSummaryTasks, setBookSummaryTasks] = useState<AdminBookSummaryTask[]>([]);
   const [loadingBookSummaryTasks, setLoadingBookSummaryTasks] = useState(false);
+  const [loadingBookSummaryTaskItemsRunId, setLoadingBookSummaryTaskItemsRunId] = useState("");
+  const [bookSummaryTaskItemsRunId, setBookSummaryTaskItemsRunId] = useState("");
+  const [bookSummaryTaskItems, setBookSummaryTaskItems] = useState<AdminBookSummaryTaskItem[]>([]);
   const [pendingBookReplace, setPendingBookReplace] = useState<PendingBookReplaceState | null>(null);
   const [chapterTextPreview, setChapterTextPreview] = useState<ChapterTextPreviewState | null>(null);
   const [loadingChapterTextPreview, setLoadingChapterTextPreview] = useState(false);
@@ -645,6 +650,31 @@ export function useAdminStoryGeneratorCoordinator({
       }
     }
   }, [setBookIngestPanelError]);
+
+  const loadBookSummaryTaskItems = useCallback(async (runId: string): Promise<void> => {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      setBookIngestPanelError("run_id 不能为空");
+      return;
+    }
+
+    setLoadingBookSummaryTaskItemsRunId(normalizedRunId);
+    setBookIngestPanelError("");
+    try {
+      const response = await apiListAdminBookSummaryTaskItems(normalizedRunId, 400);
+      const items = Array.isArray(response?.items) ? response.items : [];
+      setBookSummaryTaskItemsRunId(normalizedRunId);
+      setBookSummaryTaskItems(items);
+      const failed = items.filter((item) => item.status === "failed").length;
+      const skipped = items.filter((item) => item.status === "skipped").length;
+      const succeeded = items.filter((item) => item.status === "succeeded").length;
+      setBookIngestPanelInfo(`任务明细已加载：${normalizedRunId}（成功${succeeded}，跳过${skipped}，失败${failed}）`);
+    } catch (err) {
+      setBookIngestPanelError(errorMessage(err));
+    } finally {
+      setLoadingBookSummaryTaskItemsRunId("");
+    }
+  }, [setBookIngestPanelError, setBookIngestPanelInfo]);
 
   const loadLlmProviderModels = useCallback(async (
     providerId: number,
@@ -2232,6 +2262,9 @@ export function useAdminStoryGeneratorCoordinator({
     summaryBookId,
     generatingBookSummary,
     bookSummaryTaskActionRunId,
+    loadingBookSummaryTaskItemsRunId,
+    bookSummaryTaskItemsRunId,
+    bookSummaryTaskItems,
     bookUploadTasks,
     loadingBookUploadTasks,
     bookSummaryTasks,
@@ -2247,6 +2280,7 @@ export function useAdminStoryGeneratorCoordinator({
     handleGenerateBookSummary,
     handleResumeBookSummaryTask,
     handleCancelBookSummaryTask,
+    loadBookSummaryTaskItems,
     handlePreviewChapterText,
     handleUploadBook,
     handleOpenGeneratedStory,

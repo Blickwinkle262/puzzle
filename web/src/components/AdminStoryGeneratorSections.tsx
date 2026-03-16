@@ -2,6 +2,7 @@ import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   AdminBookIngestTask,
+  AdminBookSummaryTaskItem,
   AdminBookSummaryTask,
   AdminBookInfo,
   AdminChapterSummary,
@@ -1966,6 +1967,9 @@ type AdminBookUploadSectionProps = {
   summaryBookId: string;
   generatingBookSummary: boolean;
   bookSummaryTaskActionRunId: string;
+  loadingBookSummaryTaskItemsRunId: string;
+  bookSummaryTaskItemsRunId: string;
+  bookSummaryTaskItems: AdminBookSummaryTaskItem[];
   uploadingBook: boolean;
   onReloadTasks: () => void;
   onReloadSummaryTasks: () => void;
@@ -1974,6 +1978,7 @@ type AdminBookUploadSectionProps = {
   onGenerateBookSummary: (bookId: number) => void;
   onResumeBookSummaryTask: (runId: string) => void;
   onCancelBookSummaryTask: (runId: string) => void;
+  onLoadBookSummaryTaskItems: (runId: string) => void;
   onUploadBook: (file: File) => void;
   onToggleSection: () => void;
 };
@@ -1991,6 +1996,9 @@ export function AdminBookUploadSection({
   summaryBookId,
   generatingBookSummary,
   bookSummaryTaskActionRunId,
+  loadingBookSummaryTaskItemsRunId,
+  bookSummaryTaskItemsRunId,
+  bookSummaryTaskItems,
   uploadingBook,
   onReloadTasks,
   onReloadSummaryTasks,
@@ -1999,10 +2007,12 @@ export function AdminBookUploadSection({
   onGenerateBookSummary,
   onResumeBookSummaryTask,
   onCancelBookSummaryTask,
+  onLoadBookSummaryTaskItems,
   onUploadBook,
   onToggleSection,
 }: AdminBookUploadSectionProps): JSX.Element {
   const [dismissedSuccessRunId, setDismissedSuccessRunId] = useState("");
+  const [summaryTaskDetailRunId, setSummaryTaskDetailRunId] = useState("");
   const runningTask = bookUploadTasks.find((task) => task.status === "running" || task.status === "queued") || null;
   const runningSummaryTask = bookSummaryTasks.find((task) => task.status === "running" || task.status === "queued") || null;
   const latestSucceededIngestTask = bookUploadTasks.find((task) => task.status === "succeeded") || null;
@@ -2152,6 +2162,15 @@ export function AdminBookUploadSection({
       percent,
     };
   };
+
+  const activeSummaryDetailTask = summaryTaskDetailRunId
+    ? bookSummaryTasks.find((task) => task.run_id === summaryTaskDetailRunId) || null
+    : null;
+  const isSummaryDetailLoading = loadingBookSummaryTaskItemsRunId === summaryTaskDetailRunId;
+  const summaryDetailItems = bookSummaryTaskItemsRunId === summaryTaskDetailRunId ? bookSummaryTaskItems : [];
+  const summaryDetailSucceeded = summaryDetailItems.filter((item) => item.status === "succeeded").length;
+  const summaryDetailSkipped = summaryDetailItems.filter((item) => item.status === "skipped").length;
+  const summaryDetailFailed = summaryDetailItems.filter((item) => item.status === "failed").length;
 
   const latestSuccessBannerText = latestSucceededIngestTask
     ? `${latestSucceededIngestTask.source_name || "book"} 解析完成 · ${Math.max(0, latestSucceededIngestTask.inserted || latestSucceededIngestTask.total)}章入库`
@@ -2491,6 +2510,17 @@ export function AdminBookUploadSection({
                               )}
                               <button
                                 type="button"
+                                className="nav-btn"
+                                disabled={isTaskActioning}
+                                onClick={() => {
+                                  setSummaryTaskDetailRunId(task.run_id);
+                                  onLoadBookSummaryTaskItems(task.run_id);
+                                }}
+                              >
+                                {isTaskActioning ? "处理中..." : "任务详情"}
+                              </button>
+                              <button
+                                type="button"
                                 className={canSetTarget && task.scope_id === targetBookId ? "primary-btn" : "nav-btn"}
                                 disabled={!canSetTarget || isTaskActioning}
                                 onClick={() => {
@@ -2522,6 +2552,65 @@ export function AdminBookUploadSection({
                 </div>
               </div>
             </section>
+
+            {summaryTaskDetailRunId && (
+              <div className="mask" role="dialog" aria-modal="true" onClick={() => setSummaryTaskDetailRunId("") }>
+                <div className="mask-card admin-book-task-detail-drawer" onClick={(event) => event.stopPropagation()}>
+                  <div className="admin-book-task-detail-head">
+                    <div>
+                      <h4>摘要任务详情</h4>
+                      <p className="progress-inline">任务：{summaryTaskDetailRunId}</p>
+                    </div>
+                    <button type="button" className="link-btn" onClick={() => setSummaryTaskDetailRunId("")}>关闭</button>
+                  </div>
+
+                  {activeSummaryDetailTask && (
+                    <div className="admin-book-task-detail-summary">
+                      <span className={`level-state ${statusClassName(activeSummaryDetailTask.status)}`}>
+                        状态：{statusLabel(activeSummaryDetailTask.status)}
+                      </span>
+                      <span className="progress-inline">总章数：{Math.max(0, Number(activeSummaryDetailTask.total) || 0)}</span>
+                      <span className="progress-inline">成功：{summaryDetailSucceeded}</span>
+                      <span className="progress-inline">跳过：{summaryDetailSkipped}</span>
+                      <span className="progress-inline">失败：{summaryDetailFailed}</span>
+                    </div>
+                  )}
+
+                  {isSummaryDetailLoading ? (
+                    <p className="progress-inline">正在加载章节明细...</p>
+                  ) : summaryDetailItems.length === 0 ? (
+                    <p className="progress-inline">暂无章节级任务明细。</p>
+                  ) : (
+                    <ul className="admin-book-task-detail-list">
+                      {summaryDetailItems.map((item, index) => {
+                        const detailStatusClass = item.status === "succeeded" ? "done" : item.status === "failed" ? "todo" : "pending";
+                        const chapterNo = Math.max(0, Number(item.chapter_index) || 0);
+                        return (
+                          <li key={`summary-detail-${item.chapter_id}-${index}`} className="admin-book-task-detail-item">
+                            <div className="admin-book-task-detail-item-head">
+                              <strong>
+                                第 {index + 1}/{summaryDetailItems.length} 章
+                                {chapterNo > 0 ? ` · 章节序号 ${chapterNo}` : ""}
+                                {item.chapter_title ? ` · ${item.chapter_title}` : ""}
+                              </strong>
+                              <span className={`level-state ${detailStatusClass}`}>{item.status}</span>
+                            </div>
+                            <div className="admin-book-task-detail-item-meta">
+                              <span className="progress-inline">字符：{Math.max(0, Number(item.source_chars) || 0)}</span>
+                              <span className="progress-inline">分段：{Math.max(0, Number(item.chunks_count) || 0)}</span>
+                              <span className="progress-inline">更新时间：{item.updated_at || "-"}</span>
+                            </div>
+                            {item.error_message ? (
+                              <p className="admin-book-task-detail-item-error">错误：{compactText(item.error_message, 220)}</p>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}

@@ -2627,6 +2627,86 @@ tbody td,
   justify-content: flex-start;
 }
 
+.admin-book-task-detail-drawer {
+  width: min(980px, 94vw);
+  max-height: min(84vh, 860px);
+  padding: 14px;
+  text-align: left;
+  display: grid;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.admin-book-task-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-book-task-detail-head h4 {
+  margin: 0;
+  color: var(--text-accent);
+}
+
+.admin-book-task-detail-head .progress-inline {
+  margin: 4px 0 0;
+}
+
+.admin-book-task-detail-summary {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-book-task-detail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: min(60vh, 620px);
+  overflow: auto;
+}
+
+.admin-book-task-detail-item {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.admin-book-task-detail-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-book-task-detail-item-head strong {
+  color: var(--text-primary);
+  font-size: 0.76rem;
+}
+
+.admin-book-task-detail-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-book-task-detail-item-error {
+  margin: 0;
+  color: #ffadad;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
 .admin-job-view-btn {
   padding: 4px 10px;
   font-size: 12px;
@@ -2698,6 +2778,10 @@ tbody td,
 
   .admin-book-list-head {
     align-items: center;
+  }
+
+  .admin-book-task-detail-item-head {
+    flex-direction: column;
   }
 }
 
