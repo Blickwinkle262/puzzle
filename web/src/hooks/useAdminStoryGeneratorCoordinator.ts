@@ -1186,7 +1186,7 @@ export function useAdminStoryGeneratorCoordinator({
   const handleTestLlmConfig = useCallback(async (): Promise<void> => {
     const providerId = Number(selectedLlmProviderId || 0);
     if (!providerId) {
-      setPanelError("请先选择 provider");
+      showLlmNoticeError("请先选择 provider");
       return;
     }
 
@@ -1231,7 +1231,7 @@ export function useAdminStoryGeneratorCoordinator({
   const fetchLlmModelsByProviderId = useCallback(async (providerId: number): Promise<void> => {
     const normalizedProviderId = Number(providerId || 0);
     if (!Number.isInteger(normalizedProviderId) || normalizedProviderId <= 0) {
-      setPanelError("请先选择 provider");
+      showLlmNoticeError("请先选择 provider");
       return;
     }
 
@@ -1261,14 +1261,16 @@ export function useAdminStoryGeneratorCoordinator({
       });
       const fetchResult = response?.fetch || null;
       const models = Array.isArray(fetchResult?.models) ? fetchResult.models : [];
+      const fetchedAt = String(fetchResult?.fetched_at || "").trim();
       setLlmFetchedModels(models);
-      setLastLlmModelsFetchedAt(String(fetchResult?.fetched_at || ""));
+      setLastLlmModelsFetchedAt(fetchedAt);
       await loadLlmProviderModels(normalizedProviderId, { silent: true, syncSelected: true });
       const resolvedBaseUrl = String(fetchResult?.resolved_base_url || fetchResult?.api_base_url || "").trim();
       const resolvedBaseUrlText = resolvedBaseUrl ? `，endpoint=${resolvedBaseUrl}/models` : "";
-      showLlmNoticeInfo(`模型拉取完成：共 ${Number(fetchResult?.models_count || models.length)} 个${resolvedBaseUrlText}`);
+      const fetchedAtText = fetchedAt ? `，fetched_at=${fetchedAt}` : "";
+      showLlmNoticeInfo(`模型拉取完成：共 ${Number(fetchResult?.models_count || models.length)} 个${resolvedBaseUrlText}${fetchedAtText}`);
     } catch (err) {
-      showLlmNoticeError(errorMessage(err));
+      showLlmNoticeError(`模型拉取失败：${errorMessage(err)}`);
     } finally {
       setFetchingLlmModels(false);
       setFetchingLlmModelsProviderId(0);

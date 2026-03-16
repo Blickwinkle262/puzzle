@@ -1172,6 +1172,23 @@ export function AdminLlmSettingsSection({
   const imageProviderLoading = fetchingLlmModels && fetchingLlmModelsProviderId === imageProviderId;
   const summaryProviderLoading = fetchingLlmModels && fetchingLlmModelsProviderId === summaryProviderId;
   const loadedUserId = Number(llmProfile?.user_id || 0);
+  const selectedProviderKey = selectedProvider?.key || null;
+  const selectedProviderKeySource = llmProviderDraft?.key_source || "env";
+  const selectedEnvKeyName = String(llmProviderDraft?.env_key_name || selectedProviderKey?.env_key_name || "").trim();
+  const selectedEnvKey = llmEnvKeyOptions.find((item) => item.key === selectedEnvKeyName) || null;
+  const hasActiveCustomKey = selectedProviderKeySource === "custom"
+    && (String(llmProviderDraft?.custom_api_key || "").trim().length > 0 || Boolean(selectedProviderKey?.has_key));
+  const isEnvKeyReady = selectedProviderKeySource === "env"
+    && selectedEnvKeyName.length > 0
+    && Boolean(selectedEnvKey?.configured);
+  const providerKeyMissing = selectedProviderKeySource === "custom"
+    ? !hasActiveCustomKey
+    : !isEnvKeyReady;
+  const providerKeyWarningText = selectedProviderKeySource === "custom"
+    ? "当前 Provider 未配置可用 API Key（custom）。请填写 custom key 后保存。"
+    : !selectedEnvKeyName
+      ? "当前 Provider 未指定 env key。请先选择 Env Key 后再测试/拉取模型。"
+      : `Env Key ${selectedEnvKeyName} 当前不可用，请先在环境中配置后重试。`;
 
   return (
     <div className="admin-run-box admin-collapsible-box">
@@ -1182,7 +1199,18 @@ export function AdminLlmSettingsSection({
 
       {!collapsed && (
         <div className="admin-llm-v2-shell">
-          <p className="progress-inline admin-llm-note">运行时优先级：run payload &gt; user profile &gt; global profile &gt; env。</p>
+          <div className="admin-llm-v2-priority-chain" aria-label="LLM runtime priority">
+            <span className="progress-inline admin-llm-note">运行时优先级</span>
+            <div className="admin-llm-v2-priority-pills">
+              <span className="admin-llm-v2-priority-pill is-top">run payload</span>
+              <span className="admin-llm-v2-priority-arrow" aria-hidden="true">→</span>
+              <span className="admin-llm-v2-priority-pill">user profile</span>
+              <span className="admin-llm-v2-priority-arrow" aria-hidden="true">→</span>
+              <span className="admin-llm-v2-priority-pill">global profile</span>
+              <span className="admin-llm-v2-priority-arrow" aria-hidden="true">→</span>
+              <span className="admin-llm-v2-priority-pill">env</span>
+            </div>
+          </div>
 
           <section className="admin-llm-v2-card">
             <div className="admin-llm-v2-card-head">
@@ -1315,84 +1343,106 @@ export function AdminLlmSettingsSection({
                 {llmNoticeError && <div className="banner-error">{llmNoticeError}</div>}
                 {llmNoticeInfo && <div className="banner-info">{llmNoticeInfo}</div>}
 
-                <div className="admin-config-grid admin-llm-grid">
-                  <label className="form-field admin-llm-field admin-llm-provider-field">
-                    Provider 名称
-                    <input
-                      value={llmProviderDraft.name}
-                      onChange={(event) => onProviderFieldChange({ name: event.currentTarget.value })}
-                    />
-                  </label>
+                <div className="admin-llm-v2-provider-groups">
+                  <section className="admin-llm-v2-provider-group">
+                    <header className="admin-llm-v2-provider-group-head">
+                      <strong>连接设置</strong>
+                      <small>配置接口地址与网络策略</small>
+                    </header>
+                    <div className="admin-config-grid admin-llm-grid">
+                      <label className="form-field admin-llm-field admin-llm-provider-field">
+                        Provider 名称
+                        <input
+                          value={llmProviderDraft.name}
+                          onChange={(event) => onProviderFieldChange({ name: event.currentTarget.value })}
+                        />
+                      </label>
 
-                  <label className="form-field admin-llm-field admin-llm-provider-field">
-                    Provider 类型
-                    <input value={llmProviderDraft.provider_kind} disabled />
-                  </label>
+                      <label className="form-field admin-llm-field admin-llm-provider-field">
+                        Provider 类型
+                        <input value={llmProviderDraft.provider_kind} disabled />
+                      </label>
 
-                  <label className="form-field admin-llm-field admin-llm-provider-field">
-                    API Base URL
-                    <input
-                      value={llmProviderDraft.api_base_url}
-                      onChange={(event) => onProviderFieldChange({ api_base_url: event.currentTarget.value })}
-                      placeholder="https://xxx/v1"
-                    />
-                  </label>
+                      <label className="form-field admin-llm-field admin-llm-provider-field">
+                        API Base URL
+                        <input
+                          value={llmProviderDraft.api_base_url}
+                          onChange={(event) => onProviderFieldChange({ api_base_url: event.currentTarget.value })}
+                          placeholder="https://xxx/v1"
+                        />
+                      </label>
 
-                  <label className="form-field admin-llm-field admin-llm-provider-field">
-                    Proxy URL
-                    <input
-                      value={llmProviderDraft.proxy_url}
-                      onChange={(event) => onProviderFieldChange({ proxy_url: event.currentTarget.value })}
-                      placeholder="http://host:port"
-                    />
-                  </label>
+                      <label className="form-field admin-llm-field admin-llm-provider-field">
+                        Proxy URL
+                        <input
+                          value={llmProviderDraft.proxy_url}
+                          onChange={(event) => onProviderFieldChange({ proxy_url: event.currentTarget.value })}
+                          placeholder="http://host:port"
+                        />
+                      </label>
 
-                  <label className="form-field admin-llm-field admin-llm-provider-field">
-                    NO_PROXY
-                    <input
-                      value={llmProviderDraft.no_proxy_hosts}
-                      onChange={(event) => onProviderFieldChange({ no_proxy_hosts: event.currentTarget.value })}
-                    />
-                  </label>
+                      <label className="form-field admin-llm-field admin-llm-provider-field">
+                        NO_PROXY
+                        <input
+                          value={llmProviderDraft.no_proxy_hosts}
+                          onChange={(event) => onProviderFieldChange({ no_proxy_hosts: event.currentTarget.value })}
+                        />
+                      </label>
+                    </div>
+                  </section>
 
-                  <label className="form-field admin-llm-field admin-llm-provider-field">
-                    API Key source
-                    <select
-                      value={llmProviderDraft.key_source}
-                      onChange={(event) => onProviderKeyFieldChange({ key_source: event.currentTarget.value === "custom" ? "custom" : "env" })}
-                    >
-                      <option value="env">Use env variable</option>
-                      <option value="custom">Custom key</option>
-                    </select>
-                  </label>
+                  <section className="admin-llm-v2-provider-group">
+                    <header className="admin-llm-v2-provider-group-head">
+                      <strong>认证设置</strong>
+                      <small>切换 key 来源并验证可用性</small>
+                    </header>
+                    <div className="admin-config-grid admin-llm-grid">
+                      <label className="form-field admin-llm-field admin-llm-provider-field">
+                        API Key source
+                        <select
+                          value={llmProviderDraft.key_source}
+                          onChange={(event) => onProviderKeyFieldChange({ key_source: event.currentTarget.value === "custom" ? "custom" : "env" })}
+                        >
+                          <option value="env">Use env variable</option>
+                          <option value="custom">Custom key</option>
+                        </select>
+                      </label>
 
-                  {llmProviderDraft.key_source === "env" ? (
-                    <label className="form-field admin-llm-field admin-llm-provider-field">
-                      Env Key
-                      <select
-                        value={llmProviderDraft.env_key_name}
-                        onChange={(event) => onProviderKeyFieldChange({ env_key_name: event.currentTarget.value })}
-                      >
-                        {llmEnvKeyOptions.length === 0 ? (
-                          <option value="">未检测到 env key</option>
-                        ) : (
-                          llmEnvKeyOptions.map((item) => (
-                            <option key={`llm-env-key-${item.key}`} value={item.key}>{item.label}</option>
-                          ))
-                        )}
-                      </select>
-                    </label>
-                  ) : (
-                    <label className="form-field admin-llm-field admin-llm-provider-field">
-                      Custom API Key
-                      <input
-                        type="password"
-                        value={llmProviderDraft.custom_api_key}
-                        onChange={(event) => onProviderKeyFieldChange({ custom_api_key: event.currentTarget.value })}
-                        placeholder="留空表示保持当前 key"
-                      />
-                    </label>
-                  )}
+                      {llmProviderDraft.key_source === "env" ? (
+                        <label className="form-field admin-llm-field admin-llm-provider-field">
+                          Env Key
+                          <select
+                            value={llmProviderDraft.env_key_name}
+                            onChange={(event) => onProviderKeyFieldChange({ env_key_name: event.currentTarget.value })}
+                          >
+                            {llmEnvKeyOptions.length === 0 ? (
+                              <option value="">未检测到 env key</option>
+                            ) : (
+                              llmEnvKeyOptions.map((item) => (
+                                <option key={`llm-env-key-${item.key}`} value={item.key}>{item.label}</option>
+                              ))
+                            )}
+                          </select>
+                        </label>
+                      ) : (
+                        <label className="form-field admin-llm-field admin-llm-provider-field">
+                          Custom API Key
+                          <input
+                            type="password"
+                            value={llmProviderDraft.custom_api_key}
+                            onChange={(event) => onProviderKeyFieldChange({ custom_api_key: event.currentTarget.value })}
+                            placeholder="留空表示保持当前 key"
+                          />
+                        </label>
+                      )}
+                    </div>
+
+                    {providerKeyMissing && (
+                      <div className="admin-llm-v2-warning-banner" role="status" aria-live="polite">
+                        {providerKeyWarningText}
+                      </div>
+                    )}
+                  </section>
                 </div>
 
                 <div className="admin-config-actions inline-actions admin-llm-actions">
@@ -1410,15 +1460,16 @@ export function AdminLlmSettingsSection({
                   {showProviderSavedPill && <span className="admin-llm-v2-pill is-saved">saved</span>}
                 </div>
 
-                <p className="progress-inline admin-llm-fetched-meta">
-                  当前 provider：#{selectedProvider.id} · {selectedProvider.name}
-                  {selectedProvider.key?.key_masked ? ` · key=${selectedProvider.key.key_masked}` : " · 未配置 key"}
-                </p>
-
-                <p className="progress-inline admin-llm-fetched-meta">
-                  已拉取模型：{fetchedModels.length} 个 · 缓存模型：{llmCachedModels.length} 条
-                  {lastModelsFetchedAt ? ` · 最近拉取：${lastModelsFetchedAt}` : " · 尚未拉取"}
-                </p>
+                <div className="admin-llm-v2-fetch-meta-card">
+                  <p className="progress-inline admin-llm-fetched-meta">
+                    当前 provider：#{selectedProvider.id} · {selectedProvider.name}
+                    {selectedProvider.key?.key_masked ? ` · key=${selectedProvider.key.key_masked}` : " · 未配置 key"}
+                  </p>
+                  <p className="progress-inline admin-llm-fetched-meta">
+                    已拉取模型：{fetchedModels.length} 个 · 缓存模型：{llmCachedModels.length} 条
+                    {lastModelsFetchedAt ? ` · 最近拉取：${lastModelsFetchedAt}` : " · 尚未拉取"}
+                  </p>
+                </div>
 
                 <div className="admin-llm-v2-model-filter-row">
                   <input
@@ -1512,7 +1563,7 @@ export function AdminLlmSettingsSection({
 
             <div className="admin-llm-v2-model-slot">
               <div className="admin-llm-v2-slot-head">
-                <span className="level-state running">Step 1</span>
+                <span className="admin-llm-v2-step-tag">Step 01</span>
                 <strong>Story → image prompts JSON</strong>
                 <small>text model</small>
                 {step1Dirty ? <span className="admin-llm-v2-pill is-dirty">unsaved</span> : showProfileSavedPill ? <span className="admin-llm-v2-pill is-saved">saved</span> : null}
@@ -1582,7 +1633,7 @@ export function AdminLlmSettingsSection({
 
             <div className="admin-llm-v2-model-slot">
               <div className="admin-llm-v2-slot-head">
-                <span className="level-state done">Step 2</span>
+                <span className="admin-llm-v2-step-tag">Step 02</span>
                 <strong>Text → image generation</strong>
                 <small>image model</small>
                 {step2Dirty ? <span className="admin-llm-v2-pill is-dirty">unsaved</span> : showProfileSavedPill ? <span className="admin-llm-v2-pill is-saved">saved</span> : null}
@@ -1654,7 +1705,7 @@ export function AdminLlmSettingsSection({
 
             <div className="admin-llm-v2-model-slot optional">
               <div className="admin-llm-v2-slot-head">
-                <span className="level-state">Optional</span>
+                <span className="admin-llm-v2-step-tag is-optional">Step 03 · Optional</span>
                 <strong>Book summarize</strong>
                 <small>留空=使用 Step 1 model</small>
                 {step3Dirty ? <span className="admin-llm-v2-pill is-dirty">unsaved</span> : showProfileSavedPill ? <span className="admin-llm-v2-pill is-saved">saved</span> : null}
