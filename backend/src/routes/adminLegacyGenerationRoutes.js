@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import express from "express";
+import Database from "better-sqlite3";
 
 export function registerAdminLegacyGenerationRoutes(app, deps) {
   const {
@@ -339,28 +340,49 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
   function markSummaryRunAsCancelled(runId, reason) {
     const normalizedRunId = normalizeShortText(runId || "");
     if (!normalizedRunId) {
-      return null;
+      return {
+        task: null,
+        changes: 0,
+        writeError: "run_id 不能为空",
+      };
     }
 
     const message = String(reason || "").trim() || "任务已由管理员取消";
+    let changes = 0;
+    let writeError = "";
+    let booksWriteDb = null;
+
     try {
-      const booksDb = getBooksDbOrThrow();
-      booksDb
+      booksWriteDb = new Database(RESOLVED_BOOK_INGEST_DB_PATH, {
+        fileMustExist: true,
+      });
+      booksWriteDb.pragma("busy_timeout = 5000");
+      const result = booksWriteDb
         .prepare(
           `
             UPDATE chapter_summary_runs
             SET status = 'failed',
                 finished_at = COALESCE(finished_at, datetime('now')),
                 error_message = ?
-            WHERE run_id = ? AND status = 'running'
+            WHERE run_id = ? AND status IN ('running', 'queued')
           `,
         )
         .run(message, normalizedRunId);
+      changes = Number(result?.changes || 0);
     } catch (error) {
+      writeError = asMessage(error, "写入取消状态失败");
       console.error("[book-summary] failed to mark cancelled", error);
+    } finally {
+      if (booksWriteDb) {
+        booksWriteDb.close();
+      }
     }
 
-    return getSummaryRunByRunId(normalizedRunId);
+    return {
+      task: getSummaryRunByRunId(normalizedRunId),
+      changes,
+      writeError,
+    };
   }
 
   function getBookByBookId(bookId) {
@@ -961,7 +983,30 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     if (control && typeof control.kill === "function") {
       signalSent = Boolean(control.kill("SIGTERM"));
     }
-    const updatedTask = markSummaryRunAsCancelled(runId, reason) || task;
+    const cancelResult = markSummaryRunAsCancelled(runId, reason);
+    const updatedTask = cancelResult?.task || task;
+
+    if (cancelResult?.writeError) {
+      res.status(500).json({
+        code: "book_summary_cancel_write_failed",
+        message: `取消请求已接收，但写入状态失败：${cancelResult.writeError}`,
+        run_id: runId,
+        signal_sent: signalSent,
+        task: updatedTask,
+      });
+      return;
+    }
+
+    if (!cancelResult?.changes && (updatedTask?.status === "running" || updatedTask?.status === "queued")) {
+      res.status(409).json({
+        code: "book_summary_cancel_not_applied",
+        message: "取消信号已发送，但任务状态尚未更新，请稍后刷新重试",
+        run_id: runId,
+        signal_sent: signalSent,
+        task: updatedTask,
+      });
+      return;
+    }
 
     res.json({
       ok: true,
