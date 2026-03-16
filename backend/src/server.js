@@ -187,6 +187,15 @@ const parsedAtomicTimeoutMs = Number(
 const STORY_GENERATOR_ATOMIC_TIMEOUT_MS = Number.isFinite(parsedAtomicTimeoutMs) && parsedAtomicTimeoutMs > 0
   ? Math.floor(parsedAtomicTimeoutMs)
   : 1000 * 60 * 8;
+const parsedBookSummaryTimeoutMs = Number(
+  process.env.STORY_GENERATOR_BOOK_SUMMARY_TIMEOUT_MS
+    || process.env.STORY_GENERATION_BOOK_SUMMARY_TIMEOUT_MS
+    || process.env.BOOK_SUMMARY_TIMEOUT_MS
+    || 1000 * 60 * 60,
+);
+const STORY_GENERATOR_BOOK_SUMMARY_TIMEOUT_MS = Number.isFinite(parsedBookSummaryTimeoutMs) && parsedBookSummaryTimeoutMs > 0
+  ? Math.floor(parsedBookSummaryTimeoutMs)
+  : 1000 * 60 * 60;
 const LEGACY_GENERATE_STORY_CREATE_ENABLED = normalizeBoolean(
   process.env.GENERATION_LEGACY_CREATE_ENABLED
     || process.env.STORY_GENERATOR_LEGACY_CREATE_ENABLED
@@ -3427,7 +3436,7 @@ function runBookSummaryCommand(options = {}) {
   const summaryMaxChars = normalizePositiveInteger(options.summaryMaxChars) || 200;
   const timeoutMs = Number.isFinite(Number(options.timeoutMs))
     ? Math.max(5000, Math.floor(Number(options.timeoutMs)))
-    : 1000 * 60 * 20;
+    : STORY_GENERATOR_BOOK_SUMMARY_TIMEOUT_MS;
 
   const runtimeInput = options.llmRuntime && typeof options.llmRuntime === "object"
     ? { ...options.llmRuntime }

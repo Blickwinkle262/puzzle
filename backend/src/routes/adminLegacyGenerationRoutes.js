@@ -331,6 +331,8 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     void commandPromise
       .catch((error) => {
         console.error("[book-summary] async task failed", error);
+        const normalizedMessage = asMessage(error, "摘要任务执行失败");
+        markSummaryRunAsCancelled(runId, `摘要任务异常终止：${normalizedMessage}`);
       })
       .finally(() => {
         activeBookSummaryControllers.delete(runId);
