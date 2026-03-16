@@ -71,6 +71,7 @@ export function useAdminRunReviewState(defaultSceneCounts: () => AdminGeneration
   const [reviewBatchGenerating, setReviewBatchGenerating] = useState(false);
   const [reviewUpdatingSceneIndex, setReviewUpdatingSceneIndex] = useState<number | null>(null);
   const [reviewRetryingSceneIndex, setReviewRetryingSceneIndex] = useState<number | null>(null);
+  const [reviewUploadingSceneIndex, setReviewUploadingSceneIndex] = useState<number | null>(null);
   const [reviewDeletingSceneIndex, setReviewDeletingSceneIndex] = useState<number | null>(null);
   const [runCancellingId, setRunCancellingId] = useState("");
   const [runDeletingId, setRunDeletingId] = useState("");
@@ -104,6 +105,7 @@ export function useAdminRunReviewState(defaultSceneCounts: () => AdminGeneration
     reviewLoading,
     reviewPublishing,
     reviewRetryingSceneIndex,
+    reviewUploadingSceneIndex,
     reviewRunId,
     reviewScenes,
     reviewUpdatingSceneIndex,
@@ -120,6 +122,7 @@ export function useAdminRunReviewState(defaultSceneCounts: () => AdminGeneration
     setReviewLoading,
     setReviewPublishing,
     setReviewRetryingSceneIndex,
+    setReviewUploadingSceneIndex,
     setReviewRunId,
     setReviewScenes,
     setReviewUpdatingSceneIndex,

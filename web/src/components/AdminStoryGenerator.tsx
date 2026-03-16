@@ -211,6 +211,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       reviewPublishing,
       reviewReadyCount,
       reviewRetryingSceneIndex,
+      reviewUploadingSceneIndex,
       reviewRunId,
       reviewScenes,
       reviewUpdatingSceneIndex,
@@ -220,6 +221,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       handleDeleteReviewScene,
       handlePublishSelected,
       handleRetryReviewCandidate,
+      handleUploadReviewSceneImage,
       handleUpdateReviewScene,
       handleViewJobProgress,
       loadGenerationReview,
@@ -475,6 +477,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       />
 
       <AdminBookUploadSection
+        isMobile={isMobile}
         books={books}
         bookUploadTasks={bookUploadTasks}
         bookSummaryTasks={bookSummaryTasks}
@@ -627,6 +630,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
             {puzzleFlowStep === "generate" && (
               <AdminPuzzleGenerateStage
+                isMobile={isMobile}
                 activeJob={activeJob}
                 activeRunId={activeRunId}
                 formatGenerationJobStateLabel={formatGenerationJobStateLabel}
@@ -649,6 +653,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 onRetryReviewCandidate={(sceneIndex) => {
                   setPanelNoticeScope("puzzle");
                   void handleRetryReviewCandidate(sceneIndex);
+                }}
+                onUploadReviewSceneImage={(sceneIndex, file) => {
+                  setPanelNoticeScope("puzzle");
+                  void handleUploadReviewSceneImage(sceneIndex, file);
                 }}
                 onSetPuzzleFlowReview={() => {
                   setPanelNoticeScope("puzzle");
@@ -676,6 +684,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 reviewPendingImageCount={reviewPendingImageCount}
                 reviewPublishing={reviewPublishing}
                 reviewRetryingSceneIndex={reviewRetryingSceneIndex}
+                reviewUploadingSceneIndex={reviewUploadingSceneIndex}
                 reviewRunId={reviewRunId}
                 reviewScenes={reviewScenes}
                 selectedChapter={selectedChapter}

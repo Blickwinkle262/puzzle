@@ -6,6 +6,7 @@ import {
   apiGenerateRunSceneImagesBatch,
   apiGenerateRunText,
   apiPublishRun,
+  apiUploadRunSceneImage,
   apiUpdateRunScene,
 } from "../../core/adminApi";
 import {
@@ -57,6 +58,7 @@ type UseAdminPuzzleActionsCoordinatorOptions = {
   setReviewDeletingSceneIndex: (sceneIndex: number | null) => void;
   setReviewPublishing: (loading: boolean) => void;
   setReviewRetryingSceneIndex: (sceneIndex: number | null) => void;
+  setReviewUploadingSceneIndex: (sceneIndex: number | null) => void;
   setReviewRunId: (runId: string) => void;
   setReviewScenes: (scenes: AdminGenerationScene[]) => void;
   setReviewUpdatingSceneIndex: (sceneIndex: number | null) => void;
@@ -92,6 +94,7 @@ export function useAdminPuzzleActionsCoordinator({
   setReviewDeletingSceneIndex,
   setReviewPublishing,
   setReviewRetryingSceneIndex,
+  setReviewUploadingSceneIndex,
   setReviewRunId,
   setReviewScenes,
   setReviewUpdatingSceneIndex,
@@ -242,6 +245,47 @@ export function useAdminPuzzleActionsCoordinator({
     setReviewBatchGenerating,
   ]);
 
+  const handleUploadReviewSceneImage = useCallback(async (sceneIndex: number, file: File): Promise<void> => {
+    if (!reviewRunId || reviewLocked) {
+      return;
+    }
+
+    if (!(file instanceof File) || file.size <= 0) {
+      setPanelError("请选择要上传的图片文件");
+      return;
+    }
+
+    const fileType = String(file.type || "").toLowerCase();
+    const hasSupportedType = fileType === "image/png"
+      || fileType === "image/jpeg"
+      || fileType === "image/webp"
+      || /\.(png|jpe?g|webp)$/i.test(String(file.name || ""));
+    if (!hasSupportedType) {
+      setPanelError("仅支持 PNG/JPG/WebP 图片");
+      return;
+    }
+
+    setReviewUploadingSceneIndex(sceneIndex);
+    setPanelError("");
+
+    try {
+      await apiUploadRunSceneImage(reviewRunId, sceneIndex, { file });
+      setPanelInfo(`已上传图片：scene ${sceneIndex}`);
+      await loadGenerationReview(reviewRunId);
+    } catch (err) {
+      setPanelError(errorMessage(err));
+    } finally {
+      setReviewUploadingSceneIndex(null);
+    }
+  }, [
+    loadGenerationReview,
+    reviewLocked,
+    reviewRunId,
+    setPanelError,
+    setPanelInfo,
+    setReviewUploadingSceneIndex,
+  ]);
+
   const handleDeleteReviewScene = useCallback(async (sceneIndex: number): Promise<void> => {
     if (!reviewRunId || reviewLocked) {
       return;
@@ -361,6 +405,7 @@ export function useAdminPuzzleActionsCoordinator({
     handleOpenPublishedStory,
     handlePublishSelected,
     handleRetryReviewCandidate,
+    handleUploadReviewSceneImage,
     handleStayAfterPublish,
     handleSubmit,
     handleUpdateReviewScene,

@@ -47,6 +47,7 @@ export {
   apiPublishRun,
   apiRevokeAdminUserRole,
   apiRunAdminLevelTest,
+  apiUploadRunSceneImage,
   apiUpdateAdminLlmGlobalProfile,
   apiUpdateAdminLevelConfig,
   apiUpdateAdminLlmProvider,

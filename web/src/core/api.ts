@@ -758,6 +758,65 @@ export function apiGenerateRunSceneImage(
   );
 }
 
+export async function apiUploadRunSceneImage(
+  runId: string,
+  sceneIndex: number,
+  payload: {
+    file: Blob;
+    fileName?: string;
+  },
+): Promise<AdminGenerationRunMutateResponse> {
+  const normalizedRunId = String(runId || "").trim();
+  const normalizedSceneIndex = Number.isFinite(sceneIndex) ? Math.max(1, Math.floor(sceneIndex)) : 0;
+  if (!normalizedRunId || !normalizedSceneIndex) {
+    throw new ApiError(400, "run_id 或 scene_index 不合法");
+  }
+  if (!payload || !(payload.file instanceof Blob)) {
+    throw new ApiError(400, "上传文件无效");
+  }
+
+  const hasFileCtor = typeof File !== "undefined";
+  const fallbackName = hasFileCtor && payload.file instanceof File ? payload.file.name : "scene_upload.png";
+  const rawName = String(payload.fileName || fallbackName || "scene_upload.png");
+  const safeFileName = rawName
+    .replace(/[\\/\r\n]+/g, "_")
+    .replace(/[^\x20-\x7E]+/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 120)
+    .trim() || "scene_upload.png";
+
+  const headers: Record<string, string> = {
+    "Content-Type": String(payload.file.type || "application/octet-stream"),
+    "x-file-name": safeFileName,
+  };
+
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) {
+    headers[CSRF_HEADER_NAME] = csrfToken;
+  }
+
+  const response = await fetch(
+    `${API_PREFIX}/runs/${encodeURIComponent(normalizedRunId)}/scenes/${encodeURIComponent(String(normalizedSceneIndex))}/upload-image`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: payload.file,
+    },
+  );
+
+  if (!response.ok) {
+    const errorPayload = await safeParseJson(response);
+    const message =
+      errorPayload && typeof errorPayload === "object" && typeof (errorPayload as { message?: unknown }).message === "string"
+        ? (errorPayload as { message: string }).message
+        : `请求失败 (${response.status})`;
+    throw new ApiError(response.status, message, errorPayload);
+  }
+
+  return (await response.json()) as AdminGenerationRunMutateResponse;
+}
+
 export function apiGenerateRunSceneImagesBatch(
   runId: string,
   payload: {

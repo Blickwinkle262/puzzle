@@ -2799,16 +2799,23 @@ registerRunGenerateImageRoutes(app, {
 });
 
 registerRunSceneRoutes(app, {
+  createGenerationSceneImageAttempt,
   deleteGenerationSceneDraft,
+  ensureGenerationRunWritable,
+  finalizeGenerationSceneImageAttempt,
   getGenerationJobByRunId,
   getGenerationSceneByIndex,
+  listGenerationSceneAttempts,
   listGenerationScenes,
   normalizePositiveInteger,
   normalizeRunId,
   refreshGenerationRunState,
+  resolveGenerationRunImagesDir,
+  resolveStoryAssetUrlFromFsPath,
   requireAdmin,
   requireAuth,
   requireCsrf,
+  setGenerationSceneImageResult,
   summarizeGenerationScenes,
   updateGenerationSceneDraft,
 });

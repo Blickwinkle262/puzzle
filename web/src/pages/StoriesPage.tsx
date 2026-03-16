@@ -534,7 +534,7 @@ export function StoriesPage({
   };
 
   return (
-    <div className={`hub-shell stories-shell stories-home-shell role-shell role-${roleKey}`}>
+    <div className={`hub-shell stories-shell stories-home-shell role-shell role-${roleKey}${showAdminGenerator ? " has-admin-panel" : ""}`}>
       <header className="stories-home-nav">
         <div className="stories-home-brand">故事导航</div>
         <div className="toolbar-row nav-right">

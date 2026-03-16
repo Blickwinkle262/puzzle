@@ -335,6 +335,8 @@ select:hover:not(:focus) {
   border: 1px solid rgba(214, 108, 108, 0.34);
   border-radius: var(--radius-md);
   padding: 8px 10px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .form-info,
@@ -344,6 +346,8 @@ select:hover:not(:focus) {
   border: 1px solid rgba(64, 192, 112, 0.33);
   border-radius: var(--radius-md);
   padding: 8px 10px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .inline-actions,
@@ -371,6 +375,8 @@ select:hover:not(:focus) {
   font-family: var(--font-body);
   font-size: var(--text-sm);
   letter-spacing: 0.04em;
+  line-height: 1.35;
+  text-align: center;
   cursor: pointer;
   transition:
     background var(--transition-fast),
@@ -437,6 +443,18 @@ select:hover:not(:focus) {
   opacity: 0.48;
   cursor: not-allowed;
   transform: none;
+}
+
+.admin-panel .primary-btn,
+.admin-panel .nav-btn,
+.admin-panel .jump-btn,
+.admin-panel .link-btn,
+.admin-panel .next-btn {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .account-panel {
@@ -887,6 +905,8 @@ select:hover:not(:focus) {
   margin: 0;
   color: var(--text-ghost);
   font-size: clamp(12px, 1.8vw, 15px);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .level-state {
@@ -1190,7 +1210,7 @@ select:hover:not(:focus) {
   backdrop-filter: blur(6px);
   display: grid;
   place-items: center;
-  z-index: 40;
+  z-index: 260;
 }
 
 .mask-card {
@@ -1238,10 +1258,14 @@ select:hover:not(:focus) {
   gap: 10px;
   cursor: pointer;
   text-align: left;
+  min-width: 0;
 }
 
 .admin-collapse-head h4 {
   margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .admin-collapse-icon {
@@ -1255,6 +1279,7 @@ select:hover:not(:focus) {
   color: var(--text-muted);
   font-size: 14px;
   line-height: 1;
+  flex: 0 0 auto;
   transition: transform var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
 }
 
@@ -1303,6 +1328,7 @@ select:hover:not(:focus) {
   padding: 10px;
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .admin-level-config-group h5 {
@@ -1313,7 +1339,18 @@ select:hover:not(:focus) {
 }
 
 .admin-level-config-grid-target {
-  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(180px, 0.6fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.admin-level-config-group .form-field {
+  min-width: 0;
+}
+
+.admin-level-config-group .form-field input,
+.admin-level-config-group .form-field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .admin-level-config-grid-layout {
@@ -2450,15 +2487,31 @@ tbody td,
   flex-wrap: wrap;
 }
 
+.admin-running-banner > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .admin-book-manager {
   display: grid;
   gap: 12px;
+}
+
+.admin-book-mobile-tabs {
+  display: none;
 }
 
 .admin-book-running-focus {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
+}
+
+.admin-book-running-focus > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-book-success-banner {
@@ -2470,6 +2523,13 @@ tbody td,
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-book-success-banner > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-book-success-dot {
@@ -2567,9 +2627,13 @@ tbody td,
 
 .admin-book-target-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: end;
+}
+
+.admin-book-target-row .form-field {
+  min-width: 0;
 }
 
 .admin-book-target-actions {
@@ -2690,7 +2754,7 @@ tbody td,
 
 .admin-book-task-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
@@ -2699,6 +2763,8 @@ tbody td,
   font-family: var(--font-mono);
   font-size: 0.74rem;
   color: var(--text-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-book-task-actions {
@@ -2725,10 +2791,14 @@ tbody td,
 .admin-book-task-detail-head h4 {
   margin: 0;
   color: var(--text-accent);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-book-task-detail-head .progress-inline {
   margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-book-task-detail-summary {
@@ -2770,6 +2840,8 @@ tbody td,
 .admin-book-task-detail-item-head strong {
   color: var(--text-primary);
   font-size: 0.76rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-book-task-detail-item-meta {
@@ -2830,6 +2902,23 @@ tbody td,
 
   .admin-book-overview-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-book-mobile-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .admin-book-mobile-tabs .nav-btn {
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .admin-book-mobile-tabs .nav-btn.is-active {
+    border-color: rgba(200, 150, 60, 0.62);
+    color: var(--gold-mid);
+    background: rgba(200, 150, 60, 0.1);
   }
 
   .admin-book-running-focus {
@@ -4153,6 +4242,10 @@ summary:focus-visible {
   overscroll-behavior-x: none;
 }
 
+.stories-home-shell.has-admin-panel {
+  overflow-x: visible;
+}
+
 .stories-home-nav {
   position: sticky;
   top: 0;
@@ -5241,11 +5334,17 @@ summary:focus-visible {
     min-height: 52px;
     padding: 8px 10px;
     align-items: flex-start;
+    flex-wrap: wrap;
     margin-inline: 0;
   }
 
+  .stories-home-brand {
+    white-space: normal;
+  }
+
   .stories-home-nav .toolbar-row {
-    justify-content: flex-end;
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .stories-home-nav .nav-btn {
@@ -5374,6 +5473,21 @@ summary:focus-visible {
   }
 }
 
+@media (max-width: 920px) {
+  .stories-home-shell.has-admin-panel {
+    overflow-x: visible;
+  }
+
+  .stories-home-shell.has-admin-panel .admin-panel,
+  .stories-home-shell.has-admin-panel .admin-run-box,
+  .stories-home-shell.has-admin-panel .admin-collapsible-box {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .stories-book-body {
     transition: max-height 0.22s ease, border-color 0.2s ease;
@@ -5413,6 +5527,7 @@ summary:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 10px;
 }
@@ -5422,6 +5537,10 @@ summary:focus-visible {
   color: var(--text-secondary);
   letter-spacing: 0.02em;
   line-height: 1.45;
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-flow-step {
@@ -5530,7 +5649,7 @@ summary:focus-visible {
 }
 
 .admin-puzzle-flow-next-op {
-  min-width: 172px;
+  min-width: 0;
   justify-content: center;
 }
 
@@ -5580,6 +5699,10 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.admin-puzzle-hint .progress-inline {
+  min-width: 0;
 }
 
 .admin-puzzle-side {
@@ -5697,13 +5820,17 @@ summary:focus-visible {
 
 .admin-review-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .admin-review-head h4 {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-review-table {
@@ -5936,6 +6063,21 @@ summary:focus-visible {
   padding: 4px 10px;
 }
 
+.admin-review-upload-btn {
+  min-width: 64px;
+  justify-content: center;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.admin-review-table .inline-actions {
+  flex-wrap: wrap;
+}
+
+.admin-review-mobile-list {
+  display: none;
+}
+
 @media (max-width: 920px) {
   .admin-puzzle-layout {
     grid-template-columns: 1fr;
@@ -6051,6 +6193,58 @@ summary:focus-visible {
   }
 
   .admin-puzzle-flow-next-op {
+    min-width: 0;
+  }
+
+  .admin-review-table-images {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .admin-review-table-images table {
+    display: none;
+  }
+
+  .admin-review-mobile-list {
+    list-style: none;
+    margin: 0;
+    padding: 0 8px 10px;
+    display: grid;
+    gap: 8px;
+  }
+
+  .admin-review-mobile-item {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.02);
+    padding: 8px;
+    display: grid;
+    gap: 6px;
+  }
+
+  .admin-review-mobile-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .admin-review-mobile-text {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .admin-review-mobile-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .admin-review-mobile-actions .nav-btn,
+  .admin-review-mobile-preview {
+    width: 100%;
     min-width: 0;
   }
 }

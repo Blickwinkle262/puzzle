@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   AdminBookIngestTask,
@@ -2083,6 +2083,7 @@ export function AdminLlmSettingsSection({
 }
 
 type AdminBookUploadSectionProps = {
+  isMobile: boolean;
   books: AdminBookInfo[];
   bookUploadTasks: AdminBookIngestTask[];
   bookSummaryTasks: AdminBookSummaryTask[];
@@ -2112,6 +2113,7 @@ type AdminBookUploadSectionProps = {
 };
 
 export function AdminBookUploadSection({
+  isMobile,
   books,
   bookUploadTasks,
   bookSummaryTasks,
@@ -2141,6 +2143,7 @@ export function AdminBookUploadSection({
 }: AdminBookUploadSectionProps): JSX.Element {
   const [dismissedSuccessRunId, setDismissedSuccessRunId] = useState("");
   const [summaryTaskDetailRunId, setSummaryTaskDetailRunId] = useState("");
+  const [mobileBookSection, setMobileBookSection] = useState<"overview" | "books" | "tasks">("overview");
   const runningTask = bookUploadTasks.find((task) => task.status === "running" || task.status === "queued") || null;
   const runningSummaryTask = bookSummaryTasks.find((task) => task.status === "running" || task.status === "queued") || null;
   const latestSucceededIngestTask = bookUploadTasks.find((task) => task.status === "succeeded") || null;
@@ -2305,9 +2308,13 @@ export function AdminBookUploadSection({
     : "";
   const showLatestSuccessBanner = Boolean(
     latestSucceededIngestTask
-      && latestSucceededIngestTask.run_id
-      && latestSucceededIngestTask.run_id !== dismissedSuccessRunId,
+    && latestSucceededIngestTask.run_id
+    && latestSucceededIngestTask.run_id !== dismissedSuccessRunId,
   );
+
+  const showOverviewSection = !isMobile || mobileBookSection === "overview";
+  const showBooksSection = !isMobile || mobileBookSection === "books";
+  const showTasksSection = !isMobile || mobileBookSection === "tasks";
 
   useEffect(() => {
     if (!latestSucceededIngestTask?.run_id) {
@@ -2368,6 +2375,33 @@ export function AdminBookUploadSection({
           )}
 
           <div className="admin-book-manager">
+            {isMobile && (
+              <div className="admin-book-mobile-tabs" role="tablist" aria-label="书籍管理移动分区">
+                <button
+                  type="button"
+                  className={`nav-btn ${mobileBookSection === "overview" ? "is-active" : ""}`.trim()}
+                  onClick={() => setMobileBookSection("overview")}
+                >
+                  总览
+                </button>
+                <button
+                  type="button"
+                  className={`nav-btn ${mobileBookSection === "books" ? "is-active" : ""}`.trim()}
+                  onClick={() => setMobileBookSection("books")}
+                >
+                  书籍
+                </button>
+                <button
+                  type="button"
+                  className={`nav-btn ${mobileBookSection === "tasks" ? "is-active" : ""}`.trim()}
+                  onClick={() => setMobileBookSection("tasks")}
+                >
+                  上传/任务
+                </button>
+              </div>
+            )}
+
+            {showOverviewSection && (
             <section className="admin-book-section">
               <div className="admin-book-section-head">
                 <h4>总览</h4>
@@ -2446,7 +2480,9 @@ export function AdminBookUploadSection({
                 </p>
               )}
             </section>
+            )}
 
+            {showBooksSection && (
             <section className="admin-book-section">
               <div className="admin-book-section-head">
                 <h4>书籍列表</h4>
@@ -2510,7 +2546,9 @@ export function AdminBookUploadSection({
                 </ul>
               )}
             </section>
+            )}
 
+            {showTasksSection && (
             <section className="admin-book-section">
               <div className="admin-book-section-head">
                 <h4>上传新书</h4>
@@ -2680,6 +2718,7 @@ export function AdminBookUploadSection({
                 </div>
               </div>
             </section>
+            )}
 
             {summaryTaskDetailRunId && (
               <div className="mask" role="dialog" aria-modal="true" onClick={() => setSummaryTaskDetailRunId("") }>
@@ -3149,12 +3188,8 @@ export function AdminPuzzleSelectStage({
   useEffect(() => {
     if (!isMobile) {
       setMobilePreviewOpen(false);
-      return;
     }
-    if (selectedChapter) {
-      setMobilePreviewOpen(true);
-    }
-  }, [isMobile, selectedChapter?.id]);
+  }, [isMobile]);
 
   const renderPreviewPanel = (mode: "desktop" | "mobile", withActions = true): JSX.Element => {
     if (!selectedChapter) {
@@ -3448,6 +3483,7 @@ type ScenePreviewState = {
 };
 
 type AdminPuzzleGenerateStageProps = {
+  isMobile: boolean;
   activeJob: AdminGenerationJobDetail | null;
   activeRunId: string;
   progress: {
@@ -3464,6 +3500,7 @@ type AdminPuzzleGenerateStageProps = {
   reviewPendingImageCount: number;
   reviewPublishing: boolean;
   reviewRetryingSceneIndex: number | null;
+  reviewUploadingSceneIndex: number | null;
   reviewRunId: string;
   reviewScenes: AdminGenerationScene[];
   reviewCounts: AdminGenerationSceneCounts;
@@ -3474,6 +3511,7 @@ type AdminPuzzleGenerateStageProps = {
   onLoadGenerationReview: (runId: string) => void;
   onOpenGenerateDialog: () => void;
   onRetryReviewCandidate: (sceneIndex: number) => void;
+  onUploadReviewSceneImage: (sceneIndex: number, file: File) => void;
   onSetPuzzleFlowReview: () => void;
   onSetPuzzleFlowSelect: () => void;
   onSetScenePreview: (preview: ScenePreviewState) => void;
@@ -3483,6 +3521,7 @@ type AdminPuzzleGenerateStageProps = {
 };
 
 export function AdminPuzzleGenerateStage({
+  isMobile,
   activeJob,
   activeRunId,
   progress,
@@ -3494,6 +3533,7 @@ export function AdminPuzzleGenerateStage({
   reviewPendingImageCount,
   reviewPublishing,
   reviewRetryingSceneIndex,
+  reviewUploadingSceneIndex,
   reviewRunId,
   reviewScenes,
   reviewCounts,
@@ -3504,6 +3544,7 @@ export function AdminPuzzleGenerateStage({
   onLoadGenerationReview,
   onOpenGenerateDialog,
   onRetryReviewCandidate,
+  onUploadReviewSceneImage,
   onSetPuzzleFlowReview,
   onSetPuzzleFlowSelect,
   onSetScenePreview,
@@ -3511,6 +3552,26 @@ export function AdminPuzzleGenerateStage({
   renderRecentJobsGenerate,
   formatGenerationJobStateLabel,
 }: AdminPuzzleGenerateStageProps): JSX.Element {
+  const uploadFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploadTargetSceneIndex, setUploadTargetSceneIndex] = useState<number | null>(null);
+
+  const handleTriggerUpload = useCallback((sceneIndex: number): void => {
+    setUploadTargetSceneIndex(sceneIndex);
+    uploadFileInputRef.current?.click();
+  }, []);
+
+  const handleUploadFileChange = useCallback((event: ChangeEvent<HTMLInputElement>): void => {
+    const targetSceneIndex = uploadTargetSceneIndex;
+    const selectedFile = event.target.files?.[0] || null;
+    event.target.value = "";
+
+    if (!targetSceneIndex || !selectedFile) {
+      return;
+    }
+
+    onUploadReviewSceneImage(targetSceneIndex, selectedFile);
+  }, [onUploadReviewSceneImage, uploadTargetSceneIndex]);
+
   return (
     <div className="admin-puzzle-stage-stack">
       <div className="admin-run-box admin-puzzle-stage">
@@ -3602,7 +3663,7 @@ export function AdminPuzzleGenerateStage({
             <p className="progress-inline">暂无 scene，请先完成文案生成。</p>
           ) : (
             <div className="admin-review-columns">
-              <div className="admin-review-table">
+              <div className="admin-review-table admin-review-table-splits">
                 <h4>LLM 拆分结果（标题 / 文案 / Prompt）</h4>
                 <table>
                   <thead>
@@ -3626,8 +3687,8 @@ export function AdminPuzzleGenerateStage({
                 </table>
               </div>
 
-              <div className="admin-review-table">
-                <h4>图片状态（可重试）</h4>
+              <div className="admin-review-table admin-review-table-images">
+                <h4>图片状态（可重试 / 上传）</h4>
                 <table>
                   <thead>
                     <tr>
@@ -3641,9 +3702,14 @@ export function AdminPuzzleGenerateStage({
                     {reviewScenes.map((scene) => {
                       const retrying = reviewRetryingSceneIndex === scene.scene_index;
                       const deleting = reviewDeletingSceneIndex === scene.scene_index;
+                      const uploading = reviewUploadingSceneIndex === scene.scene_index;
                       const canRetry = scene.image_status === "failed"
                         || scene.image_status === "skipped"
                         || scene.image_status === "pending";
+                      const canUpload = scene.image_status === "failed"
+                        || scene.image_status === "skipped"
+                        || scene.image_status === "pending"
+                        || scene.image_status === "running";
 
                       return (
                         <tr key={`${scene.run_id}-${scene.scene_index}-image`}>
@@ -3682,15 +3748,23 @@ export function AdminPuzzleGenerateStage({
                               <button
                                 type="button"
                                 className="nav-btn admin-review-retry-btn"
-                                disabled={reviewLocked || retrying || deleting || reviewPublishing || reviewLoading || reviewBatchGenerating || !canRetry}
+                                disabled={reviewLocked || retrying || deleting || uploading || reviewPublishing || reviewLoading || reviewBatchGenerating || !canRetry}
                                 onClick={() => onRetryReviewCandidate(scene.scene_index)}
                               >
                                 {retrying ? "重试中..." : "重试"}
                               </button>
                               <button
                                 type="button"
+                                className="nav-btn admin-review-upload-btn"
+                                disabled={reviewLocked || retrying || deleting || uploading || reviewPublishing || reviewLoading || reviewBatchGenerating || !canUpload}
+                                onClick={() => handleTriggerUpload(scene.scene_index)}
+                              >
+                                {uploading ? "上传中..." : "上传"}
+                              </button>
+                              <button
+                                type="button"
                                 className="nav-btn admin-review-delete-btn"
-                                disabled={reviewLocked || retrying || deleting || reviewPublishing || reviewLoading || reviewBatchGenerating}
+                                disabled={reviewLocked || retrying || deleting || uploading || reviewPublishing || reviewLoading || reviewBatchGenerating}
                                 onClick={() => onDeleteReviewScene(scene.scene_index)}
                               >
                                 {deleting ? "删除中..." : "删除"}
@@ -3702,6 +3776,91 @@ export function AdminPuzzleGenerateStage({
                     })}
                   </tbody>
                 </table>
+                {isMobile && (
+                  <ul className="admin-review-mobile-list">
+                    {reviewScenes.map((scene) => {
+                      const retrying = reviewRetryingSceneIndex === scene.scene_index;
+                      const deleting = reviewDeletingSceneIndex === scene.scene_index;
+                      const uploading = reviewUploadingSceneIndex === scene.scene_index;
+                      const canRetry = scene.image_status === "failed"
+                        || scene.image_status === "skipped"
+                        || scene.image_status === "pending";
+                      const canUpload = scene.image_status === "failed"
+                        || scene.image_status === "skipped"
+                        || scene.image_status === "pending"
+                        || scene.image_status === "running";
+
+                      return (
+                        <li key={`${scene.run_id}-${scene.scene_index}-mobile-image`} className="admin-review-mobile-item">
+                          <div className="admin-review-mobile-head">
+                            <strong>Scene {scene.scene_index}</strong>
+                            <span className={`level-state ${scene.image_status === "success" ? "done" : "todo"}`}>
+                              {scene.image_status}
+                            </span>
+                          </div>
+                          <p className="admin-review-mobile-text">
+                            {compactText(scene.title || scene.image_prompt || "未设置标题", 80)}
+                          </p>
+                          {scene.error_message ? (
+                            <p className="admin-review-error">{scene.error_message}</p>
+                          ) : null}
+
+                          <div className="admin-review-mobile-actions">
+                            <button
+                              type="button"
+                              className="nav-btn admin-review-retry-btn"
+                              disabled={reviewLocked || retrying || deleting || uploading || reviewPublishing || reviewLoading || reviewBatchGenerating || !canRetry}
+                              onClick={() => onRetryReviewCandidate(scene.scene_index)}
+                            >
+                              {retrying ? "重试中..." : "重试"}
+                            </button>
+                            <button
+                              type="button"
+                              className="nav-btn admin-review-upload-btn"
+                              disabled={reviewLocked || retrying || deleting || uploading || reviewPublishing || reviewLoading || reviewBatchGenerating || !canUpload}
+                              onClick={() => handleTriggerUpload(scene.scene_index)}
+                            >
+                              {uploading ? "上传中..." : "上传"}
+                            </button>
+                            <button
+                              type="button"
+                              className="nav-btn admin-review-delete-btn"
+                              disabled={reviewLocked || retrying || deleting || uploading || reviewPublishing || reviewLoading || reviewBatchGenerating}
+                              onClick={() => onDeleteReviewScene(scene.scene_index)}
+                            >
+                              {deleting ? "删除中..." : "删除"}
+                            </button>
+                          </div>
+
+                          {scene.image_url ? (
+                            <button
+                              type="button"
+                              className="link-btn admin-review-mobile-preview"
+                              onClick={() => {
+                                onSetScenePreview({
+                                  run_id: scene.run_id,
+                                  scene_index: scene.scene_index,
+                                  title: scene.title,
+                                  image_url: scene.image_url,
+                                  image_prompt: scene.image_prompt,
+                                });
+                              }}
+                            >
+                              预览图片
+                            </button>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                <input
+                  ref={uploadFileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  style={{ display: "none" }}
+                  onChange={handleUploadFileChange}
+                />
               </div>
             </div>
           )}
