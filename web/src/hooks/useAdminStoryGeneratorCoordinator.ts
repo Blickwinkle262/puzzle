@@ -264,7 +264,17 @@ export function useAdminStoryGeneratorCoordinator({
     setLoadingUsers,
     setPasswordResetSubmittingUserId,
     setRoleSubmittingKey,
+    setUserPage,
+    setUserPageSize,
+    setUserRoleFilter,
+    setUserSummary,
+    setUserTotal,
     setUserKeyword,
+    userPage,
+    userPageSize,
+    userRoleFilter,
+    userSummary,
+    userTotal,
     userKeyword,
   } = useAdminUserPermissionState();
 
@@ -491,10 +501,15 @@ export function useAdminStoryGeneratorCoordinator({
     loadAdminUsers,
   } = useAdminUsersCoordinator({
     userKeyword,
+    userPage,
+    userPageSize,
+    userRoleFilter,
     setAdminUsers,
     setLoadingUsers,
     setPasswordResetSubmittingUserId,
     setRoleSubmittingKey,
+    setUserSummary,
+    setUserTotal,
     setPanelError: setUsersPanelError,
     setPanelInfo: setUsersPanelInfo,
   });
@@ -505,6 +520,11 @@ export function useAdminStoryGeneratorCoordinator({
   );
 
   const progress = useMemo(() => extractJobProgress(activeJob), [activeJob]);
+  const userTotalPages = useMemo(() => {
+    const size = Math.max(1, Number(userPageSize || 10));
+    const pages = Math.ceil(Math.max(0, Number(userTotal || 0)) / size);
+    return pages > 0 ? pages : 1;
+  }, [userPageSize, userTotal]);
   const totalChapterPages = useMemo(() => {
     const pages = Math.ceil(chapterTotal / chapterPageSize);
     return pages > 0 ? pages : 1;
@@ -1867,13 +1887,38 @@ export function useAdminStoryGeneratorCoordinator({
       return;
     }
 
+    const timer = window.setTimeout(() => {
+      void loadAdminUsers();
+    }, 160);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [loadAdminUsers, userKeyword, userPage, userPageSize, userRoleFilter, visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    if (userPage <= userTotalPages) {
+      return;
+    }
+
+    setUserPage(userTotalPages);
+  }, [setUserPage, userPage, userTotalPages, visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
     void loadRecentJobs();
-    void loadAdminUsers();
     void loadConfigStories();
     void loadLlmConfig();
     void loadBookUploadTasks();
     void loadBookSummaryTasks();
-  }, [loadAdminUsers, loadBookSummaryTasks, loadBookUploadTasks, loadConfigStories, loadLlmConfig, loadRecentJobs, visible]);
+  }, [loadBookSummaryTasks, loadBookUploadTasks, loadConfigStories, loadLlmConfig, loadRecentJobs, visible]);
 
   useEffect(() => {
     if (!visible) {
@@ -1967,14 +2012,23 @@ export function useAdminStoryGeneratorCoordinator({
     loadingUsers,
     passwordResetSubmittingUserId,
     roleSubmittingKey,
+    userPage,
+    userPageSize,
     userKeyword,
+    userRoleFilter,
+    userSummary,
+    userTotal,
+    userTotalPages,
   };
 
   const usersActions = {
     handleApprovePasswordReset,
     handleRoleToggle,
     loadAdminUsers,
+    setUserPage,
+    setUserPageSize,
     setUserKeyword,
+    setUserRoleFilter,
   };
 
   const levelConfigState = {

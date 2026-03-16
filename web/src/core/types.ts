@@ -504,8 +504,17 @@ export type AdminUserSummary = {
 
 export type AdminUsersResponse = {
   total: number;
+  has_more: boolean;
+  summary: {
+    total_users: number;
+    guest_users: number;
+    admin_users: number;
+    pending_reset_users: number;
+  };
   filters: {
     limit: number;
+    offset: number;
+    page: number;
     keyword: string;
     role: string;
   };

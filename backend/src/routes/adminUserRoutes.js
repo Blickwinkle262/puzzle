@@ -19,9 +19,17 @@ export function registerAdminUserRoutes(app, deps) {
 
   app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
     try {
-      const limit = Math.min(300, normalizePositiveInteger(req.query?.limit) || 120);
+      const limit = Math.min(100, normalizePositiveInteger(req.query?.limit) || 10);
       const keyword = normalizeShortText(req.query?.keyword);
       const role = normalizeAdminRole(req.query?.role);
+      const pageInput = normalizePositiveInteger(req.query?.page);
+      const rawOffset = Number(req.query?.offset);
+      const offset = Number.isInteger(rawOffset) && rawOffset >= 0
+        ? rawOffset
+        : pageInput
+          ? (pageInput - 1) * limit
+          : 0;
+      const page = Math.floor(offset / limit) + 1;
 
       const where = ["1 = 1"];
       const params = [];
@@ -41,6 +49,31 @@ export function registerAdminUserRoutes(app, deps) {
         .prepare(
           `
           SELECT COUNT(1) AS total
+          FROM users u
+          WHERE ${whereClause}
+        `,
+        )
+        .get(...params);
+      const total = Number(totalRow?.total || 0);
+
+      const summaryRow = db
+        .prepare(
+          `
+          SELECT
+            COUNT(1) AS total_users,
+            SUM(CASE WHEN u.is_guest = 1 THEN 1 ELSE 0 END) AS guest_users,
+            SUM(
+              CASE WHEN EXISTS (
+                SELECT 1 FROM user_roles ur_admin
+                WHERE ur_admin.user_id = u.id AND ur_admin.role = 'admin'
+              ) THEN 1 ELSE 0 END
+            ) AS admin_users,
+            SUM(
+              CASE WHEN EXISTS (
+                SELECT 1 FROM password_reset_requests pr_pending
+                WHERE pr_pending.user_id = u.id AND pr_pending.status = 'pending'
+              ) THEN 1 ELSE 0 END
+            ) AS pending_reset_users
           FROM users u
           WHERE ${whereClause}
         `,
@@ -83,17 +116,28 @@ export function registerAdminUserRoutes(app, deps) {
           WHERE ${whereClause}
           ORDER BY u.id DESC
           LIMIT ?
+          OFFSET ?
         `,
         )
-        .all(...params, limit);
+        .all(...params, limit, offset);
 
       const rolesByUserId = getRolesByUserIds(users.map((item) => Number(item.id)));
+      const hasMore = offset + users.length < total;
 
       res.json({
-        total: Number(totalRow?.total || 0),
+        total,
+        has_more: hasMore,
+        summary: {
+          total_users: Number(summaryRow?.total_users || 0),
+          guest_users: Number(summaryRow?.guest_users || 0),
+          admin_users: Number(summaryRow?.admin_users || 0),
+          pending_reset_users: Number(summaryRow?.pending_reset_users || 0),
+        },
         filters: {
           limit,
-          keyword,
+          offset,
+          page,
+          keyword: keyword || "",
           role: role || "",
         },
         users: users.map((item) => serializeAdminUser(item, rolesByUserId.get(Number(item.id)) || [])),

@@ -1762,6 +1762,199 @@ select:hover:not(:focus) {
   margin-bottom: 10px;
 }
 
+.admin-user-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.admin-user-summary-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-user-summary-card small {
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.admin-user-summary-card strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 18px;
+}
+
+.admin-user-summary-card span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.admin-user-summary-card.is-admin {
+  border-color: rgba(236, 108, 108, 0.45);
+  background: rgba(144, 38, 38, 0.2);
+}
+
+.admin-user-summary-card.is-guest {
+  border-color: rgba(96, 181, 243, 0.45);
+  background: rgba(30, 90, 145, 0.2);
+}
+
+.admin-user-summary-card.is-reset {
+  border-color: rgba(240, 192, 96, 0.45);
+  background: rgba(119, 83, 24, 0.22);
+}
+
+.admin-user-role-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.admin-user-role-tab {
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.admin-user-role-tab b {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.admin-user-role-tab.is-active {
+  border-color: rgba(200, 150, 60, 0.42);
+  background: rgba(200, 150, 60, 0.12);
+  color: var(--text-accent);
+}
+
+.admin-user-role-tab.is-active b {
+  color: var(--gold-bright);
+}
+
+.admin-role-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.admin-role-badge.role-admin {
+  border-color: rgba(236, 108, 108, 0.45);
+  background: rgba(144, 38, 38, 0.2);
+  color: #ffd0d0;
+}
+
+.admin-role-badge.role-editor {
+  border-color: rgba(96, 181, 243, 0.45);
+  background: rgba(30, 90, 145, 0.2);
+  color: #c7e8ff;
+}
+
+.admin-role-badge.role-level-designer {
+  border-color: rgba(160, 128, 255, 0.44);
+  background: rgba(75, 54, 133, 0.2);
+  color: #ded4ff;
+}
+
+.admin-role-badge.role-operator {
+  border-color: rgba(100, 218, 170, 0.45);
+  background: rgba(34, 104, 77, 0.2);
+  color: #cbffe8;
+}
+
+.admin-role-badge.role-none {
+  color: var(--text-muted);
+}
+
+.admin-user-role-apply-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-user-role-apply-row select {
+  min-width: 140px;
+}
+
+.admin-user-pagination {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-user-mobile-list {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-user-mobile-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.admin-user-mobile-card > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-user-mobile-card > header strong {
+  color: var(--text-primary);
+}
+
+.admin-user-mobile-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.admin-user-role-sheet {
+  width: min(94vw, 460px);
+  text-align: left;
+  font-size: var(--text-sm);
+  padding: 16px;
+}
+
+.admin-user-role-sheet h4 {
+  margin: 0 0 8px;
+  font-size: var(--text-lg);
+  color: var(--text-accent);
+}
+
+.admin-user-role-sheet-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
 .admin-user-best-time-cell {
   display: grid;
   gap: 4px;
@@ -2138,6 +2331,14 @@ tbody td,
 
   .admin-user-toolbar {
     grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .admin-user-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-user-pagination {
     align-items: stretch;
   }
 
@@ -5457,6 +5658,10 @@ summary:focus-visible {
 
   .admin-chapter-table table {
     min-width: 640px;
+  }
+
+  .admin-user-summary-grid {
+    grid-template-columns: 1fr;
   }
 
   .admin-chapter-table th,

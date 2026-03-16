@@ -377,6 +377,8 @@ export type AdminUsersQuery = {
   keyword?: string;
   role?: AdminManagedRole;
   limit?: number;
+  offset?: number;
+  page?: number;
 };
 
 export function apiListAdminBookChapters(query: AdminBookChaptersQuery = {}): Promise<AdminBookChaptersResponse> {

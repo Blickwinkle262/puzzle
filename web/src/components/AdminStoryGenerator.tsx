@@ -46,13 +46,21 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       loadingUsers,
       passwordResetSubmittingUserId,
       roleSubmittingKey,
+      userPage,
+      userPageSize,
       userKeyword,
+      userRoleFilter,
+      userSummary,
+      userTotal,
+      userTotalPages,
     },
     usersActions: {
       handleApprovePasswordReset,
       handleRoleToggle,
       loadAdminUsers,
+      setUserPage,
       setUserKeyword,
+      setUserRoleFilter,
     },
     levelConfigState: {
       configLevelId,
@@ -261,12 +269,19 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         adminUsers={adminUsers}
         collapsed={collapsedSections.users}
         loadingUsers={loadingUsers}
+        isMobile={isMobile}
         noticeError={panelNoticeScope === "users" ? panelError : ""}
         noticeInfo={panelNoticeScope === "users" ? panelInfo : ""}
         managedRoles={MANAGED_ROLES}
         passwordResetSubmittingUserId={passwordResetSubmittingUserId}
         roleSubmittingKey={roleSubmittingKey}
+        userPage={userPage}
+        userPageSize={userPageSize}
         userKeyword={userKeyword}
+        userRoleFilter={userRoleFilter}
+        userSummary={userSummary}
+        userTotal={userTotal}
+        userTotalPages={userTotalPages}
         formatDurationMs={formatDurationMs}
         formatTime={formatTime}
         onApprovePasswordReset={(user) => {
@@ -281,10 +296,20 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
           setPanelNoticeScope("users");
           void handleRoleToggle(user, role);
         }}
+        onRoleFilterChange={(value) => {
+          setPanelNoticeScope("users");
+          setUserRoleFilter(value);
+          setUserPage(1);
+        }}
+        onUserPageChange={(value) => {
+          setPanelNoticeScope("users");
+          setUserPage(value);
+        }}
         onToggleSection={() => toggleSection("users")}
         onUserKeywordChange={(value) => {
           setPanelNoticeScope("users");
           setUserKeyword(value);
+          setUserPage(1);
         }}
       />
 

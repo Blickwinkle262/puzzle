@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   AdminBookIngestTask,
@@ -20,6 +20,7 @@ import {
   AdminLlmProviderModel,
   AdminLlmRuntimeState,
   AdminManagedRole,
+  AdminUsersResponse,
   AdminUserSummary,
   StoryListItem,
 } from "../core/types";
@@ -97,40 +98,174 @@ export function AdminStatusBanner({
 type AdminUserPermissionsSectionProps = {
   adminUsers: AdminUserSummary[];
   collapsed: boolean;
+  isMobile: boolean;
   loadingUsers: boolean;
   noticeError: string;
   noticeInfo: string;
   managedRoles: AdminManagedRole[];
   passwordResetSubmittingUserId: string;
   roleSubmittingKey: string;
+  userPage: number;
+  userPageSize: number;
   userKeyword: string;
+  userRoleFilter: AdminManagedRole | "";
+  userSummary: AdminUsersResponse["summary"];
+  userTotal: number;
+  userTotalPages: number;
   formatDurationMs: (value: number) => string;
   formatTime: (value: string | null | undefined) => string;
   onApprovePasswordReset: (user: AdminUserSummary) => void;
   onRefreshUsers: () => void;
   onRoleToggle: (user: AdminUserSummary, role: AdminManagedRole) => void;
+  onRoleFilterChange: (value: AdminManagedRole | "") => void;
   onToggleSection: () => void;
+  onUserPageChange: (value: number) => void;
   onUserKeywordChange: (value: string) => void;
+};
+
+const USER_ROLE_LABELS: Record<AdminManagedRole, string> = {
+  admin: "管理员",
+  editor: "编辑",
+  level_designer: "关卡设计",
+  operator: "运营",
+};
+
+const USER_ROLE_BADGE_CLASS: Record<AdminManagedRole, string> = {
+  admin: "role-admin",
+  editor: "role-editor",
+  level_designer: "role-level-designer",
+  operator: "role-operator",
 };
 
 export function AdminUserPermissionsSection({
   adminUsers,
   collapsed,
+  isMobile,
   loadingUsers,
   noticeError,
   noticeInfo,
   managedRoles,
   passwordResetSubmittingUserId,
   roleSubmittingKey,
+  userPage,
+  userPageSize,
   userKeyword,
+  userRoleFilter,
+  userSummary,
+  userTotal,
+  userTotalPages,
   formatDurationMs,
   formatTime,
   onApprovePasswordReset,
   onRefreshUsers,
   onRoleToggle,
+  onRoleFilterChange,
   onToggleSection,
+  onUserPageChange,
   onUserKeywordChange,
 }: AdminUserPermissionsSectionProps): JSX.Element {
+  const [selectedRoleByUserId, setSelectedRoleByUserId] = useState<Record<number, AdminManagedRole>>({});
+  const [mobileRoleUserId, setMobileRoleUserId] = useState(0);
+
+  useEffect(() => {
+    setSelectedRoleByUserId((prev) => {
+      const next: Record<number, AdminManagedRole> = {};
+      for (const user of adminUsers) {
+        const cached = prev[user.id];
+        if (cached && managedRoles.includes(cached)) {
+          next[user.id] = cached;
+        }
+      }
+      return next;
+    });
+  }, [adminUsers, managedRoles]);
+
+  useEffect(() => {
+    if (!mobileRoleUserId) {
+      return;
+    }
+    if (!adminUsers.some((item) => item.id === mobileRoleUserId)) {
+      setMobileRoleUserId(0);
+    }
+  }, [adminUsers, mobileRoleUserId]);
+
+  const roleTabs = useMemo(
+    () => [
+      { value: "" as const, label: "全部" },
+      { value: "admin" as const, label: USER_ROLE_LABELS.admin },
+      { value: "editor" as const, label: USER_ROLE_LABELS.editor },
+      { value: "level_designer" as const, label: USER_ROLE_LABELS.level_designer },
+      { value: "operator" as const, label: USER_ROLE_LABELS.operator },
+    ],
+    [],
+  );
+
+  const resolveSelectedRole = useCallback((user: AdminUserSummary): AdminManagedRole => {
+    const cached = selectedRoleByUserId[user.id];
+    if (cached) {
+      return cached;
+    }
+    const existing = user.roles[0];
+    if (existing && managedRoles.includes(existing)) {
+      return existing;
+    }
+    return managedRoles[0] || "editor";
+  }, [managedRoles, selectedRoleByUserId]);
+
+  const activeMobileUser = useMemo(
+    () => adminUsers.find((item) => item.id === mobileRoleUserId) || null,
+    [adminUsers, mobileRoleUserId],
+  );
+  const mobileSelectedRole = activeMobileUser ? resolveSelectedRole(activeMobileUser) : (managedRoles[0] || "editor");
+  const mobileHasRole = Boolean(activeMobileUser && activeMobileUser.roles.includes(mobileSelectedRole));
+  const mobileActionKey = activeMobileUser
+    ? `${activeMobileUser.id}:${mobileSelectedRole}:${mobileHasRole ? "revoke" : "grant"}`
+    : "";
+
+  const canGoPrevPage = userPage > 1;
+  const canGoNextPage = userPage < userTotalPages;
+
+  const handleRoleSelectChange = (userId: number, role: AdminManagedRole): void => {
+    setSelectedRoleByUserId((prev) => ({
+      ...prev,
+      [userId]: role,
+    }));
+  };
+
+  const handleOpenMobileRoleSheet = (user: AdminUserSummary): void => {
+    if (!selectedRoleByUserId[user.id]) {
+      handleRoleSelectChange(user.id, resolveSelectedRole(user));
+    }
+    setMobileRoleUserId(user.id);
+  };
+
+  const handleApplyRole = (user: AdminUserSummary): void => {
+    onRoleToggle(user, resolveSelectedRole(user));
+  };
+
+  const handleApplyMobileRole = (): void => {
+    if (!activeMobileUser) {
+      return;
+    }
+    onRoleToggle(activeMobileUser, mobileSelectedRole);
+    setMobileRoleUserId(0);
+  };
+
+  const renderRoleBadges = (user: AdminUserSummary): JSX.Element => {
+    if (user.roles.length === 0) {
+      return <span className="admin-role-badge role-none">无角色</span>;
+    }
+    return (
+      <>
+        {user.roles.map((role) => (
+          <span key={`${user.id}-${role}`} className={`admin-role-badge ${USER_ROLE_BADGE_CLASS[role]}`}>
+            {USER_ROLE_LABELS[role]}
+          </span>
+        ))}
+      </>
+    );
+  };
+
   return (
     <div className="admin-run-box admin-collapsible-box">
       <button type="button" className={`admin-collapse-head ${collapsed ? "collapsed" : ""}`} onClick={onToggleSection}>
@@ -143,11 +278,52 @@ export function AdminUserPermissionsSection({
           {noticeError && <div className="banner-error">{noticeError}</div>}
           {noticeInfo && <div className="banner-info">{noticeInfo}</div>}
 
+          <div className="admin-user-summary-grid">
+            <article className="admin-user-summary-card">
+              <small>筛选后用户</small>
+              <strong>{userSummary.total_users}</strong>
+              <span>每页 {userPageSize} 人</span>
+            </article>
+            <article className="admin-user-summary-card is-admin">
+              <small>管理员</small>
+              <strong>{userSummary.admin_users}</strong>
+              <span>含 admin 角色</span>
+            </article>
+            <article className="admin-user-summary-card is-guest">
+              <small>游客用户</small>
+              <strong>{userSummary.guest_users}</strong>
+              <span>guest 登录</span>
+            </article>
+            <article className="admin-user-summary-card is-reset">
+              <small>待审批改密</small>
+              <strong>{userSummary.pending_reset_users}</strong>
+              <span>待处理申请</span>
+            </article>
+          </div>
+
           <div className="admin-user-toolbar">
             <label className="form-field">
               用户名检索
               <input value={userKeyword} onChange={(event) => onUserKeywordChange(event.currentTarget.value)} placeholder="输入用户名关键字" />
             </label>
+
+            <div className="admin-user-role-tabs" role="tablist" aria-label="角色快速筛选">
+              {roleTabs.map((tab) => {
+                const active = userRoleFilter === tab.value;
+                return (
+                  <button
+                    key={`role-tab-${tab.value || "all"}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={`admin-user-role-tab${active ? " is-active" : ""}`}
+                    onClick={() => onRoleFilterChange(tab.value)}
+                  >
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
 
             <div className="inline-actions">
               <button type="button" className="nav-btn" onClick={onRefreshUsers} disabled={loadingUsers}>
@@ -156,100 +332,200 @@ export function AdminUserPermissionsSection({
             </div>
           </div>
 
-          <div className="admin-chapter-table">
-            {adminUsers.length === 0 ? (
-              <div className="progress-inline">暂无匹配用户。</div>
-            ) : (
+          {adminUsers.length === 0 ? (
+            <div className="progress-inline">暂无匹配用户。</div>
+          ) : isMobile ? (
+            <div className="admin-user-mobile-list">
+              {adminUsers.map((user) => {
+                const selectedRole = resolveSelectedRole(user);
+                const hasSelectedRole = user.roles.includes(selectedRole);
+                const actionKey = `${user.id}:${selectedRole}:${hasSelectedRole ? "revoke" : "grant"}`;
+                return (
+                  <article key={user.id} className="admin-user-mobile-card">
+                    <header>
+                      <strong>{user.username}</strong>
+                      <span className="progress-inline">{formatTime(user.last_login_at)}</span>
+                    </header>
+                    <div className="admin-user-mobile-tags">
+                      {user.is_guest ? <span className="level-state todo">guest</span> : null}
+                      {user.is_admin ? <span className="level-state done">admin访问</span> : null}
+                      {renderRoleBadges(user)}
+                      {user.pending_password_reset_count > 0 ? (
+                        <span className="level-state pending">待审批 {user.pending_password_reset_count}</span>
+                      ) : null}
+                    </div>
+                    <p className="progress-inline">
+                      {user.fastest_level_time_ms && user.fastest_level_time_ms > 0
+                        ? `最快 ${formatDurationMs(user.fastest_level_time_ms)} · 已通关 ${user.completed_level_count}`
+                        : `暂无成绩 · 已通关 ${user.completed_level_count}`}
+                    </p>
+                    <div className="inline-actions">
+                      <button
+                        type="button"
+                        className={hasSelectedRole ? "link-btn" : "nav-btn"}
+                        disabled={Boolean(roleSubmittingKey)}
+                        onClick={() => handleOpenMobileRoleSheet(user)}
+                      >
+                        {roleSubmittingKey === actionKey ? "处理中..." : "角色变更"}
+                      </button>
+                      {user.pending_password_reset_count > 0 ? (
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          disabled={Boolean(roleSubmittingKey) || Boolean(passwordResetSubmittingUserId)}
+                          onClick={() => onApprovePasswordReset(user)}
+                        >
+                          {passwordResetSubmittingUserId === String(user.id) ? "审批中..." : "审批改密"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="admin-chapter-table">
               <table>
                 <thead>
                   <tr>
                     <th>用户</th>
                     <th>当前角色</th>
-                    <th>关卡最快</th>
-                    <th>权限操作</th>
+                    <th>关卡数据</th>
+                    <th>角色操作</th>
                     <th>最近登录</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {adminUsers.map((user) => (
-                    <tr key={user.id}>
-                      <td>
-                        <strong>{user.username}</strong>
-                        {user.is_guest ? <span className="level-state todo">guest</span> : null}
-                        {user.is_admin ? <span className="level-state done">admin访问</span> : null}
-                      </td>
-                      <td>
-                        <div className="admin-role-list">
-                          {user.roles.length > 0
-                            ? user.roles.map((role) => (
-                              <span key={`${user.id}-${role}`} className="level-state done">{role}</span>
-                            ))
-                            : <span className="level-state todo">无角色</span>}
-                          {user.pending_password_reset_count > 0 ? (
-                            <span className="level-state pending">
-                              待审批改密 {user.pending_password_reset_count}
-                            </span>
-                          ) : null}
-                        </div>
-                        {user.pending_password_reset_count > 0 && (
-                          <div className="progress-inline">
-                            最近申请：{formatTime(user.last_password_reset_requested_at)}
+                  {adminUsers.map((user) => {
+                    const selectedRole = resolveSelectedRole(user);
+                    const hasSelectedRole = user.roles.includes(selectedRole);
+                    const actionKey = `${user.id}:${selectedRole}:${hasSelectedRole ? "revoke" : "grant"}`;
+
+                    return (
+                      <tr key={user.id}>
+                        <td>
+                          <strong>{user.username}</strong>
+                          {user.is_guest ? <span className="level-state todo">guest</span> : null}
+                          {user.is_admin ? <span className="level-state done">admin访问</span> : null}
+                        </td>
+                        <td>
+                          <div className="admin-role-list">
+                            {renderRoleBadges(user)}
+                            {user.pending_password_reset_count > 0 ? (
+                              <span className="level-state pending">待审批改密 {user.pending_password_reset_count}</span>
+                            ) : null}
                           </div>
-                        )}
-                      </td>
-                      <td>
-                        <div className="admin-user-best-time-cell">
-                          {user.fastest_level_time_ms && user.fastest_level_time_ms > 0 ? (
-                            <>
-                              <span className="level-state done">最快 {formatDurationMs(user.fastest_level_time_ms)}</span>
-                              <span className="progress-inline">记录关卡 {user.best_time_level_count} · 已通关 {user.completed_level_count}</span>
-                            </>
-                          ) : (
-                            <span className="level-state todo">暂无成绩</span>
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="admin-role-actions">
                           {user.pending_password_reset_count > 0 ? (
+                            <div className="progress-inline">最近申请：{formatTime(user.last_password_reset_requested_at)}</div>
+                          ) : null}
+                        </td>
+                        <td>
+                          <div className="admin-user-best-time-cell">
+                            {user.fastest_level_time_ms && user.fastest_level_time_ms > 0 ? (
+                              <>
+                                <span className="level-state done">最快 {formatDurationMs(user.fastest_level_time_ms)}</span>
+                                <span className="progress-inline">记录关卡 {user.best_time_level_count} · 已通关 {user.completed_level_count}</span>
+                              </>
+                            ) : (
+                              <span className="level-state todo">暂无成绩 · 已通关 {user.completed_level_count}</span>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="admin-user-role-apply-row">
+                            <select
+                              value={selectedRole}
+                              onChange={(event) => handleRoleSelectChange(user.id, event.currentTarget.value as AdminManagedRole)}
+                            >
+                              {managedRoles.map((role) => (
+                                <option key={`${user.id}-role-${role}`} value={role}>
+                                  {USER_ROLE_LABELS[role]}
+                                </option>
+                              ))}
+                            </select>
                             <button
                               type="button"
-                              className="primary-btn"
-                              disabled={Boolean(roleSubmittingKey) || Boolean(passwordResetSubmittingUserId)}
-                              onClick={() => onApprovePasswordReset(user)}
+                              className={hasSelectedRole ? "link-btn" : "nav-btn"}
+                              disabled={Boolean(roleSubmittingKey)}
+                              onClick={() => handleApplyRole(user)}
                             >
-                              {passwordResetSubmittingUserId === String(user.id) ? "审批中..." : "审批改密"}
+                              {roleSubmittingKey === actionKey
+                                ? "处理中..."
+                                : hasSelectedRole
+                                  ? "移除角色"
+                                  : "授予角色"}
                             </button>
-                          ) : null}
-                          {managedRoles.map((role) => {
-                            const hasRole = user.roles.includes(role);
-                            const actionKey = `${user.id}:${role}:${hasRole ? "revoke" : "grant"}`;
-
-                            return (
+                            {user.pending_password_reset_count > 0 ? (
                               <button
-                                key={`${user.id}-action-${role}`}
                                 type="button"
-                                className={hasRole ? "link-btn" : "nav-btn"}
-                                disabled={Boolean(roleSubmittingKey)}
-                                onClick={() => onRoleToggle(user, role)}
+                                className="primary-btn"
+                                disabled={Boolean(roleSubmittingKey) || Boolean(passwordResetSubmittingUserId)}
+                                onClick={() => onApprovePasswordReset(user)}
                               >
-                                {roleSubmittingKey === actionKey
-                                  ? "处理中..."
-                                  : hasRole
-                                    ? `移除 ${role}`
-                                    : `授予 ${role}`}
+                                {passwordResetSubmittingUserId === String(user.id) ? "审批中..." : "审批改密"}
                               </button>
-                            );
-                          })}
-                        </div>
-                      </td>
-                      <td>{formatTime(user.last_login_at)}</td>
-                    </tr>
-                  ))}
+                            ) : null}
+                          </div>
+                        </td>
+                        <td>{formatTime(user.last_login_at)}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
-            )}
+            </div>
+          )}
+
+          <div className="admin-user-pagination">
+            <span className="admin-page-meta">
+              第 {userPage}/{userTotalPages} 页 · 共 {userTotal} 人
+            </span>
+            <div className="inline-actions">
+              <button type="button" className="nav-btn admin-page-side-btn" disabled={!canGoPrevPage || loadingUsers} onClick={() => onUserPageChange(Math.max(1, userPage - 1))}>
+                上一页
+              </button>
+              <button type="button" className="nav-btn admin-page-side-btn" disabled={!canGoNextPage || loadingUsers} onClick={() => onUserPageChange(Math.min(userTotalPages, userPage + 1))}>
+                下一页
+              </button>
+            </div>
           </div>
+
+          {isMobile && activeMobileUser ? (
+            <div className="mask" role="dialog" aria-modal="true" onClick={() => setMobileRoleUserId(0)}>
+              <div className="mask-card admin-user-role-sheet" onClick={(event) => event.stopPropagation()}>
+                <h4>角色变更 · {activeMobileUser.username}</h4>
+                <p className="progress-inline">
+                  当前角色：{activeMobileUser.roles.length > 0 ? activeMobileUser.roles.map((role) => USER_ROLE_LABELS[role]).join(" / ") : "无角色"}
+                </p>
+                <label className="form-field">
+                  目标角色
+                  <select
+                    value={mobileSelectedRole}
+                    onChange={(event) => handleRoleSelectChange(activeMobileUser.id, event.currentTarget.value as AdminManagedRole)}
+                  >
+                    {managedRoles.map((role) => (
+                      <option key={`mobile-role-${activeMobileUser.id}-${role}`} value={role}>
+                        {USER_ROLE_LABELS[role]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="inline-actions admin-user-role-sheet-actions">
+                  <button type="button" className="nav-btn" onClick={() => setMobileRoleUserId(0)}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className={mobileHasRole ? "link-btn" : "primary-btn"}
+                    disabled={Boolean(roleSubmittingKey)}
+                    onClick={handleApplyMobileRole}
+                  >
+                    {roleSubmittingKey === mobileActionKey ? "处理中..." : mobileHasRole ? "移除角色" : "授予角色"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </>
       )}
     </div>
