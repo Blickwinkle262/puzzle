@@ -3497,6 +3497,23 @@ function runBookSummaryCommand(options = {}) {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    if (typeof options.onSpawn === "function") {
+      try {
+        options.onSpawn({
+          pid: Number(child.pid) || 0,
+          kill: (signal = "SIGTERM") => {
+            try {
+              return child.kill(signal);
+            } catch {
+              return false;
+            }
+          },
+        });
+      } catch {
+        // ignore onSpawn hook errors
+      }
+    }
+
     let stdout = "";
     let stderr = "";
     let finished = false;

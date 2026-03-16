@@ -157,6 +157,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       reparsingBook,
       summaryBookId,
       generatingBookSummary,
+      bookSummaryTaskActionRunId,
       bookUploadTasks,
       loadingBookUploadTasks,
       bookSummaryTasks,
@@ -169,6 +170,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       handleConfirmBookReplace,
       handleReparseBook,
       handleGenerateBookSummary,
+      handleResumeBookSummaryTask,
+      handleCancelBookSummaryTask,
       handlePreviewChapterText,
       handleUploadBook,
       handleOpenGeneratedStory,
@@ -478,6 +481,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         reparsingBook={reparsingBook}
         summaryBookId={summaryBookId}
         generatingBookSummary={generatingBookSummary}
+        bookSummaryTaskActionRunId={bookSummaryTaskActionRunId}
         uploadingBook={uploadingBook}
         onReloadTasks={() => {
           setPanelNoticeScope("bookIngest");
@@ -498,6 +502,14 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         onGenerateBookSummary={(targetBookId) => {
           setPanelNoticeScope("bookIngest");
           void handleGenerateBookSummary(targetBookId);
+        }}
+        onResumeBookSummaryTask={(runId) => {
+          setPanelNoticeScope("bookIngest");
+          void handleResumeBookSummaryTask(runId);
+        }}
+        onCancelBookSummaryTask={(runId) => {
+          setPanelNoticeScope("bookIngest");
+          void handleCancelBookSummaryTask(runId);
         }}
         onUploadBook={(file) => {
           setPanelNoticeScope("bookIngest");

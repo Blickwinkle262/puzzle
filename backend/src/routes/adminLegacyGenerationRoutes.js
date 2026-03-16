@@ -48,6 +48,8 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     syncGenerationJobCandidatesFromSummary,
   } = deps;
 
+  const activeBookSummaryControllers = new Map();
+
   function normalizeIngestTaskStatus(value) {
     const status = String(value || "").trim().toLowerCase();
     if (status === "success") {
@@ -264,6 +266,77 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     } catch {
       return [];
     }
+  }
+
+  function startBookSummaryRunTask({
+    runId,
+    scopeType,
+    scopeId,
+    userId,
+    force,
+    chunkSize,
+    summaryMaxChars,
+  }) {
+    const normalizedScopeType = String(scopeType || "").trim() === "chapter" ? "chapter" : "book";
+    const normalizedScopeId = normalizePositiveInteger(scopeId);
+    if (!normalizedScopeId) {
+      throw new Error("scope_id 必须是正整数");
+    }
+
+    const control = {
+      pid: 0,
+      kill: () => false,
+    };
+    activeBookSummaryControllers.set(runId, control);
+
+    const commandPromise = runBookSummaryCommand({
+      bookId: normalizedScopeType === "book" ? normalizedScopeId : 0,
+      chapterId: normalizedScopeType === "chapter" ? normalizedScopeId : 0,
+      runId,
+      userId,
+      force,
+      chunkSize,
+      summaryMaxChars,
+      onSpawn: ({ pid, kill }) => {
+        control.pid = Number(pid) || 0;
+        control.kill = typeof kill === "function" ? kill : () => false;
+      },
+    });
+
+    void commandPromise
+      .catch((error) => {
+        console.error("[book-summary] async task failed", error);
+      })
+      .finally(() => {
+        activeBookSummaryControllers.delete(runId);
+      });
+  }
+
+  function markSummaryRunAsCancelled(runId, reason) {
+    const normalizedRunId = normalizeShortText(runId || "");
+    if (!normalizedRunId) {
+      return null;
+    }
+
+    const message = String(reason || "").trim() || "任务已由管理员取消";
+    try {
+      const booksDb = getBooksDbOrThrow();
+      booksDb
+        .prepare(
+          `
+            UPDATE chapter_summary_runs
+            SET status = 'failed',
+                finished_at = COALESCE(finished_at, datetime('now')),
+                error_message = ?
+            WHERE run_id = ? AND status = 'running'
+          `,
+        )
+        .run(message, normalizedRunId);
+    } catch (error) {
+      console.error("[book-summary] failed to mark cancelled", error);
+    }
+
+    return getSummaryRunByRunId(normalizedRunId);
   }
 
   function getBookByBookId(bookId) {
@@ -672,16 +745,17 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     try {
       const runId = `summary_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const force = normalizeBoolean(req.query?.force ?? req.body?.force);
+      const chunkSize = normalizePositiveInteger(req.query?.chunk_size ?? req.body?.chunk_size) || 1000;
+      const summaryMaxChars = normalizePositiveInteger(req.query?.summary_max_chars ?? req.body?.summary_max_chars) || 200;
 
-      void runBookSummaryCommand({
-        bookId,
+      startBookSummaryRunTask({
         runId,
+        scopeType: "book",
+        scopeId: bookId,
         userId: req.authUser?.id,
         force,
-        chunkSize: normalizePositiveInteger(req.query?.chunk_size ?? req.body?.chunk_size) || 1000,
-        summaryMaxChars: normalizePositiveInteger(req.query?.summary_max_chars ?? req.body?.summary_max_chars) || 200,
-      }).catch((error) => {
-        console.error("[book-summary] async task failed", error);
+        chunkSize,
+        summaryMaxChars,
       });
 
       res.status(202).json({
@@ -697,6 +771,122 @@ export function registerAdminLegacyGenerationRoutes(app, deps) {
     } catch (error) {
       res.status(500).json({ message: asMessage(error, "创建摘要任务失败") });
     }
+  });
+
+  app.post("/api/admin/books/summaries/:runId/resume", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+    const sourceRunId = normalizeShortText(req.params?.runId || "");
+    if (!sourceRunId) {
+      res.status(400).json({ message: "run_id 不能为空" });
+      return;
+    }
+
+    const sourceTask = getSummaryRunByRunId(sourceRunId);
+    if (!sourceTask) {
+      res.status(404).json({ message: "未找到摘要任务", code: "book_summary_run_not_found" });
+      return;
+    }
+
+    if (sourceTask.status === "running") {
+      res.status(409).json({
+        code: "book_summary_running",
+        message: `摘要任务仍在进行中（任务 ${sourceTask.run_id}）`,
+        task: sourceTask,
+      });
+      return;
+    }
+
+    try {
+      const booksDb = getBooksDbOrThrow();
+      const runningRow = booksDb
+        .prepare(
+          `
+            SELECT run_id
+            FROM chapter_summary_runs
+            WHERE scope_type = ? AND scope_id = ? AND status = 'running'
+            ORDER BY id DESC
+            LIMIT 1
+          `,
+        )
+        .get(sourceTask.scope_type, sourceTask.scope_id);
+
+      if (runningRow?.run_id) {
+        res.status(409).json({
+          code: "book_summary_running",
+          message: `该范围已有进行中的摘要任务（任务 ${String(runningRow.run_id)}）`,
+          task: getSummaryRunByRunId(String(runningRow.run_id)),
+        });
+        return;
+      }
+    } catch {
+      // ignore lookup failure and continue to command execution
+    }
+
+    try {
+      const resumeRunId = `summary_resume_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const force = normalizeBoolean(req.query?.force ?? req.body?.force);
+      const chunkSize = normalizePositiveInteger(req.query?.chunk_size ?? req.body?.chunk_size) || 1000;
+      const summaryMaxChars = normalizePositiveInteger(req.query?.summary_max_chars ?? req.body?.summary_max_chars) || 200;
+
+      startBookSummaryRunTask({
+        runId: resumeRunId,
+        scopeType: sourceTask.scope_type,
+        scopeId: sourceTask.scope_id,
+        userId: req.authUser?.id,
+        force,
+        chunkSize,
+        summaryMaxChars,
+      });
+
+      res.status(202).json({
+        ok: true,
+        resumed_from_run_id: sourceTask.run_id,
+        run_id: resumeRunId,
+        status: "queued",
+        scope_type: sourceTask.scope_type,
+        scope_id: sourceTask.scope_id,
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "继续摘要任务失败") });
+    }
+  });
+
+  app.post("/api/admin/books/summaries/:runId/cancel", requireAuth, requireCsrf, requireAdmin, (req, res) => {
+    const runId = normalizeShortText(req.params?.runId || "");
+    if (!runId) {
+      res.status(400).json({ message: "run_id 不能为空" });
+      return;
+    }
+
+    const task = getSummaryRunByRunId(runId);
+    if (!task) {
+      res.status(404).json({ message: "未找到摘要任务", code: "book_summary_run_not_found" });
+      return;
+    }
+
+    if (task.status === "succeeded" || task.status === "failed") {
+      res.status(409).json({
+        code: "book_summary_not_running",
+        message: `任务已结束（${task.status}）`,
+        task,
+      });
+      return;
+    }
+
+    const reason = String(req.body?.reason || "").trim() || "任务已由管理员取消";
+    const control = activeBookSummaryControllers.get(runId);
+    let signalSent = false;
+    if (control && typeof control.kill === "function") {
+      signalSent = Boolean(control.kill("SIGTERM"));
+    }
+    const updatedTask = markSummaryRunAsCancelled(runId, reason) || task;
+
+    res.json({
+      ok: true,
+      run_id: runId,
+      signal_sent: signalSent,
+      task: updatedTask,
+      message: signalSent ? "取消信号已发送，任务状态已更新" : "任务状态已更新为已取消",
+    });
   });
 
   app.post("/api/admin/generate-story", requireAuth, requireCsrf, requireAdmin, (req, res) => {

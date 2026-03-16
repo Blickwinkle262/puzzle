@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  apiCancelAdminBookSummaryTask,
   apiCreateAdminLlmProvider,
   apiDeleteAdminLlmProvider,
   apiCreateAdminBookSummaryRun,
@@ -17,6 +18,7 @@ import {
   apiListAdminLlmProviderModels,
   apiListAdminLlmProviders,
   apiReparseAdminBook,
+  apiResumeAdminBookSummaryTask,
   apiTestAdminLlmProvider,
   apiUpdateAdminLlmGlobalProfile,
   apiUpdateAdminLlmProvider,
@@ -419,6 +421,7 @@ export function useAdminStoryGeneratorCoordinator({
   const [reparsingBook, setReparsingBook] = useState(false);
   const [summaryBookId, setSummaryBookId] = useState("");
   const [generatingBookSummary, setGeneratingBookSummary] = useState(false);
+  const [bookSummaryTaskActionRunId, setBookSummaryTaskActionRunId] = useState("");
   const [bookSummaryTasks, setBookSummaryTasks] = useState<AdminBookSummaryTask[]>([]);
   const [loadingBookSummaryTasks, setLoadingBookSummaryTasks] = useState(false);
   const [pendingBookReplace, setPendingBookReplace] = useState<PendingBookReplaceState | null>(null);
@@ -1735,6 +1738,102 @@ export function useAdminStoryGeneratorCoordinator({
     }
   }, [loadBookSummaryTasks, setBookIngestPanelError, setBookIngestPanelInfo, waitForBookSummaryTask]);
 
+  const handleResumeBookSummaryTask = useCallback(async (sourceRunId: string): Promise<void> => {
+    const normalizedSourceRunId = String(sourceRunId || "").trim();
+    if (!normalizedSourceRunId) {
+      setBookIngestPanelError("run_id 不能为空");
+      return;
+    }
+
+    setBookSummaryTaskActionRunId(normalizedSourceRunId);
+    setGeneratingBookSummary(true);
+    setBookIngestPanelError("");
+    setBookIngestPanelInfo(`正在继续摘要任务：${normalizedSourceRunId}...`);
+
+    try {
+      let runId = "";
+      let scopeType: "book" | "chapter" = "book";
+      let scopeId = 0;
+
+      try {
+        const response = await apiResumeAdminBookSummaryTask(normalizedSourceRunId, {
+          force: false,
+          chunk_size: 1000,
+          summary_max_chars: 200,
+        });
+        runId = String(response?.run_id || "").trim();
+        scopeType = response?.scope_type === "chapter" ? "chapter" : "book";
+        scopeId = Number(response?.scope_id || 0);
+      } catch (err) {
+        const status = Number((err as { status?: unknown })?.status || 0);
+        if (status !== 409) {
+          throw err;
+        }
+        const payloadObj = ((err as { payload?: unknown })?.payload ?? null) as Record<string, unknown> | null;
+        const code = String(payloadObj?.code || "").trim();
+        if (code !== "book_summary_running") {
+          throw err;
+        }
+        const task = payloadObj?.task && typeof payloadObj.task === "object"
+          ? payloadObj.task as Record<string, unknown>
+          : null;
+        runId = String(task?.run_id || "").trim();
+        scopeType = String(task?.scope_type || "").trim() === "chapter" ? "chapter" : "book";
+        scopeId = Number(task?.scope_id || 0);
+        if (!runId) {
+          throw err;
+        }
+        setBookIngestPanelInfo(`检测到正在运行的摘要任务：${runId}，已自动跟踪进度`);
+      }
+
+      if (!runId) {
+        throw new Error("继续任务失败：run_id 为空");
+      }
+
+      if (scopeType === "book" && Number.isInteger(scopeId) && scopeId > 0) {
+        setSummaryBookId(String(scopeId));
+      }
+
+      const fallbackName = scopeType === "book"
+        ? String(books.find((item) => item.id === scopeId)?.title || "").trim() || `book_${scopeId}`
+        : `chapter_${scopeId}`;
+      await waitForBookSummaryTask(runId, fallbackName);
+    } catch (err) {
+      setBookIngestPanelError(errorMessage(err));
+    } finally {
+      setGeneratingBookSummary(false);
+      setBookSummaryTaskActionRunId("");
+      void loadBookSummaryTasks({ silent: true });
+    }
+  }, [books, loadBookSummaryTasks, setBookIngestPanelError, setBookIngestPanelInfo, waitForBookSummaryTask]);
+
+  const handleCancelBookSummaryTask = useCallback(async (runId: string): Promise<void> => {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) {
+      setBookIngestPanelError("run_id 不能为空");
+      return;
+    }
+
+    setBookSummaryTaskActionRunId(normalizedRunId);
+    setBookIngestPanelError("");
+    setBookIngestPanelInfo(`正在取消摘要任务：${normalizedRunId}...`);
+    try {
+      const response = await apiCancelAdminBookSummaryTask(normalizedRunId, {
+        reason: "cancelled by admin",
+      });
+      const task = response?.task || null;
+      if (task && task.scope_type === "book" && Number.isFinite(task.scope_id) && task.scope_id > 0) {
+        setSummaryBookId(String(task.scope_id));
+      }
+      setBookIngestPanelInfo(String(response?.message || `摘要任务已取消：${normalizedRunId}`));
+    } catch (err) {
+      setBookIngestPanelError(errorMessage(err));
+    } finally {
+      setBookSummaryTaskActionRunId("");
+      void loadBookSummaryTasks({ silent: true });
+    }
+  }, [loadBookSummaryTasks, setBookIngestPanelError, setBookIngestPanelInfo]);
+
   const handlePreviewChapterText = useCallback(async (chapterId?: number): Promise<void> => {
     const targetChapterId = chapterId ?? selectedChapterId;
     if (!targetChapterId) {
@@ -2132,6 +2231,7 @@ export function useAdminStoryGeneratorCoordinator({
     reparsingBook,
     summaryBookId,
     generatingBookSummary,
+    bookSummaryTaskActionRunId,
     bookUploadTasks,
     loadingBookUploadTasks,
     bookSummaryTasks,
@@ -2145,6 +2245,8 @@ export function useAdminStoryGeneratorCoordinator({
     handleConfirmBookReplace,
     handleReparseBook,
     handleGenerateBookSummary,
+    handleResumeBookSummaryTask,
+    handleCancelBookSummaryTask,
     handlePreviewChapterText,
     handleUploadBook,
     handleOpenGeneratedStory,

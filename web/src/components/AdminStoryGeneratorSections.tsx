@@ -1965,12 +1965,15 @@ type AdminBookUploadSectionProps = {
   reparsingBook: boolean;
   summaryBookId: string;
   generatingBookSummary: boolean;
+  bookSummaryTaskActionRunId: string;
   uploadingBook: boolean;
   onReloadTasks: () => void;
   onReloadSummaryTasks: () => void;
   onReparseBook: (bookId: number) => void;
   onSummaryBookIdChange: (value: string) => void;
   onGenerateBookSummary: (bookId: number) => void;
+  onResumeBookSummaryTask: (runId: string) => void;
+  onCancelBookSummaryTask: (runId: string) => void;
   onUploadBook: (file: File) => void;
   onToggleSection: () => void;
 };
@@ -1987,12 +1990,15 @@ export function AdminBookUploadSection({
   reparsingBook,
   summaryBookId,
   generatingBookSummary,
+  bookSummaryTaskActionRunId,
   uploadingBook,
   onReloadTasks,
   onReloadSummaryTasks,
   onReparseBook,
   onSummaryBookIdChange,
   onGenerateBookSummary,
+  onResumeBookSummaryTask,
+  onCancelBookSummaryTask,
   onUploadBook,
   onToggleSection,
 }: AdminBookUploadSectionProps): JSX.Element {
@@ -2411,7 +2417,7 @@ export function AdminBookUploadSection({
                               <span className={`level-state ${statusClassName(task.status)}`}>{statusLabel(task.status)}</span>
                             </div>
                             <p className="progress-inline">来源：{task.source_name || "-"}</p>
-                            <p className="progress-inline">章节进度：{progress.done}/{progress.total || 0}</p>
+                            <p className="progress-inline">章节进度：第 {progress.done}/{progress.total || 0} 章</p>
                             <div className="admin-progress-bar">
                               <div style={{ width: `${progress.percent}%` }} />
                             </div>
@@ -2443,6 +2449,9 @@ export function AdminBookUploadSection({
                         const scopeBookTitle = task.scope_type === "book" ? bookTitleById.get(task.scope_id) || "" : "";
                         const canSetTarget = task.scope_type === "book" && Number.isFinite(task.scope_id) && task.scope_id > 0;
                         const canRerun = canSetTarget && task.status !== "running" && task.status !== "queued";
+                        const canResume = task.status === "failed";
+                        const canCancel = task.status === "running" || task.status === "queued";
+                        const isTaskActioning = String(bookSummaryTaskActionRunId || "") === task.run_id;
                         return (
                           <li key={task.run_id} className="admin-book-task-item">
                             <div className="admin-book-task-head">
@@ -2453,17 +2462,37 @@ export function AdminBookUploadSection({
                               作用域：{task.scope_type}:{task.scope_id}
                               {scopeBookTitle ? ` · ${scopeBookTitle}` : ""}
                             </p>
-                            <p className="progress-inline">章节进度：{progress.done}/{progress.total || 0}</p>
+                            <p className="progress-inline">章节进度：第 {progress.done}/{progress.total || 0} 章</p>
                             <div className="admin-progress-bar">
                               <div style={{ width: `${progress.percent}%` }} />
                             </div>
                             <p className="progress-inline">{formatSummaryTask(task)}</p>
                             {task.error_message ? <p className="progress-inline">失败原因：{compactText(task.error_message, 120)}</p> : null}
                             <div className="inline-actions admin-book-task-actions">
+                              {canResume && (
+                                <button
+                                  type="button"
+                                  className="primary-btn"
+                                  disabled={isTaskActioning}
+                                  onClick={() => onResumeBookSummaryTask(task.run_id)}
+                                >
+                                  {isTaskActioning ? "继续中..." : "继续任务"}
+                                </button>
+                              )}
+                              {canCancel && (
+                                <button
+                                  type="button"
+                                  className="link-btn admin-llm-v2-danger-btn"
+                                  disabled={isTaskActioning}
+                                  onClick={() => onCancelBookSummaryTask(task.run_id)}
+                                >
+                                  {isTaskActioning ? "取消中..." : "取消任务"}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 className={canSetTarget && task.scope_id === targetBookId ? "primary-btn" : "nav-btn"}
-                                disabled={!canSetTarget}
+                                disabled={!canSetTarget || isTaskActioning}
                                 onClick={() => {
                                   if (canSetTarget) {
                                     onSummaryBookIdChange(String(task.scope_id));
@@ -2475,7 +2504,7 @@ export function AdminBookUploadSection({
                               <button
                                 type="button"
                                 className="nav-btn"
-                                disabled={!canRerun || generatingBookSummary}
+                                disabled={!canRerun || generatingBookSummary || isTaskActioning}
                                 onClick={() => {
                                   if (canRerun) {
                                     onGenerateBookSummary(task.scope_id);

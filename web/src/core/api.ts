@@ -565,6 +565,68 @@ export function apiListAdminBookSummaryTasks(limit = 10): Promise<{
   }>(`/admin/books/summaries${qs}`);
 }
 
+export function apiResumeAdminBookSummaryTask(
+  runId: string,
+  payload: {
+    force?: boolean;
+    chunk_size?: number;
+    summary_max_chars?: number;
+  } = {},
+): Promise<{
+  ok: boolean;
+  resumed_from_run_id: string;
+  run_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  scope_type: "book" | "chapter";
+  scope_id: number;
+}> {
+  const normalizedRunId = String(runId || "").trim();
+  if (!normalizedRunId) {
+    throw new ApiError(400, "run_id 不能为空");
+  }
+
+  return requestJson<{
+    ok: boolean;
+    resumed_from_run_id: string;
+    run_id: string;
+    status: "queued" | "running" | "succeeded" | "failed";
+    scope_type: "book" | "chapter";
+    scope_id: number;
+  }>(`/admin/books/summaries/${encodeURIComponent(normalizedRunId)}/resume`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiCancelAdminBookSummaryTask(
+  runId: string,
+  payload: {
+    reason?: string;
+  } = {},
+): Promise<{
+  ok: boolean;
+  run_id: string;
+  signal_sent: boolean;
+  task: AdminBookSummaryTask;
+  message: string;
+}> {
+  const normalizedRunId = String(runId || "").trim();
+  if (!normalizedRunId) {
+    throw new ApiError(400, "run_id 不能为空");
+  }
+
+  return requestJson<{
+    ok: boolean;
+    run_id: string;
+    signal_sent: boolean;
+    task: AdminBookSummaryTask;
+    message: string;
+  }>(`/admin/books/summaries/${encodeURIComponent(normalizedRunId)}/cancel`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
 export function apiCreateAdminGenerationJob(payload: AdminGenerateStoryPayload): Promise<AdminGenerationCreateResponse> {
   return requestJson<AdminGenerationCreateResponse>("/admin/generate-story", {
     method: "POST",
