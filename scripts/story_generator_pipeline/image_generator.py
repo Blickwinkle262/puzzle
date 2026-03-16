@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import re
 from pathlib import Path
@@ -72,6 +73,75 @@ def _infer_suffix(url: str) -> str:
     return ".png"
 
 
+def _clip_text(value: str, max_len: int = 180) -> str:
+    text = str(value or "")
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
+
+
+def _parse_json_lenient(raw_text: str) -> Any:
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+
+    decoder = json.JSONDecoder()
+
+    try:
+        first_value, first_end = decoder.raw_decode(text)
+        rest = text[first_end:].strip()
+        if not rest:
+            return first_value
+
+        if rest.startswith("{") or rest.startswith("["):
+            second_value, second_end = decoder.raw_decode(rest)
+            if not rest[second_end:].strip():
+                return second_value
+    except json.JSONDecodeError:
+        pass
+
+    sse_payloads: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("data:"):
+            continue
+        payload = stripped[5:].strip()
+        if payload and payload != "[DONE]":
+            sse_payloads.append(payload)
+
+    for payload in sse_payloads:
+        try:
+            return _parse_json_lenient(payload)
+        except (PipelineError, json.JSONDecodeError, ValueError, TypeError):
+            continue
+
+    for marker in ("{", "["):
+        start = text.find(marker)
+        if start <= 0:
+            continue
+        candidate = text[start:].strip()
+        try:
+            parsed, parsed_end = decoder.raw_decode(candidate)
+            if not candidate[parsed_end:].strip():
+                return parsed
+        except json.JSONDecodeError:
+            continue
+
+    raise PipelineError(f"invalid_json_response:{_clip_text(text)}")
+
+
+async def _read_json_response(response: Any, *, context: str) -> Any:
+    raw_text = await response.text()
+    try:
+        return _parse_json_lenient(raw_text)
+    except PipelineError as exc:
+        content_type = str(response.headers.get("Content-Type") or "").strip()
+        snippet = _clip_text(str(raw_text or "").replace("\n", "\\n"), 120)
+        raise PipelineError(
+            f"{context}:invalid_json status={response.status} content_type={content_type} body={snippet}"
+        ) from exc
+
+
 async def _poll_prediction(
     *,
     session: Any,
@@ -84,9 +154,9 @@ async def _poll_prediction(
     for _ in range(poll_attempts):
         await asyncio.sleep(poll_seconds)
         async with session.get(poll_url, headers=headers, timeout=timeout_sec) as response:
-            data = await response.json(content_type=None)
+            data = await _read_json_response(response, context="poll_prediction")
 
-        status = str(data.get("status") or "").lower()
+        status = str(data.get("status") or "").lower() if isinstance(data, dict) else ""
         if status in {"failed", "canceled", "cancelled", "error"}:
             raise PipelineError(f"prediction failed with status={status}")
 
@@ -124,7 +194,7 @@ async def generate_single_image(
 
         try:
             async with session.post(api_url, headers=headers, json=payload, timeout=timeout_sec) as response:
-                data = await response.json(content_type=None)
+                data = await _read_json_response(response, context="create_prediction")
                 if response.status >= 400:
                     reason = _as_content_filter_reason(str(data))
                     return ImageResult(
