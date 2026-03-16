@@ -2117,6 +2117,35 @@ export function AdminBookUploadSection({
   const runningUploadCount = bookUploadTasks.filter((task) => task.status === "queued" || task.status === "running").length;
   const runningSummaryCount = bookSummaryTasks.filter((task) => task.status === "queued" || task.status === "running").length;
   const targetBookId = parseSummaryBookId();
+  const bookTitleById = new Map<number, string>(books.map((book) => [book.id, String(book.title || "").trim()]));
+
+  const computeUploadTaskProgress = (task: AdminBookIngestTask): { done: number; total: number; percent: number } => {
+    const total = Math.max(0, Number(task.total) || 0);
+    const fallbackDone = Math.max(0, (Number(task.inserted) || 0) + (Number(task.updated) || 0) + (Number(task.skipped) || 0));
+    const done = task.status === "succeeded"
+      ? total
+      : Math.max(0, Math.min(total || fallbackDone, fallbackDone));
+    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+    return {
+      done,
+      total,
+      percent,
+    };
+  };
+
+  const computeSummaryTaskProgress = (task: AdminBookSummaryTask): { done: number; total: number; percent: number } => {
+    const total = Math.max(0, Number(task.total) || 0);
+    const processed = Math.max(0, Number(task.processed) || 0);
+    const done = task.status === "succeeded"
+      ? total
+      : Math.max(0, Math.min(total || processed, processed));
+    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+    return {
+      done,
+      total,
+      percent,
+    };
+  };
 
   const latestSuccessBannerText = latestSucceededIngestTask
     ? `${latestSucceededIngestTask.source_name || "book"} 解析完成 · ${Math.max(0, latestSucceededIngestTask.inserted || latestSucceededIngestTask.total)}章入库`
@@ -2153,15 +2182,21 @@ export function AdminBookUploadSection({
 
           <p className="progress-inline">上传 .epub / .txt 后会自动解析入库，并同步到“谜题管理（章节生成）”选章节列表。</p>
 
-          {runningTask && (
-            <div className="banner-info admin-running-banner">
-              <span>检测到未完成上传任务：{runningTask.run_id}（{statusLabel(runningTask.status)}）</span>
-            </div>
-          )}
-
-          {runningSummaryTask && (
-            <div className="banner-info admin-running-banner">
-              <span>检测到未完成摘要任务：{runningSummaryTask.run_id}（{statusLabel(runningSummaryTask.status)}）</span>
+          {(runningTask || runningSummaryTask) && (
+            <div className="banner-info admin-running-banner admin-book-running-focus">
+              <span>
+                当前运行：上传 {runningUploadCount} · 摘要 {runningSummaryCount}
+              </span>
+              {runningTask ? (
+                <span className="progress-inline">
+                  上传任务 {runningTask.run_id} · {statusLabel(runningTask.status)}
+                </span>
+              ) : null}
+              {runningSummaryTask ? (
+                <span className="progress-inline">
+                  摘要任务 {runningSummaryTask.run_id} · {statusLabel(runningSummaryTask.status)} · {Math.max(0, Number(runningSummaryTask.processed) || 0)}/{Math.max(0, Number(runningSummaryTask.total) || 0)}
+                </span>
+              ) : null}
             </div>
           )}
 
@@ -2202,6 +2237,10 @@ export function AdminBookUploadSection({
                 <div className="admin-book-stat-card">
                   <strong>{totalPending}</strong>
                   <span>待处理</span>
+                </div>
+                <div className="admin-book-stat-card is-emphasis">
+                  <strong>{summaryPercent}%</strong>
+                  <span>摘要进度（{totalSummarized}/{totalChapters || 0}）</span>
                 </div>
               </div>
 
@@ -2362,15 +2401,25 @@ export function AdminBookUploadSection({
                   ) : bookUploadTasks.length === 0 ? (
                     <p className="progress-inline">暂无上传任务记录。</p>
                   ) : (
-                    <ul>
-                      {bookUploadTasks.map((task) => (
-                        <li key={task.run_id}>
-                          <span>{task.run_id}</span>
-                          <span className={`level-state ${statusClassName(task.status)}`}>{statusLabel(task.status)}</span>
-                          <span>{task.source_name || "-"}</span>
-                          <span>{formatTaskSummary(task)}</span>
-                        </li>
-                      ))}
+                    <ul className="admin-book-task-list">
+                      {bookUploadTasks.map((task) => {
+                        const progress = computeUploadTaskProgress(task);
+                        return (
+                          <li key={task.run_id} className="admin-book-task-item">
+                            <div className="admin-book-task-head">
+                              <strong>{task.run_id}</strong>
+                              <span className={`level-state ${statusClassName(task.status)}`}>{statusLabel(task.status)}</span>
+                            </div>
+                            <p className="progress-inline">来源：{task.source_name || "-"}</p>
+                            <p className="progress-inline">章节进度：{progress.done}/{progress.total || 0}</p>
+                            <div className="admin-progress-bar">
+                              <div style={{ width: `${progress.percent}%` }} />
+                            </div>
+                            <p className="progress-inline">{formatTaskSummary(task)}</p>
+                            {task.error_message ? <p className="progress-inline">失败原因：{compactText(task.error_message, 120)}</p> : null}
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </div>
@@ -2388,15 +2437,57 @@ export function AdminBookUploadSection({
                   ) : bookSummaryTasks.length === 0 ? (
                     <p className="progress-inline">暂无摘要任务记录。</p>
                   ) : (
-                    <ul>
-                      {bookSummaryTasks.map((task) => (
-                        <li key={task.run_id}>
-                          <span>{task.run_id}</span>
-                          <span className={`level-state ${statusClassName(task.status)}`}>{statusLabel(task.status)}</span>
-                          <span>{task.scope_type}:{task.scope_id}</span>
-                          <span>{formatSummaryTask(task)}</span>
-                        </li>
-                      ))}
+                    <ul className="admin-book-task-list">
+                      {bookSummaryTasks.map((task) => {
+                        const progress = computeSummaryTaskProgress(task);
+                        const scopeBookTitle = task.scope_type === "book" ? bookTitleById.get(task.scope_id) || "" : "";
+                        const canSetTarget = task.scope_type === "book" && Number.isFinite(task.scope_id) && task.scope_id > 0;
+                        const canRerun = canSetTarget && task.status !== "running" && task.status !== "queued";
+                        return (
+                          <li key={task.run_id} className="admin-book-task-item">
+                            <div className="admin-book-task-head">
+                              <strong>{task.run_id}</strong>
+                              <span className={`level-state ${statusClassName(task.status)}`}>{statusLabel(task.status)}</span>
+                            </div>
+                            <p className="progress-inline">
+                              作用域：{task.scope_type}:{task.scope_id}
+                              {scopeBookTitle ? ` · ${scopeBookTitle}` : ""}
+                            </p>
+                            <p className="progress-inline">章节进度：{progress.done}/{progress.total || 0}</p>
+                            <div className="admin-progress-bar">
+                              <div style={{ width: `${progress.percent}%` }} />
+                            </div>
+                            <p className="progress-inline">{formatSummaryTask(task)}</p>
+                            {task.error_message ? <p className="progress-inline">失败原因：{compactText(task.error_message, 120)}</p> : null}
+                            <div className="inline-actions admin-book-task-actions">
+                              <button
+                                type="button"
+                                className={canSetTarget && task.scope_id === targetBookId ? "primary-btn" : "nav-btn"}
+                                disabled={!canSetTarget}
+                                onClick={() => {
+                                  if (canSetTarget) {
+                                    onSummaryBookIdChange(String(task.scope_id));
+                                  }
+                                }}
+                              >
+                                {canSetTarget && task.scope_id === targetBookId ? "当前目标" : "设为摘要目标"}
+                              </button>
+                              <button
+                                type="button"
+                                className="nav-btn"
+                                disabled={!canRerun || generatingBookSummary}
+                                onClick={() => {
+                                  if (canRerun) {
+                                    onGenerateBookSummary(task.scope_id);
+                                  }
+                                }}
+                              >
+                                {generatingBookSummary && canSetTarget && task.scope_id === targetBookId ? "生成中..." : "重新生成摘要"}
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </div>

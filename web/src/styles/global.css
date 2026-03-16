@@ -2377,6 +2377,12 @@ tbody td,
   gap: 12px;
 }
 
+.admin-book-running-focus {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+}
+
 .admin-book-success-banner {
   border: 1px solid rgba(64, 192, 112, 0.42);
   border-radius: var(--radius-lg);
@@ -2437,7 +2443,7 @@ tbody td,
 
 .admin-book-overview-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -2461,6 +2467,19 @@ tbody td,
   color: var(--text-secondary);
   font-size: var(--text-xs);
   letter-spacing: 0.06em;
+}
+
+.admin-book-stat-card.is-emphasis {
+  border-color: rgba(200, 150, 60, 0.46);
+  background: linear-gradient(145deg, rgba(200, 150, 60, 0.18), rgba(255, 255, 255, 0.02));
+}
+
+.admin-book-stat-card.is-emphasis strong {
+  color: var(--text-accent);
+}
+
+.admin-book-stat-card.is-emphasis span {
+  color: var(--text-primary);
 }
 
 .admin-book-overview-progress {
@@ -2574,6 +2593,40 @@ tbody td,
   padding: 10px;
 }
 
+.admin-book-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.admin-book-task-item {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-book-task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-book-task-head strong {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-primary);
+}
+
+.admin-book-task-actions {
+  justify-content: flex-start;
+}
+
 .admin-job-view-btn {
   padding: 4px 10px;
   font-size: 12px;
@@ -2619,6 +2672,11 @@ tbody td,
 
   .admin-book-overview-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-book-running-focus {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
   }
 
   .admin-book-target-row {
