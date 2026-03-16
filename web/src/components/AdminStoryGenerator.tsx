@@ -1,4 +1,5 @@
 import { useAdminStoryGeneratorCoordinator } from "../hooks/useAdminStoryGeneratorCoordinator";
+import { useIsMobile } from "../hooks/useIsMobile";
 import {
   AdminBookReplaceConfirmModal,
   AdminChapterTextPreviewModal,
@@ -13,7 +14,6 @@ import {
   AdminRecentJobsList,
   AdminRunReviewSection,
   AdminScenePreviewModal,
-  AdminStatusBanner,
   AdminUserPermissionsSection,
 } from "./AdminStoryGeneratorSections";
 import {
@@ -30,6 +30,7 @@ type AdminStoryGeneratorProps = {
 };
 
 export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory }: AdminStoryGeneratorProps): JSX.Element | null {
+  const isMobile = useIsMobile(920);
   const {
     constants: {
       CHAPTER_PAGE_SIZE_OPTIONS,
@@ -233,9 +234,11 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
     uiState: {
       panelError,
       panelInfo,
+      panelNoticeScope,
       showGenerateDialog,
     },
     uiActions: {
+      setPanelNoticeScope,
       setShowGenerateDialog,
     },
   } = useAdminStoryGeneratorCoordinator({
@@ -250,22 +253,16 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
   }
 
   return (
-    <section className="account-panel admin-panel">
+    <section className={`account-panel admin-panel${isMobile ? " is-mobile" : ""}`}>
       <h3>管理后台</h3>
       <p>这里统一处理人员权限、关卡配置（预览/测试）和谜题生成任务。</p>
-
-      <AdminStatusBanner
-        activeRunId={activeRunId}
-        panelError={panelError}
-        panelInfo={panelInfo}
-        resumableJob={resumableJob}
-        onViewJobProgress={handleViewJobProgress}
-      />
 
       <AdminUserPermissionsSection
         adminUsers={adminUsers}
         collapsed={collapsedSections.users}
         loadingUsers={loadingUsers}
+        noticeError={panelNoticeScope === "users" ? panelError : ""}
+        noticeInfo={panelNoticeScope === "users" ? panelInfo : ""}
         managedRoles={MANAGED_ROLES}
         passwordResetSubmittingUserId={passwordResetSubmittingUserId}
         roleSubmittingKey={roleSubmittingKey}
@@ -273,14 +270,22 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         formatDurationMs={formatDurationMs}
         formatTime={formatTime}
         onApprovePasswordReset={(user) => {
+          setPanelNoticeScope("users");
           void handleApprovePasswordReset(user);
         }}
-        onRefreshUsers={() => void loadAdminUsers()}
+        onRefreshUsers={() => {
+          setPanelNoticeScope("users");
+          void loadAdminUsers();
+        }}
         onRoleToggle={(user, role) => {
+          setPanelNoticeScope("users");
           void handleRoleToggle(user, role);
         }}
         onToggleSection={() => toggleSection("users")}
-        onUserKeywordChange={setUserKeyword}
+        onUserKeywordChange={(value) => {
+          setPanelNoticeScope("users");
+          setUserKeyword(value);
+        }}
       />
 
       <AdminChapterSelectionSection
@@ -296,25 +301,47 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         levelConfigSnapshot={levelConfigSnapshot}
         loadingConfigCatalog={loadingConfigCatalog}
         loadingLevelConfig={loadingLevelConfig}
+        noticeError={panelNoticeScope === "levelConfig" ? panelError : ""}
+        noticeInfo={panelNoticeScope === "levelConfig" ? panelInfo : ""}
         managedLevelDifficulties={MANAGED_LEVEL_DIFFICULTIES}
         testRunResult={testRunResult}
-        onConfigFormChange={handleConfigFormChange}
+        onConfigFormChange={(patch) => {
+          setPanelNoticeScope("levelConfig");
+          handleConfigFormChange(patch);
+        }}
         onConfigLevelIdChange={(value) => {
+          setPanelNoticeScope("levelConfig");
           setConfigLevelId(value);
           setLevelConfigSnapshot(null);
           setTestRunResult(null);
         }}
         onConfigStoryIdChange={(value) => {
+          setPanelNoticeScope("levelConfig");
           setConfigStoryId(value);
           setConfigLevelId("");
           setLevelConfigSnapshot(null);
           setTestRunResult(null);
         }}
-        onLoadConfigStories={() => void loadConfigStories()}
-        onLoadLevelConfig={() => void loadLevelConfig()}
-        onPreviewLevelConfig={() => void handlePreviewLevelConfig()}
-        onSaveLevelConfig={() => void handleSaveLevelConfig()}
-        onTestLevelConfig={() => void handleTestLevelConfig()}
+        onLoadConfigStories={() => {
+          setPanelNoticeScope("levelConfig");
+          void loadConfigStories();
+        }}
+        onLoadLevelConfig={() => {
+          setPanelNoticeScope("levelConfig");
+          void loadLevelConfig();
+        }}
+        onPreviewLevelConfig={() => {
+          setPanelNoticeScope("levelConfig");
+          void handlePreviewLevelConfig();
+        }}
+        onSaveLevelConfig={() => {
+          setPanelNoticeScope("levelConfig");
+          void handleSaveLevelConfig();
+        }}
+        onTestLevelConfig={() => {
+          setPanelNoticeScope("levelConfig");
+          void handleTestLevelConfig();
+        }}
         onToggleSection={() => toggleSection("levelConfig")}
       />
 
@@ -339,47 +366,75 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         fetchingLlmModelsProviderId={fetchingLlmModelsProviderId}
         fetchedModels={llmFetchedModels}
         llmFetchedModelsByProviderId={llmFetchedModelsByProviderId}
-        llmNoticeError={llmNoticeError}
-        llmNoticeInfo={llmNoticeInfo}
+        llmNoticeError={llmNoticeError || (panelNoticeScope === "llm" ? panelError : "")}
+        llmNoticeInfo={llmNoticeInfo || (panelNoticeScope === "llm" ? panelInfo : "")}
         lastModelsFetchedAt={lastLlmModelsFetchedAt}
         llmLastModelsFetchedAtByProviderId={llmLastModelsFetchedAtByProviderId}
         lastLlmTest={lastLlmTest}
         llmProfileSavedAt={llmProfileSavedAt}
         llmProviderSavedAt={llmProviderSavedAt}
         onReload={() => {
+          setPanelNoticeScope("llm");
           void loadLlmConfig();
         }}
-        onProviderChange={handleLlmProviderIdChange}
-        onProviderFieldChange={handleLlmProviderFieldChange}
-        onProviderKeyFieldChange={handleLlmProviderKeyFieldChange}
-        onCreateProviderFieldChange={handleLlmCreateProviderFieldChange}
+        onProviderChange={(value) => {
+          setPanelNoticeScope("llm");
+          handleLlmProviderIdChange(value);
+        }}
+        onProviderFieldChange={(patch) => {
+          setPanelNoticeScope("llm");
+          handleLlmProviderFieldChange(patch);
+        }}
+        onProviderKeyFieldChange={(patch) => {
+          setPanelNoticeScope("llm");
+          handleLlmProviderKeyFieldChange(patch);
+        }}
+        onCreateProviderFieldChange={(patch) => {
+          setPanelNoticeScope("llm");
+          handleLlmCreateProviderFieldChange(patch);
+        }}
         onCreateProvider={() => {
+          setPanelNoticeScope("llm");
           void handleCreateLlmProvider();
         }}
         onDeleteProvider={(providerId) => {
+          setPanelNoticeScope("llm");
           void handleDeleteLlmProvider(providerId);
         }}
         onProfileScopeChange={(scope) => {
+          setPanelNoticeScope("llm");
           handleLlmProfileScopeChange(scope);
         }}
-        onProfileUserIdInputChange={handleLlmProfileUserIdInputChange}
+        onProfileUserIdInputChange={(value) => {
+          setPanelNoticeScope("llm");
+          handleLlmProfileUserIdInputChange(value);
+        }}
         onLoadUserProfile={() => {
+          setPanelNoticeScope("llm");
           void handleLoadLlmUserProfile();
         }}
-        onProfileFieldChange={handleLlmProfileFieldChange}
+        onProfileFieldChange={(patch) => {
+          setPanelNoticeScope("llm");
+          handleLlmProfileFieldChange(patch);
+        }}
         onSaveProvider={() => {
+          setPanelNoticeScope("llm");
           void handleSaveLlmProvider();
         }}
         onSaveProfile={() => {
+          setPanelNoticeScope("llm");
           void handleSaveLlmProfile();
         }}
         onTest={() => {
+          setPanelNoticeScope("llm");
           void handleTestLlmConfig();
         }}
         onFetchModels={() => {
+          setPanelNoticeScope("llm");
           void handleFetchLlmModels();
         }}
         onFetchProviderModels={(providerId) => {
+          setPanelNoticeScope("llm");
           void handleFetchLlmModelsByProvider(providerId);
         }}
         onToggleSection={() => toggleSection("llm")}
@@ -390,6 +445,8 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         bookUploadTasks={bookUploadTasks}
         bookSummaryTasks={bookSummaryTasks}
         collapsed={collapsedSections.bookIngest}
+        noticeError={panelNoticeScope === "bookIngest" ? panelError : ""}
+        noticeInfo={panelNoticeScope === "bookIngest" ? panelInfo : ""}
         loadingBookUploadTasks={loadingBookUploadTasks}
         loadingBookSummaryTasks={loadingBookSummaryTasks}
         reparsingBook={reparsingBook}
@@ -397,19 +454,27 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         generatingBookSummary={generatingBookSummary}
         uploadingBook={uploadingBook}
         onReloadTasks={() => {
+          setPanelNoticeScope("bookIngest");
           void loadBookUploadTasks();
         }}
         onReloadSummaryTasks={() => {
+          setPanelNoticeScope("bookIngest");
           void loadBookSummaryTasks();
         }}
         onReparseBook={(targetBookId) => {
+          setPanelNoticeScope("bookIngest");
           void handleReparseBook(targetBookId);
         }}
-        onSummaryBookIdChange={setSummaryBookId}
+        onSummaryBookIdChange={(value) => {
+          setPanelNoticeScope("bookIngest");
+          setSummaryBookId(value);
+        }}
         onGenerateBookSummary={(targetBookId) => {
+          setPanelNoticeScope("bookIngest");
           void handleGenerateBookSummary(targetBookId);
         }}
         onUploadBook={(file) => {
+          setPanelNoticeScope("bookIngest");
           void handleUploadBook(file);
         }}
         onToggleSection={() => toggleSection("bookIngest")}
@@ -423,8 +488,13 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
         collapsed={collapsedSections.puzzle}
         currentFlowStepIndex={currentFlowStepIndex}
         flowStepCount={PUZZLE_FLOW_SEQUENCE.length}
+        noticeError={panelNoticeScope === "puzzle" ? panelError : ""}
+        noticeInfo={panelNoticeScope === "puzzle" ? panelInfo : ""}
         puzzleFlowStep={puzzleFlowStep}
-        onSetPuzzleFlowStep={setPuzzleFlowStep}
+        onSetPuzzleFlowStep={(step) => {
+          setPanelNoticeScope("puzzle");
+          setPuzzleFlowStep(step);
+        }}
         onToggleSection={() => toggleSection("puzzle")}
       >
 
@@ -449,6 +519,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 totalChapterPages={totalChapterPages}
                 onBookIdChange={setBookId}
                 onChapterPageSizeChange={(nextPageSize) => {
+                  setPanelNoticeScope("puzzle");
                   if (!CHAPTER_PAGE_SIZE_OPTIONS.includes(nextPageSize as (typeof CHAPTER_PAGE_SIZE_OPTIONS)[number])) {
                     return;
                   }
@@ -456,24 +527,48 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                   setChapterPage(1);
                 }}
                 onClose={onClose}
-                onIncludeUsedChange={setIncludeUsed}
-                onKeywordChange={setKeyword}
+                onIncludeUsedChange={(value) => {
+                  setPanelNoticeScope("puzzle");
+                  setIncludeUsed(value);
+                }}
+                onKeywordChange={(value) => {
+                  setPanelNoticeScope("puzzle");
+                  setKeyword(value);
+                }}
                 onLoadChapters={() => {
+                  setPanelNoticeScope("puzzle");
                   void loadChapters();
                 }}
-                onMaxCharsInputChange={setMaxCharsInput}
-                onMinCharsInputChange={setMinCharsInput}
+                onMaxCharsInputChange={(value) => {
+                  setPanelNoticeScope("puzzle");
+                  setMaxCharsInput(value);
+                }}
+                onMinCharsInputChange={(value) => {
+                  setPanelNoticeScope("puzzle");
+                  setMinCharsInput(value);
+                }}
                 onNextPage={() => setChapterPage((page) => Math.min(totalChapterPages, page + 1))}
                 onOpenGeneratedStory={(storyId) => {
+                  setPanelNoticeScope("puzzle");
                   void handleOpenGeneratedStory(storyId);
                 }}
-                onOpenGenerateDialog={() => setShowGenerateDialog(true)}
+                onOpenGenerateDialog={() => {
+                  setPanelNoticeScope("puzzle");
+                  setShowGenerateDialog(true);
+                }}
                 onPreviewChapterText={(chapterId) => {
+                  setPanelNoticeScope("puzzle");
                   void handlePreviewChapterText(chapterId);
                 }}
                 onPrevPage={() => setChapterPage((page) => Math.max(1, page - 1))}
-                onSelectChapterId={setSelectedChapterId}
-                onSetPuzzleFlowGenerate={() => setPuzzleFlowStep("generate")}
+                onSelectChapterId={(value) => {
+                  setPanelNoticeScope("puzzle");
+                  setSelectedChapterId(value);
+                }}
+                onSetPuzzleFlowGenerate={() => {
+                  setPanelNoticeScope("puzzle");
+                  setPuzzleFlowStep("generate");
+                }}
                 loadingChapterTextPreview={loadingChapterTextPreview}
               />
             )}
@@ -484,20 +579,33 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 activeRunId={activeRunId}
                 formatGenerationJobStateLabel={formatGenerationJobStateLabel}
                 onBatchGenerateImages={() => {
+                  setPanelNoticeScope("puzzle");
                   void handleBatchGenerateImages();
                 }}
                 onDeleteReviewScene={(sceneIndex) => {
+                  setPanelNoticeScope("puzzle");
                   void handleDeleteReviewScene(sceneIndex);
                 }}
                 onLoadGenerationReview={(runId) => {
+                  setPanelNoticeScope("puzzle");
                   void loadGenerationReview(runId);
                 }}
-                onOpenGenerateDialog={() => setShowGenerateDialog(true)}
+                onOpenGenerateDialog={() => {
+                  setPanelNoticeScope("puzzle");
+                  setShowGenerateDialog(true);
+                }}
                 onRetryReviewCandidate={(sceneIndex) => {
+                  setPanelNoticeScope("puzzle");
                   void handleRetryReviewCandidate(sceneIndex);
                 }}
-                onSetPuzzleFlowReview={() => setPuzzleFlowStep("review")}
-                onSetPuzzleFlowSelect={() => setPuzzleFlowStep("select")}
+                onSetPuzzleFlowReview={() => {
+                  setPanelNoticeScope("puzzle");
+                  setPuzzleFlowStep("review");
+                }}
+                onSetPuzzleFlowSelect={() => {
+                  setPanelNoticeScope("puzzle");
+                  setPuzzleFlowStep("select");
+                }}
                 onSetScenePreview={setScenePreview}
                 onViewJobProgress={handleViewJobProgress}
                 progress={progress}
@@ -528,14 +636,20 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 activeJob={activeJob}
                 formatTime={formatTime}
                 onLoadGenerationReview={(runId) => {
+                  setPanelNoticeScope("puzzle");
                   void loadGenerationReview(runId);
                 }}
                 onPublishSelected={() => {
+                  setPanelNoticeScope("puzzle");
                   void handlePublishSelected();
                 }}
-                onSetPuzzleFlowGenerate={() => setPuzzleFlowStep("generate")}
+                onSetPuzzleFlowGenerate={() => {
+                  setPanelNoticeScope("puzzle");
+                  setPuzzleFlowStep("generate");
+                }}
                 onSetScenePreview={setScenePreview}
                 onUpdateReviewScene={(sceneIndex, patch) => {
+                  setPanelNoticeScope("puzzle");
                   void handleUpdateReviewScene(sceneIndex, patch);
                 }}
                 renderRecentJobsReview={(

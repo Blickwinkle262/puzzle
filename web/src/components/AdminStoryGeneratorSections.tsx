@@ -98,6 +98,8 @@ type AdminUserPermissionsSectionProps = {
   adminUsers: AdminUserSummary[];
   collapsed: boolean;
   loadingUsers: boolean;
+  noticeError: string;
+  noticeInfo: string;
   managedRoles: AdminManagedRole[];
   passwordResetSubmittingUserId: string;
   roleSubmittingKey: string;
@@ -115,6 +117,8 @@ export function AdminUserPermissionsSection({
   adminUsers,
   collapsed,
   loadingUsers,
+  noticeError,
+  noticeInfo,
   managedRoles,
   passwordResetSubmittingUserId,
   roleSubmittingKey,
@@ -136,6 +140,9 @@ export function AdminUserPermissionsSection({
 
       {!collapsed && (
         <>
+          {noticeError && <div className="banner-error">{noticeError}</div>}
+          {noticeInfo && <div className="banner-info">{noticeInfo}</div>}
+
           <div className="admin-user-toolbar">
             <label className="form-field">
               用户名检索
@@ -262,6 +269,8 @@ type AdminChapterSelectionSectionProps = {
   levelConfigSnapshot: AdminLevelConfigResponse | null;
   loadingConfigCatalog: boolean;
   loadingLevelConfig: boolean;
+  noticeError: string;
+  noticeInfo: string;
   managedLevelDifficulties: AdminLevelDifficulty[];
   testRunResult: AdminLevelTestRunResponse | null;
   onConfigFormChange: (patch: Partial<LevelConfigFormState>) => void;
@@ -288,6 +297,8 @@ export function AdminChapterSelectionSection({
   levelConfigSnapshot,
   loadingConfigCatalog,
   loadingLevelConfig,
+  noticeError,
+  noticeInfo,
   managedLevelDifficulties,
   testRunResult,
   onConfigFormChange,
@@ -309,6 +320,9 @@ export function AdminChapterSelectionSection({
 
       {!collapsed && (
         <>
+          {noticeError && <div className="banner-error">{noticeError}</div>}
+          {noticeInfo && <div className="banner-info">{noticeInfo}</div>}
+
           <div className="admin-config-grid">
             <label className="form-field">
               故事
@@ -1484,6 +1498,8 @@ type AdminBookUploadSectionProps = {
   bookUploadTasks: AdminBookIngestTask[];
   bookSummaryTasks: AdminBookSummaryTask[];
   collapsed: boolean;
+  noticeError: string;
+  noticeInfo: string;
   loadingBookUploadTasks: boolean;
   loadingBookSummaryTasks: boolean;
   reparsingBook: boolean;
@@ -1504,6 +1520,8 @@ export function AdminBookUploadSection({
   bookUploadTasks,
   bookSummaryTasks,
   collapsed,
+  noticeError,
+  noticeInfo,
   loadingBookUploadTasks,
   loadingBookSummaryTasks,
   reparsingBook,
@@ -1670,6 +1688,9 @@ export function AdminBookUploadSection({
 
       {!collapsed && (
         <>
+          {noticeError && <div className="banner-error">{noticeError}</div>}
+          {noticeInfo && <div className="banner-info">{noticeInfo}</div>}
+
           <p className="progress-inline">上传 .epub / .txt 后会自动解析入库，并同步到“谜题管理（章节生成）”选章节列表。</p>
 
           {runningTask && (
@@ -1980,6 +2001,8 @@ type AdminRunReviewSectionProps = {
   collapsed: boolean;
   currentFlowStepIndex: number;
   flowStepCount: number;
+  noticeError: string;
+  noticeInfo: string;
   puzzleFlowStep: PuzzleFlowStep;
   children: ReactNode;
   onSetPuzzleFlowStep: (step: PuzzleFlowStep) => void;
@@ -1994,6 +2017,8 @@ export function AdminRunReviewSection({
   collapsed,
   currentFlowStepIndex,
   flowStepCount,
+  noticeError,
+  noticeInfo,
   puzzleFlowStep,
   children,
   onSetPuzzleFlowStep,
@@ -2008,6 +2033,9 @@ export function AdminRunReviewSection({
 
       {!collapsed && (
         <>
+          {noticeError && <div className="banner-error">{noticeError}</div>}
+          {noticeInfo && <div className="banner-info">{noticeInfo}</div>}
+
           <div className="admin-puzzle-flow" role="tablist" aria-label="谜题生成流程">
             <button
               type="button"

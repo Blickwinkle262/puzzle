@@ -247,6 +247,8 @@ export const REVIEW_GRID_OPTIONS = Array.from({ length: 19 }, (_, index) => inde
 export const REVIEW_TIME_OPTIONS = [60, 90, 120, 150, 180, 240, 300, 420, 600];
 const BOOK_UPLOAD_MAX_BYTES = 80 * 1024 * 1024;
 
+export type AdminPanelNoticeScope = "users" | "levelConfig" | "llm" | "bookIngest" | "puzzle" | "global";
+
 export function useAdminStoryGeneratorCoordinator({
   visible,
   onClose,
@@ -350,6 +352,7 @@ export function useAdminStoryGeneratorCoordinator({
 
   const [panelError, setPanelErrorState] = useState("");
   const [panelInfo, setPanelInfoState] = useState("");
+  const [panelNoticeScope, setPanelNoticeScope] = useState<AdminPanelNoticeScope>("global");
   const setPanelError = useCallback((message: string): void => {
     const next = String(message || "");
     setPanelErrorState(next);
@@ -364,6 +367,41 @@ export function useAdminStoryGeneratorCoordinator({
       setPanelErrorState("");
     }
   }, []);
+  const setScopedPanelError = useCallback((scope: AdminPanelNoticeScope, message: string): void => {
+    setPanelNoticeScope(scope);
+    setPanelError(message);
+  }, [setPanelError]);
+  const setScopedPanelInfo = useCallback((scope: AdminPanelNoticeScope, message: string): void => {
+    setPanelNoticeScope(scope);
+    setPanelInfo(message);
+  }, [setPanelInfo]);
+  const setUsersPanelError = useCallback((message: string): void => {
+    setScopedPanelError("users", message);
+  }, [setScopedPanelError]);
+  const setUsersPanelInfo = useCallback((message: string): void => {
+    setScopedPanelInfo("users", message);
+  }, [setScopedPanelInfo]);
+  const setLevelConfigPanelError = useCallback((message: string): void => {
+    setScopedPanelError("levelConfig", message);
+  }, [setScopedPanelError]);
+  const setLevelConfigPanelInfo = useCallback((message: string): void => {
+    setScopedPanelInfo("levelConfig", message);
+  }, [setScopedPanelInfo]);
+  const setBookIngestPanelError = useCallback((message: string): void => {
+    setScopedPanelError("bookIngest", message);
+  }, [setScopedPanelError]);
+  const setBookIngestPanelInfo = useCallback((message: string): void => {
+    setScopedPanelInfo("bookIngest", message);
+  }, [setScopedPanelInfo]);
+  const setPuzzlePanelError = useCallback((message: string): void => {
+    setScopedPanelError("puzzle", message);
+  }, [setScopedPanelError]);
+  const setPuzzlePanelInfo = useCallback((message: string): void => {
+    setScopedPanelInfo("puzzle", message);
+  }, [setScopedPanelInfo]);
+  const setLlmPanelError = useCallback((message: string): void => {
+    setScopedPanelError("llm", message);
+  }, [setScopedPanelError]);
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
   const [uploadingBook, setUploadingBook] = useState(false);
   const [bookUploadTasks, setBookUploadTasks] = useState<AdminBookIngestTask[]>([]);
@@ -443,8 +481,8 @@ export function useAdminStoryGeneratorCoordinator({
     testRunResult,
   } = useAdminLevelConfigCoordinator({
     visible,
-    setPanelError,
-    setPanelInfo,
+    setPanelError: setLevelConfigPanelError,
+    setPanelInfo: setLevelConfigPanelInfo,
   });
 
   const {
@@ -457,8 +495,8 @@ export function useAdminStoryGeneratorCoordinator({
     setLoadingUsers,
     setPasswordResetSubmittingUserId,
     setRoleSubmittingKey,
-    setPanelError,
-    setPanelInfo,
+    setPanelError: setUsersPanelError,
+    setPanelInfo: setUsersPanelInfo,
   });
 
   const selectedChapter = useMemo(
@@ -496,7 +534,7 @@ export function useAdminStoryGeneratorCoordinator({
 
   const loadChapters = useCallback(async (): Promise<void> => {
     setLoadingChapters(true);
-    setPanelError("");
+    setPuzzlePanelError("");
 
     const parsedMinChars = Number(minCharsInput);
     const parsedMaxChars = Number(maxCharsInput);
@@ -522,7 +560,7 @@ export function useAdminStoryGeneratorCoordinator({
         setSelectedChapterId(response.chapters[0].id);
       }
     } catch (err) {
-      setPanelError(errorMessage(err));
+      setPuzzlePanelError(errorMessage(err));
     } finally {
       setLoadingChapters(false);
     }
@@ -539,6 +577,7 @@ export function useAdminStoryGeneratorCoordinator({
     setChapterTotal,
     setChapters,
     setLoadingChapters,
+    setPuzzlePanelError,
     setSelectedChapterId,
   ]);
 
@@ -546,7 +585,7 @@ export function useAdminStoryGeneratorCoordinator({
     const silent = Boolean(options.silent);
     if (!silent) {
       setLoadingBookUploadTasks(true);
-      setPanelError("");
+      setBookIngestPanelError("");
     }
 
     try {
@@ -554,20 +593,20 @@ export function useAdminStoryGeneratorCoordinator({
       setBookUploadTasks(Array.isArray(response?.tasks) ? response.tasks : []);
     } catch (err) {
       if (!silent) {
-        setPanelError(errorMessage(err));
+        setBookIngestPanelError(errorMessage(err));
       }
     } finally {
       if (!silent) {
         setLoadingBookUploadTasks(false);
       }
     }
-  }, [setPanelError]);
+  }, [setBookIngestPanelError]);
 
   const loadBookSummaryTasks = useCallback(async (options: { silent?: boolean } = {}): Promise<void> => {
     const silent = Boolean(options.silent);
     if (!silent) {
       setLoadingBookSummaryTasks(true);
-      setPanelError("");
+      setBookIngestPanelError("");
     }
 
     try {
@@ -575,14 +614,14 @@ export function useAdminStoryGeneratorCoordinator({
       setBookSummaryTasks(Array.isArray(response?.tasks) ? response.tasks : []);
     } catch (err) {
       if (!silent) {
-        setPanelError(errorMessage(err));
+        setBookIngestPanelError(errorMessage(err));
       }
     } finally {
       if (!silent) {
         setLoadingBookSummaryTasks(false);
       }
     }
-  }, [setPanelError]);
+  }, [setBookIngestPanelError]);
 
   const loadLlmProviderModels = useCallback(async (
     providerId: number,
@@ -630,10 +669,10 @@ export function useAdminStoryGeneratorCoordinator({
       }
     } catch (err) {
       if (!silent) {
-        setPanelError(errorMessage(err));
+        setLlmPanelError(errorMessage(err));
       }
     }
-  }, [selectedLlmProviderId, setPanelError]);
+  }, [selectedLlmProviderId, setLlmPanelError]);
 
   const applyLlmProfileResponse = useCallback((
     profile: AdminLlmProfile | null,
@@ -676,7 +715,7 @@ export function useAdminStoryGeneratorCoordinator({
     const silent = Boolean(options.silent);
     const rawUserId = String(options.userIdInput ?? llmProfileUserIdInput).trim();
     if (!silent) {
-      setPanelError("");
+      setLlmPanelError("");
     }
 
     try {
@@ -695,16 +734,16 @@ export function useAdminStoryGeneratorCoordinator({
       applyLlmProfileResponse(response?.profile || null, response?.effective || null);
     } catch (err) {
       if (!silent) {
-        setPanelError(errorMessage(err));
+        setLlmPanelError(errorMessage(err));
       }
     }
-  }, [applyLlmProfileResponse, llmProfileUserIdInput, setPanelError]);
+  }, [applyLlmProfileResponse, llmProfileUserIdInput, setLlmPanelError]);
 
   const loadLlmConfig = useCallback(async (options: { silent?: boolean } = {}): Promise<void> => {
     const silent = Boolean(options.silent);
     if (!silent) {
       setLoadingLlmConfig(true);
-      setPanelError("");
+      setLlmPanelError("");
     }
 
     try {
@@ -742,14 +781,14 @@ export function useAdminStoryGeneratorCoordinator({
       }
     } catch (err) {
       if (!silent) {
-        setPanelError(errorMessage(err));
+        setLlmPanelError(errorMessage(err));
       }
     } finally {
       if (!silent) {
         setLoadingLlmConfig(false);
       }
     }
-  }, [applyLlmProfileResponse, setPanelError]);
+  }, [applyLlmProfileResponse, setLlmPanelError]);
 
   const handleLlmProviderIdChange = useCallback((value: string): void => {
     const providerId = Number(value);
@@ -1267,7 +1306,7 @@ export function useAdminStoryGeneratorCoordinator({
           const inserted = Number(task.inserted || 0);
           const updated = Number(task.updated || 0);
           const skipped = Number(task.skipped || 0);
-          setPanelInfo(`解析完成：${task.source_name || fallbackName}（总${total}章，新增${inserted}，更新${updated}，跳过${skipped}）`);
+          setBookIngestPanelInfo(`解析完成：${task.source_name || fallbackName}（总${total}章，新增${inserted}，更新${updated}，跳过${skipped}）`);
           await loadBookUploadTasks({ silent: true });
           await refreshChapterListAfterIngest();
           return;
@@ -1279,7 +1318,7 @@ export function useAdminStoryGeneratorCoordinator({
         }
 
         if (lastStatus !== task.status) {
-          setPanelInfo(`上传任务进行中：${task.run_id}（${task.status}）`);
+          setBookIngestPanelInfo(`上传任务进行中：${task.run_id}（${task.status}）`);
           lastStatus = task.status;
         }
       }
@@ -1290,7 +1329,7 @@ export function useAdminStoryGeneratorCoordinator({
     }
 
     throw new Error(`上传解析超时（任务 ${normalizedRunId}）`);
-  }, [loadBookUploadTasks, refreshChapterListAfterIngest, setPanelInfo]);
+  }, [loadBookUploadTasks, refreshChapterListAfterIngest, setBookIngestPanelInfo]);
 
   const waitForBookSummaryTask = useCallback(async (runId: string, fallbackBookName: string): Promise<void> => {
     const normalizedRunId = String(runId || "").trim();
@@ -1323,7 +1362,7 @@ export function useAdminStoryGeneratorCoordinator({
 
       if (task) {
         if (task.status === "succeeded") {
-          setPanelInfo(
+          setBookIngestPanelInfo(
             `摘要完成：${fallbackBookName}（总${task.total}章，成功${task.succeeded}，跳过${task.skipped}，失败${task.failed}）`,
           );
           await loadBookSummaryTasks({ silent: true });
@@ -1337,7 +1376,7 @@ export function useAdminStoryGeneratorCoordinator({
         }
 
         if (lastStatus !== task.status) {
-          setPanelInfo(`摘要任务进行中：${task.run_id}（${task.status}）`);
+          setBookIngestPanelInfo(`摘要任务进行中：${task.run_id}（${task.status}）`);
           lastStatus = task.status;
         }
       }
@@ -1348,7 +1387,7 @@ export function useAdminStoryGeneratorCoordinator({
     }
 
     throw new Error(`摘要任务超时（任务 ${normalizedRunId}）`);
-  }, [loadBookSummaryTasks, refreshChapterListAfterIngest, setPanelInfo]);
+  }, [loadBookSummaryTasks, refreshChapterListAfterIngest, setBookIngestPanelInfo]);
 
   const handleBookUploadResponse = useCallback(async (
     response: AdminBookUploadResponse | null | undefined,
@@ -1356,7 +1395,7 @@ export function useAdminStoryGeneratorCoordinator({
   ): Promise<void> => {
     const asyncRunId = String(response?.run_id || "").trim();
     if (asyncRunId) {
-      setPanelInfo(`解析任务已提交：${asyncRunId}`);
+      setBookIngestPanelInfo(`解析任务已提交：${asyncRunId}`);
       await waitForBookIngestTask(asyncRunId, fallbackName);
       return;
     }
@@ -1376,14 +1415,14 @@ export function useAdminStoryGeneratorCoordinator({
     const updated = toCount(ingest.updated);
     const skipped = toCount(ingest.skipped);
 
-    setPanelInfo(`解析完成：${bookTitle}（总${total}章，新增${inserted}，更新${updated}，跳过${skipped}）`);
+    setBookIngestPanelInfo(`解析完成：${bookTitle}（总${total}章，新增${inserted}，更新${updated}，跳过${skipped}）`);
     await refreshChapterListAfterIngest();
     void loadBookUploadTasks({ silent: true });
-  }, [loadBookUploadTasks, refreshChapterListAfterIngest, setPanelInfo, waitForBookIngestTask]);
+  }, [loadBookUploadTasks, refreshChapterListAfterIngest, setBookIngestPanelInfo, waitForBookIngestTask]);
 
   const handleUploadBook = useCallback(async (file: File): Promise<void> => {
     if (!file || file.size <= 0) {
-      setPanelError("请选择要上传的书籍文件");
+      setBookIngestPanelError("请选择要上传的书籍文件");
       return;
     }
 
@@ -1394,27 +1433,27 @@ export function useAdminStoryGeneratorCoordinator({
         ? "txt"
         : null;
     if (!format) {
-      setPanelError("仅支持 .epub 或 .txt 文件");
+      setBookIngestPanelError("仅支持 .epub 或 .txt 文件");
       return;
     }
 
     if (file.size > BOOK_UPLOAD_MAX_BYTES) {
       const actualMb = (file.size / 1024 / 1024).toFixed(1);
-      setPanelError(`文件过大（${actualMb}MB），当前上限为 80MB`);
+      setBookIngestPanelError(`文件过大（${actualMb}MB），当前上限为 80MB`);
       return;
     }
 
     try {
       await apiGetMe();
     } catch (err) {
-      setPanelError(`登录状态异常，请重新登录后再上传：${errorMessage(err)}`);
+      setBookIngestPanelError(`登录状态异常，请重新登录后再上传：${errorMessage(err)}`);
       return;
     }
 
     setUploadingBook(true);
-    setPanelError("");
+    setBookIngestPanelError("");
     setPendingBookReplace(null);
-    setPanelInfo(`正在解析书籍：${file.name}`);
+    setBookIngestPanelInfo(`正在解析书籍：${file.name}`);
 
     try {
       const uploadTitle = String(file.name || "")
@@ -1448,14 +1487,14 @@ export function useAdminStoryGeneratorCoordinator({
             : null;
           const runningRunId = String(task?.run_id || "").trim();
           if (runningRunId) {
-            setPanelInfo(`检测到同内容任务正在进行：${runningRunId}，已自动跟踪进度`);
+            setBookIngestPanelInfo(`检测到同内容任务正在进行：${runningRunId}，已自动跟踪进度`);
             await waitForBookIngestTask(runningRunId, uploadTitle || file.name);
             return;
           }
         }
 
         if (conflictCode === "book_ingest_succeeded") {
-          setPanelInfo(errorMessage(err));
+          setBookIngestPanelInfo(errorMessage(err));
           await loadBookUploadTasks({ silent: true });
           await refreshChapterListAfterIngest();
           return;
@@ -1480,13 +1519,13 @@ export function useAdminStoryGeneratorCoordinator({
           existingChapterCount: Number.isFinite(existingChapterCount) ? existingChapterCount : 0,
           message: errorMessage(err),
         });
-        setPanelInfo(`检测到同名书籍：${existingBookTitle}（${Math.max(0, Number(existingChapterCount || 0))}章），请确认是否替换`);
+        setBookIngestPanelInfo(`检测到同名书籍：${existingBookTitle}（${Math.max(0, Number(existingChapterCount || 0))}章），请确认是否替换`);
         return;
       }
 
       await handleBookUploadResponse(response, uploadTitle || file.name);
     } catch (err) {
-      setPanelError(errorMessage(err));
+      setBookIngestPanelError(errorMessage(err));
     } finally {
       setUploadingBook(false);
       void loadBookUploadTasks({ silent: true });
@@ -1495,8 +1534,8 @@ export function useAdminStoryGeneratorCoordinator({
     handleBookUploadResponse,
     loadBookUploadTasks,
     refreshChapterListAfterIngest,
-    setPanelError,
-    setPanelInfo,
+    setBookIngestPanelError,
+    setBookIngestPanelInfo,
   ]);
 
   const handleConfirmBookReplace = useCallback(async (): Promise<void> => {
@@ -1513,8 +1552,8 @@ export function useAdminStoryGeneratorCoordinator({
 
     setPendingBookReplace(null);
     setUploadingBook(true);
-    setPanelError("");
-    setPanelInfo(`正在替换书籍：${uploadTitle || incomingFileName}`);
+    setBookIngestPanelError("");
+    setBookIngestPanelInfo(`正在替换书籍：${uploadTitle || incomingFileName}`);
 
     try {
       let response;
@@ -1544,21 +1583,21 @@ export function useAdminStoryGeneratorCoordinator({
             : null;
           const runningRunId = String(task?.run_id || "").trim();
           if (runningRunId) {
-            setPanelInfo(`检测到同内容任务正在进行：${runningRunId}，已自动跟踪进度`);
+            setBookIngestPanelInfo(`检测到同内容任务正在进行：${runningRunId}，已自动跟踪进度`);
             await waitForBookIngestTask(runningRunId, uploadTitle || incomingFileName);
             return;
           }
         }
 
         if (conflictCode === "book_ingest_succeeded") {
-          setPanelInfo(errorMessage(err));
+          setBookIngestPanelInfo(errorMessage(err));
           await loadBookUploadTasks({ silent: true });
           await refreshChapterListAfterIngest();
           return;
         }
 
         if (conflictCode === "book_exists") {
-          setPanelInfo(errorMessage(err));
+          setBookIngestPanelInfo(errorMessage(err));
           return;
         }
 
@@ -1567,7 +1606,7 @@ export function useAdminStoryGeneratorCoordinator({
 
       await handleBookUploadResponse(response, uploadTitle || incomingFileName);
     } catch (err) {
-      setPanelError(errorMessage(err));
+      setBookIngestPanelError(errorMessage(err));
     } finally {
       setUploadingBook(false);
       void loadBookUploadTasks({ silent: true });
@@ -1577,26 +1616,26 @@ export function useAdminStoryGeneratorCoordinator({
     loadBookUploadTasks,
     pendingBookReplace,
     refreshChapterListAfterIngest,
-    setPanelError,
-    setPanelInfo,
+    setBookIngestPanelError,
+    setBookIngestPanelInfo,
     waitForBookIngestTask,
   ]);
 
   const handleCancelBookReplace = useCallback(() => {
     setPendingBookReplace(null);
-    setPanelInfo("已撤销上传");
-  }, [setPanelInfo]);
+    setBookIngestPanelInfo("已撤销上传");
+  }, [setBookIngestPanelInfo]);
 
   const handleReparseBook = useCallback(async (targetBookId: number): Promise<void> => {
     const normalizedBookId = Number.isFinite(targetBookId) ? Math.floor(targetBookId) : 0;
     if (normalizedBookId <= 0) {
-      setPanelError("请先选择要重解析的书籍");
+      setBookIngestPanelError("请先选择要重解析的书籍");
       return;
     }
 
     setReparsingBook(true);
-    setPanelError("");
-    setPanelInfo("正在创建重解析任务...");
+    setBookIngestPanelError("");
+    setBookIngestPanelInfo("正在创建重解析任务...");
 
     try {
       const response = await apiReparseAdminBook(normalizedBookId);
@@ -1607,23 +1646,23 @@ export function useAdminStoryGeneratorCoordinator({
       const sourceName = String(response?.book?.source_name || response?.book?.title || `book_${normalizedBookId}`).trim();
       await waitForBookIngestTask(runId, sourceName);
     } catch (err) {
-      setPanelError(errorMessage(err));
+      setBookIngestPanelError(errorMessage(err));
     } finally {
       setReparsingBook(false);
       void loadBookUploadTasks({ silent: true });
     }
-  }, [loadBookUploadTasks, setPanelError, setPanelInfo, waitForBookIngestTask]);
+  }, [loadBookUploadTasks, setBookIngestPanelError, setBookIngestPanelInfo, waitForBookIngestTask]);
 
   const handleGenerateBookSummary = useCallback(async (targetBookId: number): Promise<void> => {
     const normalizedBookId = Number.isFinite(targetBookId) ? Math.floor(targetBookId) : 0;
     if (normalizedBookId <= 0) {
-      setPanelError("请先选择要生成摘要的书籍");
+      setBookIngestPanelError("请先选择要生成摘要的书籍");
       return;
     }
 
     setGeneratingBookSummary(true);
-    setPanelError("");
-    setPanelInfo("正在创建章节摘要任务...");
+    setBookIngestPanelError("");
+    setBookIngestPanelInfo("正在创建章节摘要任务...");
 
     try {
       let runId = "";
@@ -1658,7 +1697,7 @@ export function useAdminStoryGeneratorCoordinator({
         if (!runId) {
           throw err;
         }
-        setPanelInfo(`检测到进行中的摘要任务：${runId}，已自动跟踪`);
+        setBookIngestPanelInfo(`检测到进行中的摘要任务：${runId}，已自动跟踪`);
       }
 
       if (!runId) {
@@ -1667,12 +1706,12 @@ export function useAdminStoryGeneratorCoordinator({
 
       await waitForBookSummaryTask(runId, bookTitle || `book_${normalizedBookId}`);
     } catch (err) {
-      setPanelError(errorMessage(err));
+      setBookIngestPanelError(errorMessage(err));
     } finally {
       setGeneratingBookSummary(false);
       void loadBookSummaryTasks({ silent: true });
     }
-  }, [loadBookSummaryTasks, setPanelError, setPanelInfo, waitForBookSummaryTask]);
+  }, [loadBookSummaryTasks, setBookIngestPanelError, setBookIngestPanelInfo, waitForBookSummaryTask]);
 
   const handlePreviewChapterText = useCallback(async (chapterId?: number): Promise<void> => {
     const targetChapterId = chapterId ?? selectedChapterId;
@@ -1809,8 +1848,8 @@ export function useAdminStoryGeneratorCoordinator({
     setActiveJob,
     setActiveRunId,
     setCollapsedSections,
-    setPanelError,
-    setPanelInfo,
+    setPanelError: setPuzzlePanelError,
+    setPanelInfo: setPuzzlePanelInfo,
     setPuzzleFlowStep,
     setReviewCounts,
     setReviewLoading,
@@ -1872,8 +1911,8 @@ export function useAdminStoryGeneratorCoordinator({
     loadRecentJobs,
     setActiveJob,
     setActiveRunId,
-    setPanelError,
-    setPanelInfo,
+    setPanelError: setPuzzlePanelError,
+    setPanelInfo: setPuzzlePanelInfo,
     setPublishSuccess,
     setPuzzleFlowStep,
     setReviewBatchGenerating,
@@ -2131,10 +2170,12 @@ export function useAdminStoryGeneratorCoordinator({
   const uiState = {
     panelError,
     panelInfo,
+    panelNoticeScope,
     showGenerateDialog,
   };
 
   const uiActions = {
+    setPanelNoticeScope,
     setShowGenerateDialog,
   };
 
