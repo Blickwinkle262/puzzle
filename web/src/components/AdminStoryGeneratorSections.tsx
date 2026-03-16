@@ -534,6 +534,7 @@ export function AdminUserPermissionsSection({
 
 type AdminChapterSelectionSectionProps = {
   collapsed: boolean;
+  isMobile: boolean;
   configLevelId: string;
   configLevels: LevelOption[];
   configPreviewing: boolean;
@@ -562,6 +563,7 @@ type AdminChapterSelectionSectionProps = {
 
 export function AdminChapterSelectionSection({
   collapsed,
+  isMobile,
   configLevelId,
   configLevels,
   configPreviewing,
@@ -587,6 +589,56 @@ export function AdminChapterSelectionSection({
   onTestLevelConfig,
   onToggleSection,
 }: AdminChapterSelectionSectionProps): JSX.Element {
+  const effectiveConfigJson = useMemo(
+    () => levelConfigSnapshot ? JSON.stringify(levelConfigSnapshot.effective_config || {}, null, 2) : "",
+    [levelConfigSnapshot],
+  );
+  const baseConfigJson = useMemo(
+    () => levelConfigSnapshot ? JSON.stringify(levelConfigSnapshot.base_config || {}, null, 2) : "",
+    [levelConfigSnapshot],
+  );
+  const previewConfigJson = useMemo(
+    () => levelConfigSnapshot?.preview_effective_config
+      ? JSON.stringify(levelConfigSnapshot.preview_effective_config, null, 2)
+      : "",
+    [levelConfigSnapshot],
+  );
+
+  const previewDiffRows = useMemo(() => {
+    if (!levelConfigSnapshot?.preview_effective_config) {
+      return [] as Array<{ key: string; current: string; preview: string }>;
+    }
+
+    const current = (levelConfigSnapshot.effective_config || {}) as Record<string, unknown>;
+    const preview = levelConfigSnapshot.preview_effective_config as Record<string, unknown>;
+    const keys = Array.from(new Set([
+      ...Object.keys(current),
+      ...Object.keys(preview),
+    ])).sort();
+
+    const formatValue = (value: unknown): string => {
+      if (value === null || value === undefined || value === "") {
+        return "—";
+      }
+      if (typeof value === "object") {
+        return JSON.stringify(value);
+      }
+      return String(value);
+    };
+
+    return keys
+      .filter((key) => JSON.stringify(current[key]) !== JSON.stringify(preview[key]))
+      .map((key) => ({
+        key,
+        current: formatValue(current[key]),
+        preview: formatValue(preview[key]),
+      }));
+  }, [levelConfigSnapshot]);
+
+  const hasPreviewResult = Boolean(levelConfigSnapshot?.preview_effective_config);
+  const hasPreviewDiff = previewDiffRows.length > 0;
+  const canOperate = Boolean(configStoryId && configLevelId);
+
   return (
     <div className="admin-run-box admin-collapsible-box">
       <button type="button" className={`admin-collapse-head ${collapsed ? "collapsed" : ""}`} onClick={onToggleSection}>
@@ -599,152 +651,233 @@ export function AdminChapterSelectionSection({
           {noticeError && <div className="banner-error">{noticeError}</div>}
           {noticeInfo && <div className="banner-info">{noticeInfo}</div>}
 
-          <div className="admin-config-grid">
-            <label className="form-field">
-              故事
-              <select value={configStoryId} onChange={(event) => onConfigStoryIdChange(event.currentTarget.value)}>
-                <option value="">请选择故事</option>
-                {configStories.map((story) => (
-                  <option key={story.id} value={story.id}>
-                    {story.title || story.id}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className={`admin-level-config-layout${isMobile ? " is-mobile" : ""}`}>
+            <div className="admin-level-config-main">
+              <section className="admin-level-config-group">
+                <h5>目标选择</h5>
+                <div className="admin-config-grid admin-level-config-grid-target">
+                  <label className="form-field">
+                    故事
+                    <select value={configStoryId} onChange={(event) => onConfigStoryIdChange(event.currentTarget.value)}>
+                      <option value="">请选择故事</option>
+                      {configStories.map((story) => (
+                        <option key={story.id} value={story.id}>
+                          {story.title || story.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-            <label className="form-field">
-              关卡
-              <select value={configLevelId} onChange={(event) => onConfigLevelIdChange(event.currentTarget.value)}>
-                <option value="">请选择关卡</option>
-                {configLevels.map((level) => (
-                  <option key={level.id} value={level.id}>
-                    {level.title || level.id}
-                  </option>
-                ))}
-              </select>
-            </label>
+                  <label className="form-field">
+                    关卡
+                    <select value={configLevelId} onChange={(event) => onConfigLevelIdChange(event.currentTarget.value)}>
+                      <option value="">请选择关卡</option>
+                      {configLevels.map((level) => (
+                        <option key={level.id} value={level.id}>
+                          {level.title || level.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-            <label className="form-field">
-              启用 override
-              <input
-                type="checkbox"
-                checked={levelConfigForm.enabled}
-                onChange={(event) => onConfigFormChange({ enabled: event.currentTarget.checked })}
-              />
-            </label>
-
-            <label className="form-field">
-              行数（grid_rows）
-              <input
-                value={levelConfigForm.grid_rows}
-                onChange={(event) => onConfigFormChange({ grid_rows: event.currentTarget.value })}
-                placeholder="留空=不覆盖"
-                inputMode="numeric"
-              />
-            </label>
-
-            <label className="form-field">
-              列数（grid_cols）
-              <input
-                value={levelConfigForm.grid_cols}
-                onChange={(event) => onConfigFormChange({ grid_cols: event.currentTarget.value })}
-                placeholder="留空=不覆盖"
-                inputMode="numeric"
-              />
-            </label>
-
-            <label className="form-field">
-              时限（time_limit_sec）
-              <input
-                value={levelConfigForm.time_limit_sec}
-                onChange={(event) => onConfigFormChange({ time_limit_sec: event.currentTarget.value })}
-                placeholder="留空=自动计算"
-                inputMode="numeric"
-              />
-            </label>
-
-            <label className="form-field">
-              难度（difficulty）
-              <select
-                value={levelConfigForm.difficulty}
-                onChange={(event) => onConfigFormChange({ difficulty: event.currentTarget.value as "" | AdminLevelDifficulty })}
-              >
-                <option value="">留空=normal</option>
-                {managedLevelDifficulties.map((difficulty) => (
-                  <option key={difficulty} value={difficulty}>{difficulty}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="form-field">
-              难度系数（difficulty_factor）
-              <input
-                value={levelConfigForm.difficulty_factor}
-                onChange={(event) => onConfigFormChange({ difficulty_factor: event.currentTarget.value })}
-                placeholder="留空=策略默认"
-                inputMode="decimal"
-              />
-            </label>
-
-            <label className="form-field">
-              content_version
-              <input
-                value={levelConfigForm.content_version}
-                onChange={(event) => onConfigFormChange({ content_version: event.currentTarget.value })}
-                placeholder="留空=沿用"
-                inputMode="numeric"
-              />
-            </label>
-          </div>
-
-          <div className="admin-config-actions inline-actions">
-            <button type="button" className="nav-btn" onClick={onLoadConfigStories} disabled={loadingConfigCatalog}>
-              {loadingConfigCatalog ? "加载中..." : "刷新故事"}
-            </button>
-            <button type="button" className="nav-btn" onClick={onLoadLevelConfig} disabled={!configStoryId || !configLevelId || loadingLevelConfig}>
-              {loadingLevelConfig ? "读取中..." : "读取配置"}
-            </button>
-            <button type="button" className="nav-btn" onClick={onPreviewLevelConfig} disabled={!configStoryId || !configLevelId || configPreviewing}>
-              {configPreviewing ? "预览中..." : "预览配置"}
-            </button>
-            <button type="button" className="primary-btn" onClick={onSaveLevelConfig} disabled={!configStoryId || !configLevelId || configSaving}>
-              {configSaving ? "保存中..." : "保存配置"}
-            </button>
-            <button type="button" className="link-btn" onClick={onTestLevelConfig} disabled={!configStoryId || !configLevelId || configTesting}>
-              {configTesting ? "测试中..." : "测试关卡"}
-            </button>
-          </div>
-
-          {levelConfigSnapshot && (
-            <div className="admin-config-summary">
-              <div>
-                <strong>基础配置：</strong>
-                <pre>{JSON.stringify(levelConfigSnapshot.base_config, null, 2)}</pre>
-              </div>
-              <div>
-                <strong>当前生效：</strong>
-                <pre>{JSON.stringify(levelConfigSnapshot.effective_config, null, 2)}</pre>
-              </div>
-              {levelConfigSnapshot.preview_effective_config && (
-                <div>
-                  <strong>预览生效：</strong>
-                  <pre>{JSON.stringify(levelConfigSnapshot.preview_effective_config, null, 2)}</pre>
+                  <label className="form-field admin-level-config-switch">
+                    <span>启用 override</span>
+                    <input
+                      type="checkbox"
+                      checked={levelConfigForm.enabled}
+                      onChange={(event) => onConfigFormChange({ enabled: event.currentTarget.checked })}
+                    />
+                  </label>
                 </div>
-              )}
-            </div>
-          )}
+              </section>
 
-          {testRunResult && (
-            <div className="admin-config-summary">
-              <strong>测试运行：</strong>
-              <pre>{JSON.stringify({
-                test_run_id: testRunResult.test_run_id,
-                message: testRunResult.message,
-                save_progress: testRunResult.save_progress,
-                mode: testRunResult.mode,
-              }, null, 2)}</pre>
+              <section className="admin-level-config-group">
+                <h5>布局设置</h5>
+                <div className="admin-config-grid admin-level-config-grid-layout">
+                  <label className="form-field">
+                    行数（grid_rows）
+                    <input
+                      value={levelConfigForm.grid_rows}
+                      onChange={(event) => onConfigFormChange({ grid_rows: event.currentTarget.value })}
+                      placeholder="留空=不覆盖"
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    列数（grid_cols）
+                    <input
+                      value={levelConfigForm.grid_cols}
+                      onChange={(event) => onConfigFormChange({ grid_cols: event.currentTarget.value })}
+                      placeholder="留空=不覆盖"
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    时限（time_limit_sec）
+                    <input
+                      value={levelConfigForm.time_limit_sec}
+                      onChange={(event) => onConfigFormChange({ time_limit_sec: event.currentTarget.value })}
+                      placeholder="留空=自动计算"
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    content_version
+                    <input
+                      value={levelConfigForm.content_version}
+                      onChange={(event) => onConfigFormChange({ content_version: event.currentTarget.value })}
+                      placeholder="留空=沿用"
+                      inputMode="numeric"
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <section className="admin-level-config-group">
+                <h5>难度设置</h5>
+                <div className="admin-config-grid admin-level-config-grid-difficulty">
+                  <label className="form-field">
+                    难度（difficulty）
+                    <select
+                      value={levelConfigForm.difficulty}
+                      onChange={(event) => onConfigFormChange({ difficulty: event.currentTarget.value as "" | AdminLevelDifficulty })}
+                    >
+                      <option value="">留空=normal</option>
+                      {managedLevelDifficulties.map((difficulty) => (
+                        <option key={difficulty} value={difficulty}>{difficulty}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="form-field">
+                    难度系数（difficulty_factor）
+                    <input
+                      value={levelConfigForm.difficulty_factor}
+                      onChange={(event) => onConfigFormChange({ difficulty_factor: event.currentTarget.value })}
+                      placeholder="留空=策略默认"
+                      inputMode="decimal"
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <div className="admin-level-config-actions-shell">
+                <div className="admin-config-actions inline-actions admin-level-config-actions-read">
+                  <button type="button" className="nav-btn" onClick={onLoadConfigStories} disabled={loadingConfigCatalog}>
+                    {loadingConfigCatalog ? "加载中..." : "刷新故事"}
+                  </button>
+                  <button type="button" className="nav-btn" onClick={onLoadLevelConfig} disabled={!canOperate || loadingLevelConfig}>
+                    {loadingLevelConfig ? "读取中..." : "读取配置"}
+                  </button>
+                  <button type="button" className="nav-btn" onClick={onPreviewLevelConfig} disabled={!canOperate || configPreviewing}>
+                    {configPreviewing ? "预览中..." : "预览配置"}
+                  </button>
+                </div>
+
+                <div className="admin-config-actions inline-actions admin-level-config-actions-commit">
+                  {!isMobile && (
+                    <button type="button" className="primary-btn" onClick={onSaveLevelConfig} disabled={!canOperate || configSaving}>
+                      {configSaving ? "保存中..." : "保存配置"}
+                    </button>
+                  )}
+                  <button type="button" className="link-btn" onClick={onTestLevelConfig} disabled={!canOperate || configTesting}>
+                    {configTesting ? "测试中..." : "测试关卡"}
+                  </button>
+                </div>
+              </div>
+
+              {hasPreviewResult && !hasPreviewDiff ? (
+                <div className="admin-level-config-inline-status is-ok">预览与当前生效配置一致（无差异）</div>
+              ) : null}
+
+              {hasPreviewResult && hasPreviewDiff ? (
+                <div className="admin-level-config-inline-status is-warn">预览与当前生效存在 {previewDiffRows.length} 项差异</div>
+              ) : null}
+
+              {testRunResult ? (
+                <div className="admin-level-config-inline-status is-info">
+                  测试运行：{testRunResult.test_run_id} · {testRunResult.message || "已完成"}
+                </div>
+              ) : null}
             </div>
-          )}
+
+            {!isMobile && (
+              <aside className="admin-level-config-side">
+                {levelConfigSnapshot ? (
+                  <div className="admin-config-summary">
+                    <div className="admin-level-config-diff-head">
+                      <strong>配置差异</strong>
+                      {hasPreviewResult ? (
+                        hasPreviewDiff
+                          ? <span className="level-state pending">有变更</span>
+                          : <span className="level-state done">无差异</span>
+                      ) : (
+                        <span className="progress-inline">先点击“预览配置”</span>
+                      )}
+                    </div>
+
+                    {hasPreviewResult && hasPreviewDiff ? (
+                      <div className="admin-level-config-diff-table">
+                        {previewDiffRows.map((row) => (
+                          <div key={`diff-${row.key}`} className="admin-level-config-diff-row">
+                            <strong>{row.key}</strong>
+                            <span>{row.current}</span>
+                            <span>{row.preview}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <details className="admin-level-config-json-block">
+                      <summary>基础配置 JSON</summary>
+                      <pre>{baseConfigJson}</pre>
+                    </details>
+                    <details className="admin-level-config-json-block">
+                      <summary>当前生效 JSON</summary>
+                      <pre>{effectiveConfigJson}</pre>
+                    </details>
+                    {previewConfigJson ? (
+                      <details className="admin-level-config-json-block" open={hasPreviewDiff}>
+                        <summary>预览生效 JSON</summary>
+                        <pre>{previewConfigJson}</pre>
+                      </details>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="admin-config-summary">
+                    <strong>配置差异</strong>
+                    <p className="progress-inline">请选择故事和关卡后读取配置，再点击预览查看差异。</p>
+                  </div>
+                )}
+
+                {testRunResult && (
+                  <div className="admin-config-summary">
+                    <strong>测试运行</strong>
+                    <pre>{JSON.stringify({
+                      test_run_id: testRunResult.test_run_id,
+                      message: testRunResult.message,
+                      save_progress: testRunResult.save_progress,
+                      mode: testRunResult.mode,
+                    }, null, 2)}</pre>
+                  </div>
+                )}
+              </aside>
+            )}
+          </div>
+
+          {isMobile ? (
+            <div className="admin-level-config-mobile-actions">
+              <button type="button" className="nav-btn" onClick={onPreviewLevelConfig} disabled={!canOperate || configPreviewing}>
+                {configPreviewing ? "预览中..." : "预览配置"}
+              </button>
+              <button type="button" className="primary-btn" onClick={onSaveLevelConfig} disabled={!canOperate || configSaving}>
+                {configSaving ? "保存中..." : "保存配置"}
+              </button>
+            </div>
+          ) : null}
         </>
       )}
     </div>

@@ -315,6 +315,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
       <AdminChapterSelectionSection
         collapsed={collapsedSections.levelConfig}
+        isMobile={isMobile}
         configLevelId={configLevelId}
         configLevels={configLevels}
         configPreviewing={configPreviewing}
