@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   apiCancelAdminBookSummaryTask,
@@ -458,6 +458,7 @@ export function useAdminStoryGeneratorCoordinator({
   const [llmNoticeInfo, setLlmNoticeInfo] = useState("");
   const [llmProfileSavedAt, setLlmProfileSavedAt] = useState(0);
   const [llmProviderSavedAt, setLlmProviderSavedAt] = useState(0);
+  const initializedVisibleRef = useRef(false);
 
   const clearLlmNotice = useCallback((): void => {
     setLlmNoticeError("");
@@ -2041,8 +2042,15 @@ export function useAdminStoryGeneratorCoordinator({
 
   useEffect(() => {
     if (!visible) {
+      initializedVisibleRef.current = false;
       return;
     }
+
+    if (initializedVisibleRef.current) {
+      return;
+    }
+
+    initializedVisibleRef.current = true;
 
     void loadRecentJobs();
     void loadConfigStories();
