@@ -2663,6 +2663,7 @@ export function AdminBookReplaceConfirmModal({
 type PuzzleFlowStep = "select" | "generate" | "review";
 
 type AdminRunReviewSectionProps = {
+  isMobile: boolean;
   canGoNextFlowStep: boolean;
   canGoPrevFlowStep: boolean;
   canJumpGenerateStep: boolean;
@@ -2679,6 +2680,7 @@ type AdminRunReviewSectionProps = {
 };
 
 export function AdminRunReviewSection({
+  isMobile,
   canGoNextFlowStep,
   canGoPrevFlowStep,
   canJumpGenerateStep,
@@ -2693,6 +2695,49 @@ export function AdminRunReviewSection({
   onSetPuzzleFlowStep,
   onToggleSection,
 }: AdminRunReviewSectionProps): JSX.Element {
+  const stepStates = [
+    {
+      key: "select" as const,
+      index: 1,
+      title: "选章节",
+      desc: "筛选并确认章节",
+      isCurrent: puzzleFlowStep === "select",
+      isCompleted: canJumpGenerateStep || puzzleFlowStep === "generate" || puzzleFlowStep === "review",
+      isReachable: true,
+    },
+    {
+      key: "generate" as const,
+      index: 2,
+      title: "文案/出图",
+      desc: "查看拆分并处理图片",
+      isCurrent: puzzleFlowStep === "generate",
+      isCompleted: canJumpReviewStep || puzzleFlowStep === "review",
+      isReachable: canJumpGenerateStep || puzzleFlowStep === "generate" || puzzleFlowStep === "review",
+    },
+    {
+      key: "review" as const,
+      index: 3,
+      title: "审核发布",
+      desc: "确认配置并发布",
+      isCurrent: puzzleFlowStep === "review",
+      isCompleted: false,
+      isReachable: canJumpReviewStep || puzzleFlowStep === "review",
+    },
+  ];
+
+  const currentStepInfo = stepStates.find((item) => item.isCurrent) || stepStates[0];
+  const completedStepCount = stepStates.filter((item) => item.isCompleted).length;
+  const nextActionLabel = puzzleFlowStep === "select"
+    ? "去步骤2：文案/出图"
+    : puzzleFlowStep === "generate"
+      ? "去步骤3：审核发布"
+      : "已在最终步骤";
+  const canRunNextAction = puzzleFlowStep === "select"
+    ? canJumpGenerateStep
+    : puzzleFlowStep === "generate"
+      ? canJumpReviewStep
+      : false;
+
   return (
     <div className="admin-run-box admin-collapsible-box">
       <button type="button" className={`admin-collapse-head ${collapsed ? "collapsed" : ""}`} onClick={onToggleSection}>
@@ -2705,42 +2750,26 @@ export function AdminRunReviewSection({
           {noticeError && <div className="banner-error">{noticeError}</div>}
           {noticeInfo && <div className="banner-info">{noticeInfo}</div>}
 
-          <div className="admin-puzzle-flow" role="tablist" aria-label="谜题生成流程">
-            <button
-              type="button"
-              className={`admin-flow-step ${puzzleFlowStep === "select" ? "active" : ""}`}
-              onClick={() => onSetPuzzleFlowStep("select")}
-            >
-              <span className="admin-flow-index">1</span>
-              <span className="admin-flow-meta">
-                <strong>选章节</strong>
-                <small>筛选并确认章节</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`admin-flow-step ${puzzleFlowStep === "generate" ? "active" : ""}`}
-              onClick={() => onSetPuzzleFlowStep("generate")}
-              disabled={!canJumpGenerateStep}
-            >
-              <span className="admin-flow-index">2</span>
-              <span className="admin-flow-meta">
-                <strong>文案/出图</strong>
-                <small>查看拆分并判断每张图状态</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`admin-flow-step ${puzzleFlowStep === "review" ? "active" : ""}`}
-              onClick={() => onSetPuzzleFlowStep("review")}
-              disabled={!canJumpReviewStep}
-            >
-              <span className="admin-flow-index">3</span>
-              <span className="admin-flow-meta">
-                <strong>审核发布</strong>
-                <small>修改 rows/cols/time 后发布</small>
-              </span>
-            </button>
+          <div className={`admin-puzzle-flow ${isMobile ? "is-mobile" : ""}`.trim()} role="tablist" aria-label="谜题生成流程">
+            {stepStates.map((step) => {
+              const stateLabel = step.isCurrent ? "当前" : step.isCompleted ? "完成" : step.isReachable ? "可进入" : "未达成";
+              return (
+                <button
+                  key={`flow-step-${step.key}`}
+                  type="button"
+                  className={`admin-flow-step ${step.isCurrent ? "is-current" : ""} ${step.isCompleted ? "is-completed" : ""} ${!step.isReachable && !step.isCurrent ? "is-locked" : ""}`.trim()}
+                  onClick={() => onSetPuzzleFlowStep(step.key)}
+                  disabled={!step.isReachable && !step.isCurrent}
+                >
+                  <span className="admin-flow-index">{step.isCompleted ? "✓" : step.index}</span>
+                  <span className="admin-flow-meta">
+                    <strong>{step.title}</strong>
+                    <small>{step.desc}</small>
+                  </span>
+                  <span className="admin-flow-state">{stateLabel}</span>
+                </button>
+              );
+            })}
           </div>
 
           <div className="admin-puzzle-flow-nav">
@@ -2758,11 +2787,13 @@ export function AdminRunReviewSection({
             >
               ← 上一步
             </button>
-            <span className="admin-puzzle-flow-status">流程 {currentFlowStepIndex + 1} / {flowStepCount}</span>
+            <span className="admin-puzzle-flow-status">
+              当前：步骤 {currentFlowStepIndex + 1}/{flowStepCount}（{currentStepInfo.title}） · 已完成 {completedStepCount}/{flowStepCount - 1}
+            </span>
             <button
               type="button"
-              className="nav-btn"
-              disabled={!canGoNextFlowStep}
+              className="primary-btn admin-puzzle-flow-next-op"
+              disabled={!canGoNextFlowStep || !canRunNextAction}
               onClick={() => {
                 if (puzzleFlowStep === "select" && canJumpGenerateStep) {
                   onSetPuzzleFlowStep("generate");
@@ -2771,7 +2802,7 @@ export function AdminRunReviewSection({
                 }
               }}
             >
-              下一步 →
+              {nextActionLabel}
             </button>
           </div>
 
@@ -2922,6 +2953,7 @@ type AdminPuzzleSelectStageProps = {
   chapterTotal: number;
   chapters: AdminChapterSummary[];
   includeUsed: boolean;
+  isMobile: boolean;
   keyword: string;
   loadingChapters: boolean;
   maxCharsInput: string;
@@ -2958,6 +2990,7 @@ export function AdminPuzzleSelectStage({
   chapterTotal,
   chapters,
   includeUsed,
+  isMobile,
   keyword,
   loadingChapters,
   maxCharsInput,
@@ -2985,7 +3018,17 @@ export function AdminPuzzleSelectStage({
 }: AdminPuzzleSelectStageProps): JSX.Element {
   const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false);
 
-  const renderPreviewPanel = (mode: "desktop" | "mobile"): JSX.Element => {
+  useEffect(() => {
+    if (!isMobile) {
+      setMobilePreviewOpen(false);
+      return;
+    }
+    if (selectedChapter) {
+      setMobilePreviewOpen(true);
+    }
+  }, [isMobile, selectedChapter?.id]);
+
+  const renderPreviewPanel = (mode: "desktop" | "mobile", withActions = true): JSX.Element => {
     if (!selectedChapter) {
       return (
         <div className="admin-run-box admin-puzzle-preview">
@@ -2999,43 +3042,40 @@ export function AdminPuzzleSelectStage({
       <div className={`admin-run-box admin-puzzle-preview ${mode === "mobile" ? "mobile" : ""}`.trim()}>
         <div className="admin-puzzle-preview-head">
           <h4>章节预览</h4>
-          {mode === "mobile" && (
-            <button type="button" className="nav-btn" onClick={() => setMobilePreviewOpen(false)}>
-              收起
-            </button>
-          )}
         </div>
         <p className="progress-inline">
           当前选择：第{selectedChapter.chapter_index}章 · {selectedChapter.chapter_title}（{selectedChapter.char_count}字）
         </p>
         <p className="admin-puzzle-preview-text">{selectedChapter.preview || "暂无章节预览"}</p>
-        <div className="inline-actions">
-          <button
-            type="button"
-            className="primary-btn"
-            disabled={submitting}
-            onClick={onOpenGenerateDialog}
-          >
-            {submitting ? "创建中..." : "去生成"}
-          </button>
-          <button
-            type="button"
-            className="nav-btn"
-            disabled={loadingChapterTextPreview}
-            onClick={() => onPreviewChapterText(selectedChapter.id)}
-          >
-            {loadingChapterTextPreview && selectedChapterId === selectedChapter.id ? "加载原文..." : "预览原文"}
-          </button>
-          {canJumpGenerateStep && (
+        {withActions && (
+          <div className="inline-actions">
+            <button
+              type="button"
+              className="primary-btn"
+              disabled={submitting}
+              onClick={onOpenGenerateDialog}
+            >
+              {submitting ? "创建中..." : "去生成"}
+            </button>
             <button
               type="button"
               className="nav-btn"
-              onClick={onSetPuzzleFlowGenerate}
+              disabled={loadingChapterTextPreview}
+              onClick={() => onPreviewChapterText(selectedChapter.id)}
             >
-              查看生成进度
+              {loadingChapterTextPreview && selectedChapterId === selectedChapter.id ? "加载原文..." : "预览原文"}
             </button>
-          )}
-        </div>
+            {canJumpGenerateStep && (
+              <button
+                type="button"
+                className="nav-btn"
+                onClick={onSetPuzzleFlowGenerate}
+              >
+                查看生成进度
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -3218,16 +3258,55 @@ export function AdminPuzzleSelectStage({
         </div>
       </div>
 
-      <div className={`admin-puzzle-preview-fab-shell ${mobilePreviewOpen ? "is-open" : ""}`}>
-        <button
-          type="button"
-          className="admin-puzzle-preview-fab-toggle"
-          onClick={() => setMobilePreviewOpen((prev) => !prev)}
-        >
-          章节速览 {selectedChapter ? `第${selectedChapter.chapter_index}章` : "未选择"}
-        </button>
-        {mobilePreviewOpen && renderPreviewPanel("mobile")}
-      </div>
+      {isMobile && (
+        <div className={`admin-puzzle-mobile-drawer ${mobilePreviewOpen ? "is-open" : ""}`}>
+          {mobilePreviewOpen && (
+            <div className="admin-puzzle-mobile-drawer-content">{renderPreviewPanel("mobile", false)}</div>
+          )}
+
+          <div className="admin-puzzle-mobile-drawer-bar">
+            <div className="admin-puzzle-mobile-drawer-summary">
+              {selectedChapter
+                ? `当前：第${selectedChapter.chapter_index}章 · ${selectedChapter.chapter_title}`
+                : "当前：未选择章节"}
+            </div>
+            <div className="admin-puzzle-mobile-drawer-actions">
+              <button
+                type="button"
+                className="nav-btn"
+                onClick={() => setMobilePreviewOpen((prev) => !prev)}
+              >
+                {mobilePreviewOpen ? "收起速览" : "展开速览"}
+              </button>
+              <button
+                type="button"
+                className="nav-btn"
+                disabled={!selectedChapter || loadingChapterTextPreview}
+                onClick={() => onPreviewChapterText(selectedChapter?.id)}
+              >
+                {loadingChapterTextPreview ? "加载原文..." : "预览原文"}
+              </button>
+              <button
+                type="button"
+                className="primary-btn"
+                disabled={!selectedChapter || submitting}
+                onClick={onOpenGenerateDialog}
+              >
+                {submitting ? "创建中..." : "去生成"}
+              </button>
+              {canJumpGenerateStep && (
+                <button
+                  type="button"
+                  className="nav-btn"
+                  onClick={onSetPuzzleFlowGenerate}
+                >
+                  去步骤2
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

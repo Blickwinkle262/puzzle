@@ -530,6 +530,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       />
 
       <AdminRunReviewSection
+        isMobile={isMobile}
         canGoNextFlowStep={canGoNextFlowStep}
         canGoPrevFlowStep={canGoPrevFlowStep}
         canJumpGenerateStep={canJumpGenerateStep}
@@ -558,6 +559,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 chapterTotal={chapterTotal}
                 chapters={chapters}
                 includeUsed={includeUsed}
+                isMobile={isMobile}
                 keyword={keyword}
                 loadingChapters={loadingChapters}
                 maxCharsInput={maxCharsInput}
