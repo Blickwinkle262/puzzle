@@ -3708,8 +3708,7 @@ export function AdminPuzzleGenerateStage({
                         || scene.image_status === "pending";
                       const canUpload = scene.image_status === "failed"
                         || scene.image_status === "skipped"
-                        || scene.image_status === "pending"
-                        || scene.image_status === "running";
+                        || scene.image_status === "pending";
 
                       return (
                         <tr key={`${scene.run_id}-${scene.scene_index}-image`}>
@@ -3787,8 +3786,7 @@ export function AdminPuzzleGenerateStage({
                         || scene.image_status === "pending";
                       const canUpload = scene.image_status === "failed"
                         || scene.image_status === "skipped"
-                        || scene.image_status === "pending"
-                        || scene.image_status === "running";
+                        || scene.image_status === "pending";
 
                       return (
                         <li key={`${scene.run_id}-${scene.scene_index}-mobile-image`} className="admin-review-mobile-item">
