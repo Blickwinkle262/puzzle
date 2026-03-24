@@ -2,6 +2,7 @@ export function createGenerationSceneService(options = {}) {
   const {
     db,
     nowIso,
+    onWarning,
     normalizeBoolean,
     normalizeIntegerInRange,
     normalizePositiveInteger,
@@ -12,6 +13,20 @@ export function createGenerationSceneService(options = {}) {
     normalizeGenerationSceneTextStatus,
     safeParseJsonArray,
   } = options;
+
+  const emitWarning = typeof onWarning === "function" ? onWarning : null;
+
+  function warnSceneQueryError(scope, error, context = {}) {
+    if (!emitWarning) {
+      return;
+    }
+
+    emitWarning("generation-scene-service.query-failed", {
+      scope,
+      ...context,
+      error,
+    });
+  }
 
   function hasGenerationSceneRows(runId) {
     try {
@@ -26,7 +41,10 @@ export function createGenerationSceneService(options = {}) {
         )
         .get(runId);
       return Boolean(row);
-    } catch {
+    } catch (error) {
+      warnSceneQueryError("hasGenerationSceneRows", error, {
+        run_id: String(runId || ""),
+      });
       return false;
     }
   }
@@ -87,7 +105,11 @@ export function createGenerationSceneService(options = {}) {
       return rows
         .map((row) => serializeGenerationSceneRow(row))
         .filter((item) => item !== null);
-    } catch {
+    } catch (error) {
+      warnSceneQueryError("listGenerationScenes", error, {
+        run_id: String(runId || ""),
+        include_deleted: includeDeleted,
+      });
       return [];
     }
   }

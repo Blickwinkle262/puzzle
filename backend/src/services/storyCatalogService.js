@@ -4,6 +4,7 @@ import { createStoryLevelService } from "./storyLevelService.js";
 export function createStoryCatalogService(options = {}) {
   const {
     db,
+    onWarning,
     storyIndexFile,
     storyPublicPrefix,
     defaultTimerPolicy,
@@ -17,6 +18,20 @@ export function createStoryCatalogService(options = {}) {
     safeParseJsonObject,
     getBooksDbOrThrow,
   } = options;
+
+  const emitWarning = typeof onWarning === "function" ? onWarning : null;
+
+  function warnCatalogQueryError(scope, error, context = {}) {
+    if (!emitWarning) {
+      return;
+    }
+
+    emitWarning("story-catalog-service.query-failed", {
+      scope,
+      ...context,
+      error,
+    });
+  }
 
   const DEFAULT_UNASSIGNED_BOOK_ID = "unassigned";
   const DEFAULT_UNASSIGNED_BOOK_TITLE = "未归档书籍";
@@ -118,7 +133,8 @@ export function createStoryCatalogService(options = {}) {
           updated_at: row?.updated_at ? String(row.updated_at) : null,
         });
       }
-    } catch {
+    } catch (error) {
+      warnCatalogQueryError("listStoryMetaOverridesById", error);
       return new Map();
     }
 
@@ -311,7 +327,8 @@ export function createStoryCatalogService(options = {}) {
       `,
         )
         .all();
-    } catch {
+    } catch (error) {
+      warnCatalogQueryError("listStoryBookLinksFromBooksDb", error);
       return [];
     }
   }

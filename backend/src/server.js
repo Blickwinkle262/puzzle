@@ -2192,6 +2192,30 @@ if (LEGACY_GENERATE_STORY_CREATE_ENABLED) {
   );
 }
 
+function logServiceWarning(eventName, payload = {}) {
+  const normalizedEventName = String(eventName || "service.warning").trim() || "service.warning";
+  const normalizedPayload = payload && typeof payload === "object" ? payload : {};
+  const { error, ...rest } = normalizedPayload;
+  const detailEntries = Object.entries(rest).filter(([, value]) => value !== undefined && value !== null && value !== "");
+
+  if (detailEntries.length > 0) {
+    if (error) {
+      console.warn(`[service] ${normalizedEventName}`, Object.fromEntries(detailEntries), asMessage(error));
+      return;
+    }
+
+    console.warn(`[service] ${normalizedEventName}`, Object.fromEntries(detailEntries));
+    return;
+  }
+
+  if (error) {
+    console.warn(`[service] ${normalizedEventName}:`, asMessage(error));
+    return;
+  }
+
+  console.warn(`[service] ${normalizedEventName}`);
+}
+
 const {
   buildAdminStoryMetaSnapshot,
   buildGeneratedStoryBookMap,
@@ -2209,6 +2233,7 @@ const {
   saveAdminStoryMetaOverride,
 } = createStoryCatalogService({
   db,
+  onWarning: logServiceWarning,
   storyIndexFile: STORY_INDEX_FILE,
   storyPublicPrefix: STORY_PUBLIC_PREFIX,
   defaultTimerPolicy: DEFAULT_TIMER_POLICY,
@@ -2300,6 +2325,7 @@ const {
 } = createGenerationSceneService({
   db,
   nowIso,
+  onWarning: logServiceWarning,
   normalizeBoolean,
   normalizeIntegerInRange,
   normalizePositiveInteger,
@@ -3987,8 +4013,11 @@ function upsertGenerationJobMetaOnEnqueue({ runId, requestedBy, payload, created
       now,
       now,
     );
-  } catch {
-    // ignore meta sync errors to keep main queue flow available
+  } catch (error) {
+    logServiceWarning("generation-job-meta.enqueue-upsert-failed", {
+      run_id: String(runId || ""),
+      error,
+    });
   }
 }
 
