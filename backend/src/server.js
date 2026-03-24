@@ -21,6 +21,7 @@ import { runMigrations } from "./migrate.js";
 import { registerAdminLevelRoutes } from "./routes/adminLevelRoutes.js";
 import { registerAdminLlmRoutes } from "./routes/adminLlmRoutes.js";
 import { registerAdminLegacyGenerationRoutes } from "./routes/adminLegacyGenerationRoutes.js";
+import { registerAdminPromptPresetRoutes } from "./routes/adminPromptPresetRoutes.js";
 import { registerAdminStoryRoutes } from "./routes/adminStoryRoutes.js";
 import { registerAdminUserRoutes } from "./routes/adminUserRoutes.js";
 import { registerAuthRoutes } from "./routes/authRoutes.js";
@@ -2651,6 +2652,16 @@ registerAdminLlmRoutes(app, {
   serializeRuntimeLlmState,
   testLlmProviderConnection,
   updateLlmProvider,
+});
+
+registerAdminPromptPresetRoutes(app, {
+  asMessage,
+  db,
+  normalizePositiveInteger,
+  nowIso,
+  requireAdmin,
+  requireAuth,
+  requireCsrf,
 });
 
 registerAdminLegacyGenerationRoutes(app, {
