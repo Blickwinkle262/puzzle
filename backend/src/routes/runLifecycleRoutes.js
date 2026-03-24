@@ -1,3 +1,59 @@
+import fs from "node:fs";
+
+function readTextIfExists(filePath) {
+  const target = String(filePath || "").trim();
+  if (!target) {
+    return "";
+  }
+  try {
+    return fs.readFileSync(target, "utf-8").replace(/\r\n/g, "\n");
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeRunPayloadForResponse(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  const next = { ...payload };
+
+  if (typeof next.chapter_text_override === "string") {
+    if (!next.chapter_text_override_chars) {
+      next.chapter_text_override_chars = next.chapter_text_override.length;
+    }
+    next.has_chapter_text_override = Boolean(next.chapter_text_override_file || next.chapter_text_override.length > 0);
+    delete next.chapter_text_override;
+  }
+
+  if (typeof next.system_prompt_text === "string") {
+    if (!next.system_prompt_chars) {
+      next.system_prompt_chars = next.system_prompt_text.length;
+    }
+    next.has_system_prompt_override = Boolean(next.system_prompt_file || next.system_prompt_text.length > 0);
+    delete next.system_prompt_text;
+  }
+
+  if (typeof next.user_prompt_template_text === "string") {
+    if (!next.user_prompt_template_chars) {
+      next.user_prompt_template_chars = next.user_prompt_template_text.length;
+    }
+    next.has_user_prompt_template_override = Boolean(next.user_prompt_template_file || next.user_prompt_template_text.length > 0);
+    delete next.user_prompt_template_text;
+  }
+
+  if (typeof next.image_prompt_suffix_text === "string") {
+    if (!next.image_prompt_suffix_chars) {
+      next.image_prompt_suffix_chars = next.image_prompt_suffix_text.length;
+    }
+    next.has_image_prompt_suffix_override = Boolean(next.image_prompt_suffix_file || next.image_prompt_suffix_text.length > 0);
+    delete next.image_prompt_suffix_text;
+  }
+
+  return next;
+}
+
 export function registerRunLifecycleRoutes(app, deps) {
   const {
     asMessage,
@@ -47,6 +103,11 @@ export function registerRunLifecycleRoutes(app, deps) {
         return;
       }
 
+      const payload = job.payload && typeof job.payload === "object"
+        ? sanitizeRunPayloadForResponse(job.payload)
+        : undefined;
+      const safeJob = payload ? { ...job, payload } : job;
+
       materializeGenerationScenesFromLegacy(runId, job);
 
       const scenes = listGenerationScenes(runId, { include_deleted: true });
@@ -78,7 +139,7 @@ export function registerRunLifecycleRoutes(app, deps) {
       }
 
       res.json({
-        job,
+        job: safeJob,
         scenes: compatibleScenes,
         counts: summarizeGenerationScenes(compatibleScenes),
         attempts_by_scene: attemptsByScene,
@@ -86,6 +147,56 @@ export function registerRunLifecycleRoutes(app, deps) {
       });
     } catch (error) {
       res.status(500).json({ message: asMessage(error, "读取 run 详情失败") });
+    }
+  });
+
+  app.get("/api/runs/:runId/overrides", requireAuth, requireAdmin, (req, res) => {
+    const runId = normalizeRunId(req.params.runId);
+    if (!runId) {
+      res.status(400).json({ message: "run_id 不合法" });
+      return;
+    }
+
+    try {
+      const job = getGenerationJobByRunId(runId);
+      if (!job) {
+        res.status(404).json({ message: "run_id 不存在" });
+        return;
+      }
+
+      const payload = job.payload && typeof job.payload === "object"
+        ? job.payload
+        : {};
+
+      const chapterTextOverride = typeof payload.chapter_text_override === "string"
+        ? payload.chapter_text_override
+        : readTextIfExists(payload.chapter_text_override_file);
+      const systemPromptText = typeof payload.system_prompt_text === "string"
+        ? payload.system_prompt_text
+        : readTextIfExists(payload.system_prompt_file);
+      const userPromptTemplateText = typeof payload.user_prompt_template_text === "string"
+        ? payload.user_prompt_template_text
+        : readTextIfExists(payload.user_prompt_template_file);
+      const imagePromptSuffixText = typeof payload.image_prompt_suffix_text === "string"
+        ? payload.image_prompt_suffix_text
+        : readTextIfExists(payload.image_prompt_suffix_file);
+
+      res.json({
+        ok: true,
+        run_id: runId,
+        overrides: {
+          chapter_text_override: chapterTextOverride,
+          chapter_text_override_chars: chapterTextOverride.length,
+          system_prompt_text: systemPromptText,
+          system_prompt_chars: systemPromptText.length,
+          user_prompt_template_text: userPromptTemplateText,
+          user_prompt_template_chars: userPromptTemplateText.length,
+          image_prompt_suffix_text: imagePromptSuffixText,
+          image_prompt_suffix_chars: imagePromptSuffixText.length,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({ message: asMessage(error, "读取 run overrides 失败") });
     }
   });
 

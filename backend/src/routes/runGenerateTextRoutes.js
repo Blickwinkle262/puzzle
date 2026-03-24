@@ -1,4 +1,22 @@
+import fs from "node:fs";
 import path from "node:path";
+
+function writeTextAtomic(targetPath, content) {
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, content, "utf-8");
+    fs.renameSync(tempPath, targetPath);
+  } catch (error) {
+    try {
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+    } catch {
+      // noop: best effort cleanup
+    }
+    throw error;
+  }
+}
 
 export function registerRunGenerateTextRoutes(app, deps) {
   const {
@@ -72,8 +90,31 @@ export function registerRunGenerateTextRoutes(app, deps) {
       return;
     }
 
+    const chapterTextOverrideInput = req.body?.chapter_text_override;
+    if (chapterTextOverrideInput !== undefined && typeof chapterTextOverrideInput !== "string") {
+      res.status(400).json({ message: "chapter_text_override 必须是字符串" });
+      return;
+    }
+    const chapterTextOverride = typeof chapterTextOverrideInput === "string"
+      ? chapterTextOverrideInput.replace(/\r\n/g, "\n")
+      : "";
+    const hasChapterTextOverride = chapterTextOverride.trim().length > 0;
+    if (hasChapterTextOverride && chapterTextOverride.length > 300000) {
+      res.status(400).json({ message: "chapter_text_override 过长（上限 300000 字符）" });
+      return;
+    }
+
+    const existingPayload = writable.job?.payload && typeof writable.job.payload === "object"
+      ? writable.job.payload
+      : {};
+
     let chapterSource = null;
     let storyFile = inputStoryFile || writable.job?.story_file || "";
+
+    if (inputStoryFile && hasChapterTextOverride) {
+      res.status(400).json({ message: "story_file 模式不支持 chapter_text_override" });
+      return;
+    }
 
     try {
       if (chapterId) {
@@ -86,14 +127,90 @@ export function registerRunGenerateTextRoutes(app, deps) {
       return;
     }
 
-    if (!storyFile) {
+    const resolvedChapterId = chapterSource?.chapter_id
+      || chapterId
+      || normalizePositiveInteger(existingPayload.chapter_id)
+      || null;
+
+    if (hasChapterTextOverride) {
+      if (!resolvedChapterId) {
+        res.status(400).json({ message: "chapter_text_override 仅支持 chapter 生成任务" });
+        return;
+      }
+    }
+
+    if (!storyFile && !hasChapterTextOverride) {
       res.status(400).json({ message: "缺少 story_file，请选择 chapter 或传入 story_file" });
       return;
     }
 
-    const existingPayload = writable.job?.payload && typeof writable.job.payload === "object"
-      ? writable.job.payload
-      : {};
+    const resolvePromptTextInput = (bodyValue, payloadValue) => {
+      if (bodyValue !== undefined) {
+        return bodyValue;
+      }
+      return payloadValue;
+    };
+    const normalizePromptTextInput = (value) => (typeof value === "string" ? value.replace(/\r\n/g, "\n") : "");
+
+    const rawSystemPromptText = resolvePromptTextInput(req.body?.system_prompt_text, existingPayload.system_prompt_text);
+    if (rawSystemPromptText !== undefined && typeof rawSystemPromptText !== "string") {
+      res.status(400).json({ message: "system_prompt_text 必须是字符串" });
+      return;
+    }
+    const systemPromptText = normalizePromptTextInput(rawSystemPromptText);
+    const hasSystemPromptText = systemPromptText.trim().length > 0;
+    if (hasSystemPromptText && systemPromptText.length > 120000) {
+      res.status(400).json({ message: "system_prompt_text 过长（上限 120000 字符）" });
+      return;
+    }
+
+    const rawUserPromptTemplateText = resolvePromptTextInput(req.body?.user_prompt_template_text, existingPayload.user_prompt_template_text);
+    if (rawUserPromptTemplateText !== undefined && typeof rawUserPromptTemplateText !== "string") {
+      res.status(400).json({ message: "user_prompt_template_text 必须是字符串" });
+      return;
+    }
+    const userPromptTemplateText = normalizePromptTextInput(rawUserPromptTemplateText);
+    const hasUserPromptTemplateText = userPromptTemplateText.trim().length > 0;
+    if (hasUserPromptTemplateText && userPromptTemplateText.length > 200000) {
+      res.status(400).json({ message: "user_prompt_template_text 过长（上限 200000 字符）" });
+      return;
+    }
+    if (hasUserPromptTemplateText && !userPromptTemplateText.includes("{{SOURCE_TEXT}}")) {
+      res.status(400).json({ message: "user_prompt_template_text 必须包含 {{SOURCE_TEXT}}" });
+      return;
+    }
+
+    const rawImagePromptSuffixText = resolvePromptTextInput(req.body?.image_prompt_suffix_text, existingPayload.image_prompt_suffix_text);
+    if (rawImagePromptSuffixText !== undefined && typeof rawImagePromptSuffixText !== "string") {
+      res.status(400).json({ message: "image_prompt_suffix_text 必须是字符串" });
+      return;
+    }
+    const imagePromptSuffixText = normalizePromptTextInput(rawImagePromptSuffixText);
+    const hasImagePromptSuffixText = imagePromptSuffixText.trim().length > 0;
+    if (hasImagePromptSuffixText && imagePromptSuffixText.length > 60000) {
+      res.status(400).json({ message: "image_prompt_suffix_text 过长（上限 60000 字符）" });
+      return;
+    }
+
+    const promptsDirValue = String(req.body?.prompts_dir || existingPayload.prompts_dir || "").trim() || undefined;
+    let systemPromptFileValue = String(req.body?.system_prompt_file || existingPayload.system_prompt_file || "").trim() || undefined;
+    let userPromptTemplateFileValue = String(req.body?.user_prompt_template_file || existingPayload.user_prompt_template_file || "").trim() || undefined;
+    let imagePromptSuffixFileValue = String(req.body?.image_prompt_suffix_file || existingPayload.image_prompt_suffix_file || "").trim() || undefined;
+    let chapterTextOverrideFileValue = String(existingPayload.chapter_text_override_file || "").trim() || undefined;
+
+    if (req.body?.chapter_text_override !== undefined && !hasChapterTextOverride) {
+      chapterTextOverrideFileValue = undefined;
+    }
+    if (req.body?.system_prompt_text !== undefined && !hasSystemPromptText) {
+      systemPromptFileValue = undefined;
+    }
+    if (req.body?.user_prompt_template_text !== undefined && !hasUserPromptTemplateText) {
+      userPromptTemplateFileValue = undefined;
+    }
+    if (req.body?.image_prompt_suffix_text !== undefined && !hasImagePromptSuffixText) {
+      imagePromptSuffixFileValue = undefined;
+    }
+
     let candidateScenes = normalizePositiveInteger(req.body?.candidate_scenes)
       || normalizePositiveInteger(existingPayload.candidate_scenes)
       || requestedSceneCount
@@ -131,37 +248,107 @@ export function registerRunGenerateTextRoutes(app, deps) {
       purpose: "text",
     });
 
-    const mergedPayload = {
-      ...existingPayload,
-      run_id: runId,
-      target_date: targetDate,
-      story_file: storyFile,
-      base_url: String(req.body?.base_url || existingPayload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
-      text_model: String(req.body?.text_model || existingPayload.text_model || runtimeLlm.text_model || "").trim() || undefined,
-      image_model: String(req.body?.image_model || existingPayload.image_model || runtimeLlm.image_model || "").trim() || undefined,
-      review_mode: true,
-      dry_run: false,
-      chapter_id: chapterSource?.chapter_id || chapterId || normalizePositiveInteger(existingPayload.chapter_id) || null,
-      chapter_title: chapterSource?.chapter_title || String(existingPayload.chapter_title || ""),
-      chapter_index: chapterSource?.chapter_index ?? normalizePositiveInteger(existingPayload.chapter_index) ?? null,
-      chapter_char_count: chapterSource?.char_count ?? normalizePositiveInteger(existingPayload.chapter_char_count) ?? null,
-      book_id: chapterSource?.book_id ?? normalizePositiveInteger(existingPayload.book_id) ?? null,
-      book_title: chapterSource?.book_title || String(existingPayload.book_title || ""),
-      candidate_scenes: candidateScenes,
-      min_scenes: minScenes,
-      max_scenes: maxScenes,
-      scene_count: maxScenes,
-      log_file: logFile,
-      event_log_file: eventLogFile,
-      summary_path: summaryPath,
-    };
-
     try {
+      let effectiveStoryFile = storyFile;
+
+      if (hasChapterTextOverride) {
+        const chapterDir = path.join(STORY_GENERATOR_SUMMARY_DIR, "chapters");
+        fs.mkdirSync(chapterDir, { recursive: true });
+        chapterTextOverrideFileValue = path.join(chapterDir, `${runId}_chapter_override.txt`);
+        writeTextAtomic(chapterTextOverrideFileValue, chapterTextOverride);
+        effectiveStoryFile = chapterTextOverrideFileValue;
+
+        if (chapterSource) {
+          chapterSource = {
+            ...chapterSource,
+            char_count: chapterTextOverride.length,
+            story_file: chapterTextOverrideFileValue,
+          };
+        }
+      }
+
+      if (!effectiveStoryFile) {
+        res.status(400).json({ message: "缺少 story_file，请选择 chapter 或传入 story_file" });
+        return;
+      }
+
+      if (hasSystemPromptText || hasUserPromptTemplateText || hasImagePromptSuffixText) {
+        const promptOverrideDir = path.join(STORY_GENERATOR_SUMMARY_DIR, "prompt_overrides");
+        fs.mkdirSync(promptOverrideDir, { recursive: true });
+
+        if (hasSystemPromptText) {
+          systemPromptFileValue = path.join(promptOverrideDir, `${runId}_system_prompt.txt`);
+          writeTextAtomic(systemPromptFileValue, systemPromptText);
+        }
+        if (hasUserPromptTemplateText) {
+          userPromptTemplateFileValue = path.join(promptOverrideDir, `${runId}_user_prompt_template.txt`);
+          writeTextAtomic(userPromptTemplateFileValue, userPromptTemplateText);
+        }
+        if (hasImagePromptSuffixText) {
+          imagePromptSuffixFileValue = path.join(promptOverrideDir, `${runId}_image_prompt_suffix.txt`);
+          writeTextAtomic(imagePromptSuffixFileValue, imagePromptSuffixText);
+        }
+      }
+
+      const {
+        chapter_text_override: _chapterTextOverride,
+        system_prompt_text: _systemPromptText,
+        user_prompt_template_text: _userPromptTemplateText,
+        image_prompt_suffix_text: _imagePromptSuffixText,
+        ...payloadWithoutInlineOverrides
+      } = existingPayload;
+
+      const mergedPayload = {
+        ...payloadWithoutInlineOverrides,
+        run_id: runId,
+        target_date: targetDate,
+        story_file: effectiveStoryFile,
+        base_url: String(req.body?.base_url || existingPayload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
+        text_model: String(req.body?.text_model || existingPayload.text_model || runtimeLlm.text_model || "").trim() || undefined,
+        image_model: String(req.body?.image_model || existingPayload.image_model || runtimeLlm.image_model || "").trim() || undefined,
+        review_mode: true,
+        dry_run: false,
+        chapter_id: resolvedChapterId,
+        chapter_title: chapterSource?.chapter_title || String(existingPayload.chapter_title || ""),
+        chapter_index: chapterSource?.chapter_index ?? normalizePositiveInteger(existingPayload.chapter_index) ?? null,
+        chapter_char_count: chapterSource?.char_count ?? normalizePositiveInteger(existingPayload.chapter_char_count) ?? null,
+        book_id: chapterSource?.book_id ?? normalizePositiveInteger(existingPayload.book_id) ?? null,
+        book_title: chapterSource?.book_title || String(existingPayload.book_title || ""),
+        chapter_text_override_file: chapterTextOverrideFileValue,
+        chapter_text_override_chars: chapterTextOverrideFileValue
+          ? (hasChapterTextOverride ? chapterTextOverride.length : normalizePositiveInteger(existingPayload.chapter_text_override_chars) || null)
+          : null,
+        has_chapter_text_override: Boolean(chapterTextOverrideFileValue),
+        prompts_dir: promptsDirValue,
+        system_prompt_file: systemPromptFileValue,
+        user_prompt_template_file: userPromptTemplateFileValue,
+        image_prompt_suffix_file: imagePromptSuffixFileValue,
+        system_prompt_chars: systemPromptFileValue
+          ? (hasSystemPromptText ? systemPromptText.length : normalizePositiveInteger(existingPayload.system_prompt_chars) || null)
+          : null,
+        user_prompt_template_chars: userPromptTemplateFileValue
+          ? (hasUserPromptTemplateText ? userPromptTemplateText.length : normalizePositiveInteger(existingPayload.user_prompt_template_chars) || null)
+          : null,
+        image_prompt_suffix_chars: imagePromptSuffixFileValue
+          ? (hasImagePromptSuffixText ? imagePromptSuffixText.length : normalizePositiveInteger(existingPayload.image_prompt_suffix_chars) || null)
+          : null,
+        has_system_prompt_override: Boolean(systemPromptFileValue),
+        has_user_prompt_template_override: Boolean(userPromptTemplateFileValue),
+        has_image_prompt_suffix_override: Boolean(imagePromptSuffixFileValue),
+        candidate_scenes: candidateScenes,
+        min_scenes: minScenes,
+        max_scenes: maxScenes,
+        scene_count: maxScenes,
+        log_file: logFile,
+        event_log_file: eventLogFile,
+        summary_path: summaryPath,
+      };
+
       createOrUpdateAtomicGenerationRun({
         runId,
         requestedBy: req.authUser.username,
         targetDate,
-        storyFile,
+        storyFile: effectiveStoryFile,
         payload: mergedPayload,
         logFile,
         eventLogFile,
@@ -172,7 +359,7 @@ export function registerRunGenerateTextRoutes(app, deps) {
       db.prepare("DELETE FROM generation_job_scenes WHERE run_id = ?").run(runId);
 
       const atomicResult = await runStoryGeneratorAtomicCommand("generate-text", {
-        story_file: storyFile,
+        story_file: effectiveStoryFile,
         target_date: targetDate,
         scene_count: maxScenes,
         candidate_scenes: candidateScenes,
@@ -183,10 +370,10 @@ export function registerRunGenerateTextRoutes(app, deps) {
           || 12000,
         base_url: String(req.body?.base_url || existingPayload.base_url || runtimeLlm.api_base_url || "").trim() || undefined,
         text_model: String(req.body?.text_model || existingPayload.text_model || runtimeLlm.text_model || "").trim() || undefined,
-        prompts_dir: String(req.body?.prompts_dir || existingPayload.prompts_dir || "").trim() || undefined,
-        system_prompt_file: String(req.body?.system_prompt_file || existingPayload.system_prompt_file || "").trim() || undefined,
-        user_prompt_template_file: String(req.body?.user_prompt_template_file || existingPayload.user_prompt_template_file || "").trim() || undefined,
-        image_prompt_suffix_file: String(req.body?.image_prompt_suffix_file || existingPayload.image_prompt_suffix_file || "").trim() || undefined,
+        prompts_dir: promptsDirValue,
+        system_prompt_file: systemPromptFileValue,
+        user_prompt_template_file: userPromptTemplateFileValue,
+        image_prompt_suffix_file: imagePromptSuffixFileValue,
       }, {
         llmRuntime: runtimeLlm,
         userId: req.authUser?.id,
@@ -234,7 +421,7 @@ export function registerRunGenerateTextRoutes(app, deps) {
         story_overview_paragraphs: Array.isArray(atomicResult.story_overview_paragraphs)
           ? atomicResult.story_overview_paragraphs.map((item) => String(item || "").trim()).filter((item) => item.length > 0)
           : [],
-        source_file: String(atomicResult.source_file || "").trim() || storyFile,
+        source_file: String(atomicResult.source_file || "").trim() || effectiveStoryFile,
       };
 
       db.prepare(
