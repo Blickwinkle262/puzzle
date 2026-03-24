@@ -457,6 +457,23 @@ export type AdminGenerationRunDetailResponse = {
   attempts: AdminGenerationSceneAttempt[];
 };
 
+export type AdminGenerationRunOverrides = {
+  chapter_text_override: string;
+  chapter_text_override_chars: number;
+  system_prompt_text: string;
+  system_prompt_chars: number;
+  user_prompt_template_text: string;
+  user_prompt_template_chars: number;
+  image_prompt_suffix_text: string;
+  image_prompt_suffix_chars: number;
+};
+
+export type AdminGenerationRunOverridesResponse = {
+  ok: boolean;
+  run_id: string;
+  overrides: AdminGenerationRunOverrides;
+};
+
 export type AdminGenerationRunMutateResponse = {
   ok: boolean;
   run_id: string;
@@ -530,6 +547,34 @@ export type AdminUsersResponse = {
     role: string;
   };
   users: AdminUserSummary[];
+};
+
+export type AdminPromptPreset = {
+  id: number;
+  name: string;
+  system_prompt_text: string;
+  user_prompt_template_text: string;
+  image_prompt_suffix_text: string;
+  is_builtin: boolean;
+  created_by_user_id: number | null;
+  updated_by_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminPromptPresetsResponse = {
+  ok: boolean;
+  presets: AdminPromptPreset[];
+};
+
+export type AdminPromptPresetResponse = {
+  ok: boolean;
+  preset: AdminPromptPreset;
+};
+
+export type AdminPromptPresetDeleteResponse = {
+  ok: boolean;
+  deleted_preset_id: number;
 };
 
 export type AdminLlmApiKeyOption = {

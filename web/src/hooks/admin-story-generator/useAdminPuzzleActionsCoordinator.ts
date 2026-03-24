@@ -42,6 +42,10 @@ type UseAdminPuzzleActionsCoordinatorOptions = {
   reviewRunId: string;
   reviewScenes: AdminGenerationScene[];
   sceneCountInput: string;
+  chapterTextOverride: string;
+  systemPromptText: string;
+  userPromptTemplateText: string;
+  imagePromptSuffixText: string;
   selectedChapter: AdminChapterSummary | null;
   selectedChapterId: number | null;
   targetDate: string;
@@ -78,6 +82,10 @@ export function useAdminPuzzleActionsCoordinator({
   reviewRunId,
   reviewScenes,
   sceneCountInput,
+  chapterTextOverride,
+  systemPromptText,
+  userPromptTemplateText,
+  imagePromptSuffixText,
   selectedChapter,
   selectedChapterId,
   targetDate,
@@ -361,6 +369,18 @@ export function useAdminPuzzleActionsCoordinator({
       const runId = createClientRunId();
       await apiGenerateRunText(runId, {
         chapter_id: selectedChapterId,
+        ...(String(chapterTextOverride || "").trim()
+          ? { chapter_text_override: String(chapterTextOverride) }
+          : {}),
+        ...(String(systemPromptText || "").trim()
+          ? { system_prompt_text: String(systemPromptText) }
+          : {}),
+        ...(String(userPromptTemplateText || "").trim()
+          ? { user_prompt_template_text: String(userPromptTemplateText) }
+          : {}),
+        ...(String(imagePromptSuffixText || "").trim()
+          ? { image_prompt_suffix_text: String(imagePromptSuffixText) }
+          : {}),
         target_date: targetDate,
         scene_count: requestedSceneCount,
       });
@@ -382,6 +402,8 @@ export function useAdminPuzzleActionsCoordinator({
   }, [
     loadGenerationReview,
     loadRecentJobs,
+    chapterTextOverride,
+    imagePromptSuffixText,
     sceneCountInput,
     selectedChapter,
     selectedChapterId,
@@ -395,7 +417,9 @@ export function useAdminPuzzleActionsCoordinator({
     setReviewScenes,
     setShowGenerateDialog,
     setSubmitting,
+    systemPromptText,
     targetDate,
+    userPromptTemplateText,
   ]);
 
   return {

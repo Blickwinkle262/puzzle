@@ -8,6 +8,7 @@ import {
   AdminChapterSummary,
   AdminGenerationJob,
   AdminGenerationJobDetail,
+  AdminPromptPreset as AdminPromptPresetRecord,
   AdminGenerationScene,
   AdminGenerationSceneCounts,
   AdminLevelConfigResponse,
@@ -25,6 +26,12 @@ import {
   AdminUserSummary,
   StoryListItem,
 } from "../core/types";
+import {
+  apiCreateAdminPromptPreset,
+  apiDeleteAdminPromptPreset,
+  apiListAdminPromptPresets,
+  apiUpdateAdminPromptPreset,
+} from "../core/adminApi";
 import {
   compactText,
   formatGenerationJobStateLabel,
@@ -3500,6 +3507,7 @@ type AdminPuzzleGenerateStageProps = {
   reviewPendingImageCount: number;
   reviewPublishing: boolean;
   reviewRetryingSceneIndex: number | null;
+  reviewUpdatingSceneIndex: number | null;
   reviewUploadingSceneIndex: number | null;
   reviewRunId: string;
   reviewScenes: AdminGenerationScene[];
@@ -3511,6 +3519,9 @@ type AdminPuzzleGenerateStageProps = {
   onLoadGenerationReview: (runId: string) => void;
   onOpenGenerateDialog: () => void;
   onRetryReviewCandidate: (sceneIndex: number) => void;
+  onUpdateReviewScene: (sceneIndex: number, patch: {
+    image_prompt?: string;
+  }) => void;
   onUploadReviewSceneImage: (sceneIndex: number, file: File) => void;
   onSetPuzzleFlowReview: () => void;
   onSetPuzzleFlowSelect: () => void;
@@ -3533,6 +3544,7 @@ export function AdminPuzzleGenerateStage({
   reviewPendingImageCount,
   reviewPublishing,
   reviewRetryingSceneIndex,
+  reviewUpdatingSceneIndex,
   reviewUploadingSceneIndex,
   reviewRunId,
   reviewScenes,
@@ -3544,6 +3556,7 @@ export function AdminPuzzleGenerateStage({
   onLoadGenerationReview,
   onOpenGenerateDialog,
   onRetryReviewCandidate,
+  onUpdateReviewScene,
   onUploadReviewSceneImage,
   onSetPuzzleFlowReview,
   onSetPuzzleFlowSelect,
@@ -3554,6 +3567,22 @@ export function AdminPuzzleGenerateStage({
 }: AdminPuzzleGenerateStageProps): JSX.Element {
   const uploadFileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadTargetSceneIndex, setUploadTargetSceneIndex] = useState<number | null>(null);
+  const [editingPromptSceneIndex, setEditingPromptSceneIndex] = useState<number | null>(null);
+  const [promptDraftBySceneIndex, setPromptDraftBySceneIndex] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    setPromptDraftBySceneIndex((prev) => {
+      const next: Record<number, string> = {};
+      for (const scene of reviewScenes) {
+        if (editingPromptSceneIndex === scene.scene_index && Object.prototype.hasOwnProperty.call(prev, scene.scene_index)) {
+          next[scene.scene_index] = prev[scene.scene_index] ?? "";
+        } else {
+          next[scene.scene_index] = String(scene.image_prompt || "");
+        }
+      }
+      return next;
+    });
+  }, [editingPromptSceneIndex, reviewScenes]);
 
   const handleTriggerUpload = useCallback((sceneIndex: number): void => {
     setUploadTargetSceneIndex(sceneIndex);
@@ -3673,16 +3702,90 @@ export function AdminPuzzleGenerateStage({
                     </tr>
                   </thead>
                   <tbody>
-                    {reviewScenes.map((scene) => (
-                      <tr key={`${scene.run_id}-${scene.scene_index}-split`}>
-                        <td>{scene.scene_index}</td>
-                        <td>
-                          <div className="admin-review-title">{scene.title || `Scene ${scene.scene_index}`}</div>
-                          <div className="admin-review-prompt">{compactText(scene.story_text || scene.description || "", 180)}</div>
-                          <div className="admin-review-prompt">{compactText(scene.image_prompt || "", 220)}</div>
-                        </td>
-                      </tr>
-                    ))}
+                    {reviewScenes.map((scene) => {
+                      const scenePrompt = String(scene.image_prompt || "");
+                      const draftPrompt = Object.prototype.hasOwnProperty.call(promptDraftBySceneIndex, scene.scene_index)
+                        ? String(promptDraftBySceneIndex[scene.scene_index] || "")
+                        : scenePrompt;
+                      const editingPrompt = editingPromptSceneIndex === scene.scene_index;
+                      const promptDirty = draftPrompt !== scenePrompt;
+                      const savingPrompt = reviewUpdatingSceneIndex === scene.scene_index;
+
+                      return (
+                        <tr key={`${scene.run_id}-${scene.scene_index}-split`}>
+                          <td>{scene.scene_index}</td>
+                          <td>
+                            <div className="admin-review-title">{scene.title || `Scene ${scene.scene_index}`}</div>
+                            <div className="admin-review-prompt">{compactText(scene.story_text || scene.description || "", 180)}</div>
+
+                            {editingPrompt ? (
+                              <>
+                                <textarea
+                                  className="admin-review-textarea"
+                                  value={draftPrompt}
+                                  onChange={(event) => {
+                                    const nextValue = event.currentTarget.value;
+                                    setPromptDraftBySceneIndex((prev) => ({
+                                      ...prev,
+                                      [scene.scene_index]: nextValue,
+                                    }));
+                                  }}
+                                  placeholder="编辑 image prompt"
+                                  disabled={reviewLocked || reviewLoading || reviewPublishing || reviewBatchGenerating || savingPrompt}
+                                />
+                                <div className="inline-actions">
+                                  <button
+                                    type="button"
+                                    className="primary-btn"
+                                    disabled={reviewLocked || reviewLoading || reviewPublishing || reviewBatchGenerating || savingPrompt || !promptDirty}
+                                    onClick={() => {
+                                      onUpdateReviewScene(scene.scene_index, {
+                                        image_prompt: draftPrompt,
+                                      });
+                                    }}
+                                  >
+                                    {savingPrompt ? "保存中..." : "保存 Prompt"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="nav-btn"
+                                    disabled={savingPrompt}
+                                    onClick={() => {
+                                      setPromptDraftBySceneIndex((prev) => ({
+                                        ...prev,
+                                        [scene.scene_index]: scenePrompt,
+                                      }));
+                                      setEditingPromptSceneIndex(null);
+                                    }}
+                                  >
+                                    取消
+                                  </button>
+                                </div>
+                                <p className="progress-inline">保存后该 scene 会重置为待出图状态。</p>
+                              </>
+                            ) : (
+                              <>
+                                <div className="admin-review-prompt">{compactText(scenePrompt, 220)}</div>
+                                <button
+                                  type="button"
+                                  className="link-btn"
+                                  disabled={reviewLocked || reviewLoading || reviewPublishing || reviewBatchGenerating || Boolean(reviewUpdatingSceneIndex)}
+                                  onClick={() => {
+                                    setPromptDraftBySceneIndex((prev) => ({
+                                      ...prev,
+                                      [scene.scene_index]: scenePrompt,
+                                    }));
+                                    setEditingPromptSceneIndex(scene.scene_index);
+                                  }}
+                                >
+                                  编辑 Prompt
+                                </button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -3787,6 +3890,13 @@ export function AdminPuzzleGenerateStage({
                       const canUpload = scene.image_status === "failed"
                         || scene.image_status === "skipped"
                         || scene.image_status === "pending";
+                      const scenePrompt = String(scene.image_prompt || "");
+                      const draftPrompt = Object.prototype.hasOwnProperty.call(promptDraftBySceneIndex, scene.scene_index)
+                        ? String(promptDraftBySceneIndex[scene.scene_index] || "")
+                        : scenePrompt;
+                      const editingPrompt = editingPromptSceneIndex === scene.scene_index;
+                      const promptDirty = draftPrompt !== scenePrompt;
+                      const savingPrompt = reviewUpdatingSceneIndex === scene.scene_index;
 
                       return (
                         <li key={`${scene.run_id}-${scene.scene_index}-mobile-image`} className="admin-review-mobile-item">
@@ -3797,8 +3907,13 @@ export function AdminPuzzleGenerateStage({
                             </span>
                           </div>
                           <p className="admin-review-mobile-text">
-                            {compactText(scene.title || scene.image_prompt || "未设置标题", 80)}
+                            {compactText(scene.title || scenePrompt || "未设置标题", 80)}
                           </p>
+                          {!editingPrompt && (
+                            <p className="admin-review-mobile-text">
+                              Prompt：{compactText(scenePrompt || "暂无 Prompt", 120)}
+                            </p>
+                          )}
                           {scene.error_message ? (
                             <p className="admin-review-error">{scene.error_message}</p>
                           ) : null}
@@ -3829,6 +3944,68 @@ export function AdminPuzzleGenerateStage({
                               {deleting ? "删除中..." : "删除"}
                             </button>
                           </div>
+
+                          {editingPrompt ? (
+                            <>
+                              <textarea
+                                className="admin-review-textarea"
+                                value={draftPrompt}
+                                onChange={(event) => {
+                                  const nextValue = event.currentTarget.value;
+                                  setPromptDraftBySceneIndex((prev) => ({
+                                    ...prev,
+                                    [scene.scene_index]: nextValue,
+                                  }));
+                                }}
+                                placeholder="编辑 image prompt"
+                                disabled={reviewLocked || reviewLoading || reviewPublishing || reviewBatchGenerating || savingPrompt}
+                              />
+                              <div className="admin-review-mobile-actions">
+                                <button
+                                  type="button"
+                                  className="primary-btn"
+                                  disabled={reviewLocked || reviewLoading || reviewPublishing || reviewBatchGenerating || savingPrompt || !promptDirty}
+                                  onClick={() => {
+                                    onUpdateReviewScene(scene.scene_index, {
+                                      image_prompt: draftPrompt,
+                                    });
+                                  }}
+                                >
+                                  {savingPrompt ? "保存中..." : "保存 Prompt"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="nav-btn"
+                                  disabled={savingPrompt}
+                                  onClick={() => {
+                                    setPromptDraftBySceneIndex((prev) => ({
+                                      ...prev,
+                                      [scene.scene_index]: scenePrompt,
+                                    }));
+                                    setEditingPromptSceneIndex(null);
+                                  }}
+                                >
+                                  取消
+                                </button>
+                              </div>
+                              <p className="progress-inline">保存后该 scene 会重置为待出图状态。</p>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className="link-btn"
+                              disabled={reviewLocked || reviewLoading || reviewPublishing || reviewBatchGenerating || Boolean(reviewUpdatingSceneIndex)}
+                              onClick={() => {
+                                setPromptDraftBySceneIndex((prev) => ({
+                                  ...prev,
+                                  [scene.scene_index]: scenePrompt,
+                                }));
+                                setEditingPromptSceneIndex(scene.scene_index);
+                              }}
+                            >
+                              编辑 Prompt
+                            </button>
+                          )}
 
                           {scene.image_url ? (
                             <button
@@ -4201,16 +4378,37 @@ type AdminChapterTextPreviewModalProps = {
     word_count: number;
     chapter_text: string;
   } | null;
+  chapterTextOverride: string;
+  onApplyChapterTextOverride: (chapterId: number, nextText: string, baselineText: string) => void;
+  onClearChapterTextOverride: (chapterId: number) => void;
   onClose: () => void;
 };
 
 export function AdminChapterTextPreviewModal({
   chapterPreview,
+  chapterTextOverride,
+  onApplyChapterTextOverride,
+  onClearChapterTextOverride,
   onClose,
 }: AdminChapterTextPreviewModalProps): JSX.Element | null {
+  const chapterId = Number(chapterPreview?.chapter_id || 0);
+  const originalText = String(chapterPreview?.chapter_text || "");
+  const normalizedOverride = String(chapterTextOverride || "");
+  const hasAppliedOverride = chapterId > 0
+    && normalizedOverride.length > 0
+    && normalizedOverride !== originalText;
+  const appliedText = hasAppliedOverride ? normalizedOverride : originalText;
+  const [draftText, setDraftText] = useState(appliedText);
+
+  useEffect(() => {
+    setDraftText(appliedText);
+  }, [appliedText, chapterId]);
+
   if (!chapterPreview) {
     return null;
   }
+
+  const draftDirty = draftText !== appliedText;
 
   return (
     <div className="mask" role="dialog" aria-modal="true" onClick={onClose}>
@@ -4228,7 +4426,37 @@ export function AdminChapterTextPreviewModal({
         <p className="progress-inline">
           字数 {chapterPreview.char_count} · 词数 {chapterPreview.word_count}
         </p>
-        <pre className="admin-chapter-text-content">{chapterPreview.chapter_text || "暂无章节原文"}</pre>
+        <p className="progress-inline">
+          {hasAppliedOverride
+            ? "当前已启用临时改稿：创建 run 时将使用这里的改稿文本，不改动原始书库章节。"
+            : "当前使用原始章节文本。你可以在下方编辑并应用为本次生成临时改稿。"}
+        </p>
+        <textarea
+          className="admin-chapter-text-editor"
+          value={draftText}
+          onChange={(event) => setDraftText(event.currentTarget.value)}
+          placeholder="章节原文"
+        />
+        <div className="inline-actions">
+          <button
+            type="button"
+            className="primary-btn"
+            disabled={!draftDirty}
+            onClick={() => {
+              onApplyChapterTextOverride(chapterPreview.chapter_id, draftText, originalText);
+            }}
+          >
+            {hasAppliedOverride ? "更新临时改稿" : "应用临时改稿"}
+          </button>
+          <button
+            type="button"
+            className="nav-btn"
+            disabled={!hasAppliedOverride}
+            onClick={() => onClearChapterTextOverride(chapterPreview.chapter_id)}
+          >
+            恢复原文
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -4237,28 +4465,256 @@ export function AdminChapterTextPreviewModal({
 type AdminGenerateDialogModalProps = {
   open: boolean;
   defaultSceneCount: number;
+  chapterTextOverrideActive?: boolean;
   sceneCountInput: string;
+  systemPromptText: string;
+  userPromptTemplateText: string;
+  imagePromptSuffixText: string;
   selectedChapter: AdminChapterSummary | null;
   submitting: boolean;
   targetDate: string;
   onClose: () => void;
+  onImagePromptSuffixTextChange: (value: string) => void;
   onSceneCountInputChange: (value: string) => void;
+  onSystemPromptTextChange: (value: string) => void;
   onSubmit: () => void;
   onTargetDateChange: (value: string) => void;
+  onUserPromptTemplateTextChange: (value: string) => void;
 };
+
+type PromptPresetOption = {
+  id: string;
+  name: string;
+  system_prompt_text: string;
+  user_prompt_template_text: string;
+  image_prompt_suffix_text: string;
+  builtin: boolean;
+  serverPresetId: number | null;
+};
+
+const BUILTIN_PROMPT_PRESETS: PromptPresetOption[] = [
+  {
+    id: "builtin_default",
+    name: "默认（清空）",
+    system_prompt_text: "",
+    user_prompt_template_text: "",
+    image_prompt_suffix_text: "",
+    builtin: true,
+    serverPresetId: null,
+  },
+  {
+    id: "builtin_story_cinematic",
+    name: "电影感叙事",
+    system_prompt_text: [
+      "你是资深视觉叙事导演。",
+      "请把原文拆分为适合拼图关卡的分镜，每个场景都要有清晰主体、动作和环境线索。",
+      "输出中文，避免抽象空话，强调可视化细节。",
+      "只输出合法 JSON，不要 markdown，不要解释文字。",
+    ].join("\n"),
+    user_prompt_template_text: [
+      "请基于《{{SOURCE_NAME}}》文本，生成 {{CANDIDATE_SCENES}} 个候选场景。",
+      "每个场景需要包含 title / description / story_text / image_prompt。",
+      "场景之间保持叙事连贯，难度逐步提升。",
+      "原文如下：",
+      "{{SOURCE_TEXT}}",
+    ].join("\n"),
+    image_prompt_suffix_text: "vertical composition, strong subject focus, detailed lighting, no text, --ar 9:16",
+    builtin: true,
+    serverPresetId: null,
+  },
+  {
+    id: "builtin_guofeng",
+    name: "国风插画",
+    system_prompt_text: [
+      "你是国风美术分镜设计师。",
+      "请将画面描述落在服饰、器物、建筑、季节与光影细节上。",
+      "避免现代元素和镜头术语堆砌。",
+      "只输出合法 JSON，不要 markdown，不要解释文字。",
+    ].join("\n"),
+    user_prompt_template_text: [
+      "围绕《{{SOURCE_NAME}}》原文，拆分为 {{CANDIDATE_SCENES}} 个国风场景。",
+      "每个场景要有明确人物行为和环境信息。",
+      "原文：",
+      "{{SOURCE_TEXT}}",
+    ].join("\n"),
+    image_prompt_suffix_text: "Chinese traditional illustration style, elegant brushwork, rich costume details, no text, --ar 9:16",
+    builtin: true,
+    serverPresetId: null,
+  },
+];
 
 export function AdminGenerateDialogModal({
   open,
   defaultSceneCount,
+  chapterTextOverrideActive,
   sceneCountInput,
+  systemPromptText,
+  userPromptTemplateText,
+  imagePromptSuffixText,
   selectedChapter,
   submitting,
   targetDate,
   onClose,
+  onImagePromptSuffixTextChange,
   onSceneCountInputChange,
+  onSystemPromptTextChange,
   onSubmit,
   onTargetDateChange,
+  onUserPromptTemplateTextChange,
 }: AdminGenerateDialogModalProps): JSX.Element | null {
+  const [savedPromptPresets, setSavedPromptPresets] = useState<AdminPromptPresetRecord[]>([]);
+  const [loadingPromptPresets, setLoadingPromptPresets] = useState(false);
+  const [promptPresetSubmitting, setPromptPresetSubmitting] = useState(false);
+  const [promptPresetError, setPromptPresetError] = useState("");
+  const [promptPresetInfo, setPromptPresetInfo] = useState("");
+  const [selectedPromptPresetId, setSelectedPromptPresetId] = useState("");
+  const [newPromptPresetName, setNewPromptPresetName] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingPromptPresets(true);
+    setPromptPresetError("");
+
+    void apiListAdminPromptPresets()
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setSavedPromptPresets(Array.isArray(payload?.presets) ? payload.presets : []);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setPromptPresetError(error instanceof Error ? error.message : "读取 Prompt 预设失败");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingPromptPresets(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const allPromptPresets = useMemo(() => {
+    const savedOptions: PromptPresetOption[] = savedPromptPresets.map((item) => ({
+      id: `saved_${item.id}`,
+      name: String(item.name || ""),
+      system_prompt_text: String(item.system_prompt_text || ""),
+      user_prompt_template_text: String(item.user_prompt_template_text || ""),
+      image_prompt_suffix_text: String(item.image_prompt_suffix_text || ""),
+      builtin: Boolean(item.is_builtin),
+      serverPresetId: Number(item.id),
+    }));
+    return [...BUILTIN_PROMPT_PRESETS, ...savedOptions];
+  }, [savedPromptPresets]);
+  const selectedPromptPreset = useMemo(
+    () => allPromptPresets.find((item) => item.id === selectedPromptPresetId) || null,
+    [allPromptPresets, selectedPromptPresetId],
+  );
+  const canDeleteSelectedPromptPreset = useMemo(
+    () => Boolean(selectedPromptPreset && !selectedPromptPreset.builtin && selectedPromptPreset.serverPresetId),
+    [selectedPromptPreset],
+  );
+
+  useEffect(() => {
+    if (!selectedPromptPresetId) {
+      return;
+    }
+    const exists = allPromptPresets.some((item) => item.id === selectedPromptPresetId);
+    if (!exists) {
+      setSelectedPromptPresetId("");
+    }
+  }, [allPromptPresets, selectedPromptPresetId]);
+
+  const applyPromptPreset = useCallback((preset: PromptPresetOption | null): void => {
+    if (!preset) {
+      return;
+    }
+    onSystemPromptTextChange(String(preset.system_prompt_text || ""));
+    onUserPromptTemplateTextChange(String(preset.user_prompt_template_text || ""));
+    onImagePromptSuffixTextChange(String(preset.image_prompt_suffix_text || ""));
+  }, [onImagePromptSuffixTextChange, onSystemPromptTextChange, onUserPromptTemplateTextChange]);
+
+  const saveCurrentPromptPreset = useCallback(async (): Promise<void> => {
+    const normalizedName = String(newPromptPresetName || "").trim();
+    if (!normalizedName || promptPresetSubmitting) {
+      return;
+    }
+
+    try {
+      setPromptPresetSubmitting(true);
+      setPromptPresetError("");
+      setPromptPresetInfo("");
+
+      const existing = savedPromptPresets.find((item) => {
+        if (item.is_builtin) {
+          return false;
+        }
+        return String(item.name || "").trim().toLowerCase() === normalizedName.toLowerCase();
+      }) || null;
+
+      const payload = {
+        name: normalizedName,
+        system_prompt_text: String(systemPromptText || ""),
+        user_prompt_template_text: String(userPromptTemplateText || ""),
+        image_prompt_suffix_text: String(imagePromptSuffixText || ""),
+      };
+
+      const response = existing
+        ? await apiUpdateAdminPromptPreset(existing.id, payload)
+        : await apiCreateAdminPromptPreset(payload);
+      const nextPreset = response.preset;
+
+      setSavedPromptPresets((prev) => [
+        nextPreset,
+        ...prev.filter((item) => item.id !== nextPreset.id),
+      ].slice(0, 80));
+      setSelectedPromptPresetId(`saved_${nextPreset.id}`);
+      setPromptPresetInfo(existing ? `已更新预设：${nextPreset.name}` : `已保存预设：${nextPreset.name}`);
+      setNewPromptPresetName("");
+    } catch (error) {
+      setPromptPresetError(error instanceof Error ? error.message : "保存 Prompt 预设失败");
+    } finally {
+      setPromptPresetSubmitting(false);
+    }
+  }, [
+    imagePromptSuffixText,
+    newPromptPresetName,
+    promptPresetSubmitting,
+    savedPromptPresets,
+    systemPromptText,
+    userPromptTemplateText,
+  ]);
+
+  const deleteSelectedPromptPreset = useCallback(async (): Promise<void> => {
+    if (!canDeleteSelectedPromptPreset || !selectedPromptPreset?.serverPresetId || promptPresetSubmitting) {
+      return;
+    }
+
+    try {
+      setPromptPresetSubmitting(true);
+      setPromptPresetError("");
+      setPromptPresetInfo("");
+      const deletingPresetId = selectedPromptPreset.serverPresetId;
+      await apiDeleteAdminPromptPreset(deletingPresetId);
+      setSavedPromptPresets((prev) => prev.filter((item) => item.id !== deletingPresetId));
+      setSelectedPromptPresetId("");
+      setPromptPresetInfo("预设已删除");
+    } catch (error) {
+      setPromptPresetError(error instanceof Error ? error.message : "删除 Prompt 预设失败");
+    } finally {
+      setPromptPresetSubmitting(false);
+    }
+  }, [canDeleteSelectedPromptPreset, promptPresetSubmitting, selectedPromptPreset]);
+
   if (!open) {
     return null;
   }
@@ -4289,6 +4745,104 @@ export function AdminGenerateDialogModal({
             当前选择：{selectedChapter.chapter_title}（{selectedChapter.char_count}字）
           </p>
         )}
+        {chapterTextOverrideActive && (
+          <p className="progress-inline">已启用“原文临时改稿”，本次生成将使用改稿文本。</p>
+        )}
+
+        <details className="admin-generate-advanced-prompts">
+          <summary>高级 Prompt（可选）</summary>
+
+          {loadingPromptPresets && <p className="progress-inline">正在读取 Prompt 预设...</p>}
+          {promptPresetError && <p className="progress-inline">{promptPresetError}</p>}
+          {promptPresetInfo && <p className="progress-inline">{promptPresetInfo}</p>}
+
+          <div className="admin-generate-preset-row">
+            <label className="form-field">
+              Prompt 预设
+              <select
+                value={selectedPromptPresetId}
+                onChange={(event) => setSelectedPromptPresetId(event.currentTarget.value)}
+                disabled={loadingPromptPresets || promptPresetSubmitting}
+              >
+                <option value="">— 选择预设 —</option>
+                {allPromptPresets.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.builtin ? `内置 · ${item.name}` : `自定义 · ${item.name}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              className="nav-btn"
+              disabled={!selectedPromptPreset || loadingPromptPresets || promptPresetSubmitting}
+              onClick={() => applyPromptPreset(selectedPromptPreset)}
+            >
+              套用预设
+            </button>
+
+            <button
+              type="button"
+              className="nav-btn"
+              disabled={!canDeleteSelectedPromptPreset || loadingPromptPresets || promptPresetSubmitting}
+              onClick={() => {
+                void deleteSelectedPromptPreset();
+              }}
+            >
+              删除预设
+            </button>
+          </div>
+
+          <div className="admin-generate-preset-save-row">
+            <input
+              value={newPromptPresetName}
+              onChange={(event) => setNewPromptPresetName(event.currentTarget.value)}
+              placeholder="将当前 Prompt 保存为预设，例如：电影感-v1"
+              disabled={loadingPromptPresets || promptPresetSubmitting}
+            />
+            <button
+              type="button"
+              className="nav-btn"
+              disabled={!String(newPromptPresetName || "").trim() || loadingPromptPresets || promptPresetSubmitting}
+              onClick={() => {
+                void saveCurrentPromptPreset();
+              }}
+            >
+              {promptPresetSubmitting ? "处理中..." : "保存为预设"}
+            </button>
+          </div>
+
+          <label className="form-field">
+            System Prompt（留空使用默认文件）
+            <textarea
+              className="admin-generate-prompt-textarea"
+              value={systemPromptText}
+              onChange={(event) => onSystemPromptTextChange(event.currentTarget.value)}
+              placeholder="系统提示词..."
+            />
+          </label>
+
+          <label className="form-field">
+            User Prompt Template（需包含 {"{{SOURCE_TEXT}}"}）
+            <textarea
+              className="admin-generate-prompt-textarea"
+              value={userPromptTemplateText}
+              onChange={(event) => onUserPromptTemplateTextChange(event.currentTarget.value)}
+              placeholder="用户模板提示词..."
+            />
+          </label>
+
+          <label className="form-field">
+            Image Prompt Suffix（可选）
+            <textarea
+              className="admin-generate-prompt-textarea"
+              value={imagePromptSuffixText}
+              onChange={(event) => onImagePromptSuffixTextChange(event.currentTarget.value)}
+              placeholder="例如：--ar 9:16"
+            />
+          </label>
+        </details>
 
         <div className="inline-actions">
           <button

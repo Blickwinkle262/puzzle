@@ -147,12 +147,17 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       maxCharsInput,
       minCharsInput,
       sceneCountInput,
+      systemPromptText,
+      userPromptTemplateText,
+      imagePromptSuffixText,
       selectedChapter,
       selectedChapterId,
       submitting,
       targetDate,
       totalChapterPages,
       chapterTextPreview,
+      chapterPreviewOverrideText,
+      selectedChapterTextOverride,
       loadingChapterTextPreview,
       reparsingBook,
       summaryBookId,
@@ -191,8 +196,13 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
       setMaxCharsInput,
       setMinCharsInput,
       setSceneCountInput,
+      setSystemPromptText,
+      setUserPromptTemplateText,
+      setImagePromptSuffixText,
       setSelectedChapterId,
       setChapterTextPreview,
+      setChapterTextOverride,
+      clearChapterTextOverride,
       setSummaryBookId,
       setTargetDate,
     },
@@ -654,6 +664,10 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                   setPanelNoticeScope("puzzle");
                   void handleRetryReviewCandidate(sceneIndex);
                 }}
+                onUpdateReviewScene={(sceneIndex, patch) => {
+                  setPanelNoticeScope("puzzle");
+                  void handleUpdateReviewScene(sceneIndex, patch);
+                }}
                 onUploadReviewSceneImage={(sceneIndex, file) => {
                   setPanelNoticeScope("puzzle");
                   void handleUploadReviewSceneImage(sceneIndex, file);
@@ -684,6 +698,7 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
                 reviewPendingImageCount={reviewPendingImageCount}
                 reviewPublishing={reviewPublishing}
                 reviewRetryingSceneIndex={reviewRetryingSceneIndex}
+                reviewUpdatingSceneIndex={reviewUpdatingSceneIndex}
                 reviewUploadingSceneIndex={reviewUploadingSceneIndex}
                 reviewRunId={reviewRunId}
                 reviewScenes={reviewScenes}
@@ -760,18 +775,34 @@ export function AdminStoryGenerator({ visible, onClose, onGenerated, onOpenStory
 
       <AdminChapterTextPreviewModal
         chapterPreview={chapterTextPreview}
+        chapterTextOverride={chapterPreviewOverrideText}
+        onApplyChapterTextOverride={(chapterId, nextText, baselineText) => {
+          setPanelNoticeScope("puzzle");
+          setChapterTextOverride(chapterId, nextText, baselineText);
+        }}
+        onClearChapterTextOverride={(chapterId) => {
+          setPanelNoticeScope("puzzle");
+          clearChapterTextOverride(chapterId);
+        }}
         onClose={() => setChapterTextPreview(null)}
       />
 
       <AdminGenerateDialogModal
         open={showGenerateDialog}
         defaultSceneCount={DEFAULT_SCENE_COUNT}
+        chapterTextOverrideActive={Boolean(String(selectedChapterTextOverride || "").trim())}
         sceneCountInput={sceneCountInput}
+        systemPromptText={systemPromptText}
+        userPromptTemplateText={userPromptTemplateText}
+        imagePromptSuffixText={imagePromptSuffixText}
         selectedChapter={selectedChapter}
         submitting={submitting}
         targetDate={targetDate}
         onClose={() => setShowGenerateDialog(false)}
         onSceneCountInputChange={setSceneCountInput}
+        onSystemPromptTextChange={setSystemPromptText}
+        onUserPromptTemplateTextChange={setUserPromptTemplateText}
+        onImagePromptSuffixTextChange={setImagePromptSuffixText}
         onSubmit={() => {
           void handleSubmit();
         }}

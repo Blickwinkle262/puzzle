@@ -9,6 +9,7 @@ import { defaultSceneCounts, errorMessage, formatTime, normalizeFlowStage, norma
 type UseAdminPuzzleFlowCoordinatorOptions = {
   activeRunId: string;
   onGenerated: (storyId: string) => Promise<void> | void;
+  onHydratePromptOverrides?: (job: AdminGenerationJobDetail) => void;
   recentJobs: AdminGenerationJob[];
   reviewRunId: string;
   setRecentJobs: (jobs: AdminGenerationJob[]) => void;
@@ -34,6 +35,7 @@ type UseAdminPuzzleFlowCoordinatorOptions = {
 export function useAdminPuzzleFlowCoordinator({
   activeRunId,
   onGenerated,
+  onHydratePromptOverrides,
   recentJobs,
   reviewRunId,
   setRecentJobs,
@@ -75,12 +77,16 @@ export function useAdminPuzzleFlowCoordinator({
       setReviewScenes((response.scenes || []).filter((item) => !item.deleted_at));
       setReviewCounts(response.counts || defaultSceneCounts());
       setActiveJob(response.job || null);
+      if (response.job) {
+        onHydratePromptOverrides?.(response.job);
+      }
     } catch (err) {
       setPanelError(errorMessage(err));
     } finally {
       setReviewLoading(false);
     }
   }, [
+    onHydratePromptOverrides,
     setActiveJob,
     setPanelError,
     setReviewCounts,
@@ -104,6 +110,7 @@ export function useAdminPuzzleFlowCoordinator({
         }
 
         setActiveJob(detail.job);
+        onHydratePromptOverrides?.(detail.job);
 
         if (reviewRunId && reviewRunId === activeRunId) {
           setReviewScenes((detail.scenes || []).filter((item) => !item.deleted_at));
@@ -162,6 +169,7 @@ export function useAdminPuzzleFlowCoordinator({
     loadGenerationReview,
     loadRecentJobs,
     onGenerated,
+    onHydratePromptOverrides,
     reviewRunId,
     setActiveJob,
     setActiveRunId,

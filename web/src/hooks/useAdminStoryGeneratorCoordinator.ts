@@ -11,6 +11,7 @@ import {
   apiGetAdminBookUploadTask,
   apiGetAdminLlmGlobalProfile,
   apiGetAdminLlmUserProfile,
+  apiGetRunOverrides,
   apiListAdminBookSummaryTasks,
   apiListAdminBookSummaryTaskItems,
   apiListAdminBookChapters,
@@ -34,6 +35,7 @@ import {
   AdminBookSummaryTaskItem,
   AdminBookSummaryTask,
   AdminBookUploadResponse,
+  AdminGenerationJobDetail,
   AdminLevelDifficulty,
   AdminLlmConnectionTestResult,
   AdminLlmModelOption,
@@ -419,6 +421,10 @@ export function useAdminStoryGeneratorCoordinator({
     setScopedPanelError("llm", message);
   }, [setScopedPanelError]);
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
+  const [systemPromptText, setSystemPromptText] = useState("");
+  const [userPromptTemplateText, setUserPromptTemplateText] = useState("");
+  const [imagePromptSuffixText, setImagePromptSuffixText] = useState("");
+  const hydratedPromptRunIdRef = useRef("");
   const [uploadingBook, setUploadingBook] = useState(false);
   const [bookUploadTasks, setBookUploadTasks] = useState<AdminBookIngestTask[]>([]);
   const [loadingBookUploadTasks, setLoadingBookUploadTasks] = useState(false);
@@ -433,6 +439,7 @@ export function useAdminStoryGeneratorCoordinator({
   const [bookSummaryTaskItems, setBookSummaryTaskItems] = useState<AdminBookSummaryTaskItem[]>([]);
   const [pendingBookReplace, setPendingBookReplace] = useState<PendingBookReplaceState | null>(null);
   const [chapterTextPreview, setChapterTextPreview] = useState<ChapterTextPreviewState | null>(null);
+  const [chapterTextOverridesByChapterId, setChapterTextOverridesByChapterId] = useState<Record<number, string>>({});
   const [loadingChapterTextPreview, setLoadingChapterTextPreview] = useState(false);
   const [llmProviders, setLlmProviders] = useState<AdminLlmProvider[]>([]);
   const [llmEnvKeyOptions, setLlmEnvKeyOptions] = useState<AdminLlmApiKeyOption[]>([]);
@@ -555,6 +562,74 @@ export function useAdminStoryGeneratorCoordinator({
   );
   const reviewStatus = normalizeReviewStatus(activeJob?.review_status);
   const reviewLocked = reviewStatus === "published" || normalizeFlowStage(activeJob?.flow_stage) === "published";
+
+  const loadRunPromptOverrides = useCallback(async (runId: string): Promise<void> => {
+    const payload = await apiGetRunOverrides(runId);
+    const overrides = payload?.overrides || {
+      system_prompt_text: "",
+      user_prompt_template_text: "",
+      image_prompt_suffix_text: "",
+    };
+
+    setSystemPromptText(String(overrides.system_prompt_text || ""));
+    setUserPromptTemplateText(String(overrides.user_prompt_template_text || ""));
+    setImagePromptSuffixText(String(overrides.image_prompt_suffix_text || ""));
+  }, []);
+
+  const hydratePromptOverridesFromJob = useCallback((job: AdminGenerationJobDetail): void => {
+    const runId = String(job?.run_id || "").trim();
+    if (!runId || hydratedPromptRunIdRef.current === runId) {
+      return;
+    }
+
+    hydratedPromptRunIdRef.current = runId;
+
+    const payload = job.payload && typeof job.payload === "object"
+      ? job.payload as Record<string, unknown>
+      : null;
+    const nextSystemPromptText = typeof payload?.system_prompt_text === "string"
+      ? payload.system_prompt_text
+      : null;
+    const nextUserPromptTemplateText = typeof payload?.user_prompt_template_text === "string"
+      ? payload.user_prompt_template_text
+      : null;
+    const nextImagePromptSuffixText = typeof payload?.image_prompt_suffix_text === "string"
+      ? payload.image_prompt_suffix_text
+      : null;
+
+    if (
+      nextSystemPromptText !== null
+      || nextUserPromptTemplateText !== null
+      || nextImagePromptSuffixText !== null
+    ) {
+      setSystemPromptText(nextSystemPromptText || "");
+      setUserPromptTemplateText(nextUserPromptTemplateText || "");
+      setImagePromptSuffixText(nextImagePromptSuffixText || "");
+      return;
+    }
+
+    const hasPromptOverride = Boolean(
+      payload?.system_prompt_file
+      || payload?.user_prompt_template_file
+      || payload?.image_prompt_suffix_file
+      || payload?.has_system_prompt_override
+      || payload?.has_user_prompt_template_override
+      || payload?.has_image_prompt_suffix_override,
+    );
+
+    if (!hasPromptOverride) {
+      setSystemPromptText("");
+      setUserPromptTemplateText("");
+      setImagePromptSuffixText("");
+      return;
+    }
+
+    void loadRunPromptOverrides(runId).catch(() => {
+      setSystemPromptText("");
+      setUserPromptTemplateText("");
+      setImagePromptSuffixText("");
+    });
+  }, [loadRunPromptOverrides]);
 
   const toggleSection = useCallback((key: AdminSectionKey): void => {
     setCollapsedSections((prev) => ({
@@ -1912,6 +1987,69 @@ export function useAdminStoryGeneratorCoordinator({
     setChapterTextPreview(null);
   }, [selectedChapterId]);
 
+  const chapterPreviewOverrideText = useMemo(() => {
+    const chapterId = Number(chapterTextPreview?.chapter_id || 0);
+    if (!Number.isInteger(chapterId) || chapterId <= 0) {
+      return "";
+    }
+    return String(chapterTextOverridesByChapterId[chapterId] || "");
+  }, [chapterTextOverridesByChapterId, chapterTextPreview?.chapter_id]);
+
+  const selectedChapterTextOverride = useMemo(() => {
+    const chapterId = Number(selectedChapterId || 0);
+    if (!Number.isInteger(chapterId) || chapterId <= 0) {
+      return "";
+    }
+    return String(chapterTextOverridesByChapterId[chapterId] || "");
+  }, [chapterTextOverridesByChapterId, selectedChapterId]);
+
+  const setChapterTextOverride = useCallback((chapterId: number, nextText: string, baselineText = ""): void => {
+    const normalizedChapterId = Number.isFinite(chapterId) ? Math.floor(chapterId) : 0;
+    if (normalizedChapterId <= 0) {
+      return;
+    }
+
+    const normalizedText = String(nextText || "");
+    const baseline = String(baselineText || "");
+    const shouldClear = !normalizedText.trim() || normalizedText === baseline;
+
+    setChapterTextOverridesByChapterId((prev) => {
+      if (shouldClear) {
+        if (!Object.prototype.hasOwnProperty.call(prev, normalizedChapterId)) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[normalizedChapterId];
+        return next;
+      }
+
+      if (prev[normalizedChapterId] === normalizedText) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [normalizedChapterId]: normalizedText,
+      };
+    });
+  }, []);
+
+  const clearChapterTextOverride = useCallback((chapterId: number): void => {
+    const normalizedChapterId = Number.isFinite(chapterId) ? Math.floor(chapterId) : 0;
+    if (normalizedChapterId <= 0) {
+      return;
+    }
+
+    setChapterTextOverridesByChapterId((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, normalizedChapterId)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[normalizedChapterId];
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (books.length === 0) {
       if (summaryBookId) {
@@ -1996,6 +2134,7 @@ export function useAdminStoryGeneratorCoordinator({
   } = useAdminPuzzleFlowCoordinator({
     activeRunId,
     onGenerated,
+    onHydratePromptOverrides: hydratePromptOverridesFromJob,
     recentJobs,
     reviewRunId,
     setRecentJobs,
@@ -2091,6 +2230,10 @@ export function useAdminStoryGeneratorCoordinator({
     reviewRunId,
     reviewScenes,
     sceneCountInput,
+    chapterTextOverride: selectedChapterTextOverride,
+    systemPromptText,
+    userPromptTemplateText,
+    imagePromptSuffixText,
     selectedChapter,
     selectedChapterId,
     targetDate,
@@ -2263,12 +2406,17 @@ export function useAdminStoryGeneratorCoordinator({
     maxCharsInput,
     minCharsInput,
     sceneCountInput,
+    systemPromptText,
+    userPromptTemplateText,
+    imagePromptSuffixText,
     selectedChapter,
     selectedChapterId,
     submitting,
     targetDate,
     totalChapterPages,
     chapterTextPreview,
+    chapterPreviewOverrideText,
+    selectedChapterTextOverride,
     loadingChapterTextPreview,
     reparsingBook,
     summaryBookId,
@@ -2308,8 +2456,13 @@ export function useAdminStoryGeneratorCoordinator({
     setMaxCharsInput,
     setMinCharsInput,
     setSceneCountInput,
+    setSystemPromptText,
+    setUserPromptTemplateText,
+    setImagePromptSuffixText,
     setSelectedChapterId,
     setChapterTextPreview,
+    setChapterTextOverride,
+    clearChapterTextOverride,
     setSummaryBookId,
     setTargetDate,
   };

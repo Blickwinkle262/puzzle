@@ -9,6 +9,7 @@ import {
   AdminGenerationCreateResponse,
   AdminGenerationCandidate,
   AdminGenerationRunDetailResponse,
+  AdminGenerationRunOverridesResponse,
   AdminGenerationRunMutateResponse,
   AdminGenerationReviewResponse,
   AdminGenerationPublishResponse,
@@ -26,6 +27,9 @@ import {
   AdminLlmProviderModelsResponse,
   AdminLlmProviderResponse,
   AdminLlmProvidersResponse,
+  AdminPromptPresetDeleteResponse,
+  AdminPromptPresetResponse,
+  AdminPromptPresetsResponse,
   AdminManagedRole,
   AdminUsersResponse,
   LevelProgress,
@@ -374,6 +378,13 @@ export type AdminGenerateStoryPayload = {
   review_mode?: boolean;
 };
 
+export type AdminPromptPresetPatch = {
+  name?: string;
+  system_prompt_text?: string;
+  user_prompt_template_text?: string;
+  image_prompt_suffix_text?: string;
+};
+
 export type AdminUsersQuery = {
   keyword?: string;
   role?: AdminManagedRole;
@@ -720,10 +731,18 @@ export function apiGetGenerationRun(runId: string): Promise<AdminGenerationRunDe
   return requestJson<AdminGenerationRunDetailResponse>(`/runs/${encodeURIComponent(runId)}`);
 }
 
+export function apiGetRunOverrides(runId: string): Promise<AdminGenerationRunOverridesResponse> {
+  return requestJson<AdminGenerationRunOverridesResponse>(`/runs/${encodeURIComponent(runId)}/overrides`);
+}
+
 export function apiGenerateRunText(
   runId: string,
   payload: {
     chapter_id?: number;
+    chapter_text_override?: string;
+    system_prompt_text?: string;
+    user_prompt_template_text?: string;
+    image_prompt_suffix_text?: string;
     story_file?: string;
     target_date?: string;
     scene_count?: number;
@@ -891,6 +910,33 @@ export function apiDeleteRun(
   return requestJson<{ ok: boolean; run_id: string; removed_files: string[] }>(`/runs/${encodeURIComponent(runId)}`, {
     method: "DELETE",
     body: payload,
+  });
+}
+
+export function apiListAdminPromptPresets(): Promise<AdminPromptPresetsResponse> {
+  return requestJson<AdminPromptPresetsResponse>("/admin/prompt-presets");
+}
+
+export function apiCreateAdminPromptPreset(payload: AdminPromptPresetPatch): Promise<AdminPromptPresetResponse> {
+  return requestJson<AdminPromptPresetResponse>("/admin/prompt-presets", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function apiUpdateAdminPromptPreset(
+  presetId: number,
+  payload: AdminPromptPresetPatch,
+): Promise<AdminPromptPresetResponse> {
+  return requestJson<AdminPromptPresetResponse>(`/admin/prompt-presets/${encodeURIComponent(String(presetId))}`, {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export function apiDeleteAdminPromptPreset(presetId: number): Promise<AdminPromptPresetDeleteResponse> {
+  return requestJson<AdminPromptPresetDeleteResponse>(`/admin/prompt-presets/${encodeURIComponent(String(presetId))}`, {
+    method: "DELETE",
   });
 }
 
