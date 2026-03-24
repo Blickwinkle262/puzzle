@@ -7,6 +7,17 @@ from pathlib import Path
 from .exceptions import PipelineError
 from .models import PromptBundle, SourceStory
 
+JSON_OUTPUT_GUARD = "只输出合法 JSON，不要 markdown，不要解释文字。"
+
+
+def ensure_json_output_guard(system_prompt: str) -> str:
+    normalized = str(system_prompt or "").strip()
+    if not normalized:
+        return ""
+    if JSON_OUTPUT_GUARD in normalized:
+        return normalized
+    return f"{normalized}\n{JSON_OUTPUT_GUARD}"
+
 
 def load_prompt_bundle(
     *,
@@ -15,7 +26,7 @@ def load_prompt_bundle(
     user_prompt_template_file: str,
     image_prompt_suffix_file: str,
 ) -> PromptBundle:
-    system_prompt = load_prompt_text(prompts_dir, system_prompt_file).strip()
+    system_prompt = ensure_json_output_guard(load_prompt_text(prompts_dir, system_prompt_file).strip())
     user_prompt_template = load_prompt_text(prompts_dir, user_prompt_template_file)
     image_prompt_suffix = load_prompt_text(prompts_dir, image_prompt_suffix_file).strip()
 
